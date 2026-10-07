@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- CDR de ejemplo rechazado. El código 2025 es un valor de FIXTURE: no se
+     interpreta por su significado, solo se usa para probar la regla
+     "código distinto de 0 y de 98 -> Rechazado". -->
+<ar:ApplicationResponse
+    xmlns:ar="urn:oasis:names:specification:ubl:schema:xsd:ApplicationResponse-2"
+    xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+    xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:ID>20123456789-01-F001-2</cbc:ID>
+  <cbc:ResponseDate>2026-01-15</cbc:ResponseDate>
+  <cbc:ResponseTime>11:05:12</cbc:ResponseTime>
+  <cac:DocumentResponse>
+    <cac:Response>
+      <cbc:ReferenceID>F001-2</cbc:ReferenceID>
+      <cbc:ResponseCode>2025</cbc:ResponseCode>
+      <cbc:Description>El comprobante fue rechazado: revise los datos del emisor</cbc:Description>
+    </cac:Response>
+  </cac:DocumentResponse>
+</ar:ApplicationResponse>

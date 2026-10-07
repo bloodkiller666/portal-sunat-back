@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- WSDL de pruebas con la forma de billService.getStatus(fileName),
+     la operación de solo lectura disponible en beta. -->
+<wsdl:definitions
+    xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+    xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+    xmlns:tns="http://service.sunat.gob.pe"
+    name="BillService"
+    targetNamespace="http://service.sunat.gob.pe">
+
+  <wsdl:types>
+    <xsd:schema targetNamespace="http://service.sunat.gob.pe" elementFormDefault="qualified">
+      <xsd:complexType name="statusResponseType">
+        <xsd:sequence>
+          <xsd:element name="statusCode" type="xsd:string" minOccurs="0"/>
+          <xsd:element name="statusMessage" type="xsd:string" minOccurs="0"/>
+        </xsd:sequence>
+      </xsd:complexType>
+
+      <xsd:element name="getStatus">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="fileName" type="xsd:string"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:element name="getStatusResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="status" type="tns:statusResponseType"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:element name="sendBill">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="fileName" type="xsd:string"/>
+            <xsd:element name="contentFile" type="xsd:base64Binary"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:element name="sendBillResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="applicationResponse" type="xsd:base64Binary"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+    </xsd:schema>
+  </wsdl:types>
+
+  <wsdl:message name="getStatusRequest">
+    <wsdl:part name="parameters" element="tns:getStatus"/>
+  </wsdl:message>
+  <wsdl:message name="getStatusResponse">
+    <wsdl:part name="parameters" element="tns:getStatusResponse"/>
+  </wsdl:message>
+  <wsdl:message name="sendBillRequest">
+    <wsdl:part name="parameters" element="tns:sendBill"/>
+  </wsdl:message>
+  <wsdl:message name="sendBillResponse">
+    <wsdl:part name="parameters" element="tns:sendBillResponse"/>
+  </wsdl:message>
+
+  <wsdl:portType name="BillService">
+    <wsdl:operation name="sendBill">
+      <wsdl:input message="tns:sendBillRequest"/>
+      <wsdl:output message="tns:sendBillResponse"/>
+    </wsdl:operation>
+    <wsdl:operation name="getStatus">
+      <wsdl:input message="tns:getStatusRequest"/>
+      <wsdl:output message="tns:getStatusResponse"/>
+    </wsdl:operation>
+  </wsdl:portType>
+
+  <wsdl:binding name="BillServiceSoapBinding" type="tns:BillService">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsdl:operation name="sendBill">
+      <soap:operation soapAction="urn:sendBill"/>
+      <wsdl:input><soap:body use="literal"/></wsdl:input>
+      <wsdl:output><soap:body use="literal"/></wsdl:output>
+    </wsdl:operation>
+    <wsdl:operation name="getStatus">
+      <soap:operation soapAction="urn:getStatus"/>
+      <wsdl:input><soap:body use="literal"/></wsdl:input>
+      <wsdl:output><soap:body use="literal"/></wsdl:output>
+    </wsdl:operation>
+  </wsdl:binding>
+
+  <wsdl:service name="BillService">
+    <wsdl:port name="BillServicePort" binding="tns:BillServiceSoapBinding">
+      <soap:address location="https://e-beta.sunat.gob.pe/ol-ti-itcpfegem-beta/billService"/>
+    </wsdl:port>
+  </wsdl:service>
+</wsdl:definitions>

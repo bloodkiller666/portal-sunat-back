@@ -1,0 +1,64 @@
+# --- Secretos (regla 1: nada de secretos en el repo) ---
+.env
+.env.*
+!.env.example
+secrets/
+*.pfx
+*.p12
+*.pem
+*.key
+*.crt
+*.cer
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# --- Herramientas ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- WSDL descargados desde SUNAT (caché local) ---
+cpe-wsdl/
+
+# --- Distribución de Node.js / Freebuff presente en esta carpeta ---
+# El backend Python vive dentro de la carpeta de instalación de Node.js; esos
+# archivos son del propio runtime y no forman parte del proyecto.
+node_modules/
+node.exe
+pnpm.exe
+npm
+npm.cmd
+npm.ps1
+npx
+npx.cmd
+npx.ps1
+corepack
+corepack.cmd
+install_tools.bat
+nodevars.bat
+freebuff
+freebuff.cmd
+freebuff.ps1
+opencode
+opencode.cmd
+opencode.ps1
+opencode2
+opencode2.cmd
+opencode2.ps1
+CHANGELOG.md
+LICENSE
+
+# --- Sistema / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
