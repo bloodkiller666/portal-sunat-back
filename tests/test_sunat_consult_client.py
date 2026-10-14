@@ -70,6 +70,18 @@ def _respuesta_status(codigo: str, mensaje: str) -> str:
     )
 
 
+def _respuesta_status_ar(codigo: str, mensaje: str) -> str:
+    """Respuesta de `billService.getStatusAR` (la sonda de beta)."""
+    return _envelope(
+        '<ns:getStatusResponseAR xmlns:ns="http://service.sunat.gob.pe">'
+        "<ns:status>"
+        f"<ns:statusCode>{codigo}</ns:statusCode>"
+        f"<ns:statusMessage>{mensaje}</ns:statusMessage>"
+        "</ns:status>"
+        "</ns:getStatusResponseAR>"
+    )
+
+
 def _fault(texto: str, codigo: str = "soap-env:Client") -> str:
     return _envelope(
         "<soapenv:Fault>"
@@ -124,17 +136,17 @@ def test_get_status_cdr_sin_cdr_disponible() -> None:
 
 
 @respx.mock
-def test_envia_monto_total_solo_cuando_se_usa() -> None:
+def test_no_envia_monto_total_y_manda_el_numero_entero() -> None:
     ruta = respx.post(ENDPOINT_CONSULTA).mock(
         return_value=httpx.Response(200, text=_respuesta_status_cdr("0", "aceptada"))
     )
     client = SunatConsultClient(_credenciales(), _settings())
 
-    client.get_status_cdr(
-        tipo_comprobante="01", serie="F001", numero="00000001", monto_total="118.00"
-    )
+    client.get_status_cdr(tipo_comprobante="01", serie="F001", numero="00000001")
     body = ruta.calls.last.request.content.decode()
-    assert "montoTotal" in body
+    # El WSDL real de producción no declara montoTotal.
+    assert "montoTotal" not in body
+    assert "numeroComprobante" in body
     assert "F001" in body
 
 
@@ -253,16 +265,21 @@ def test_prueba_de_disponibilidad_en_produccion_usa_billconsultservice() -> None
 def test_prueba_de_disponibilidad_en_beta_usa_billservice() -> None:
     settings = _settings(sunat_env=SunatAmbiente.beta, sunat_bill_service_url=ENDPOINT_BILL)
     ruta = respx.post(ENDPOINT_BILL).mock(
-        return_value=httpx.Response(200, text=_respuesta_status("0", "El archivo no existe"))
+        return_value=httpx.Response(200, text=_respuesta_status_ar("0", "El archivo no existe"))
     )
     client = SunatConsultClient(_credenciales(), settings)
 
     resultado = client.check_availability()
 
     assert resultado.autenticado is True
+    assert resultado.metodo == "getStatusAR"
     assert resultado.endpoint == ENDPOINT_BILL
-    # La sonda usa el nombre de archivo con la nomenclatura de SUNAT.
-    assert "20123456789-01-F001-1.zip" in ruta.calls.last.request.content.decode()
+    assert resultado.codigo == "0"
+    # La sonda consulta por documento, no por nombre de archivo.
+    enviado = ruta.calls.last.request.content.decode()
+    assert "getStatusAR" in enviado
+    assert RUC in enviado
+    assert "F001" in enviado
 
 
 @respx.mock

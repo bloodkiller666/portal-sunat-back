@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -208,7 +207,8 @@ def test_envia_los_datos_del_comprobante_a_sunat(
     assert llamada["tipo_comprobante"] == "01"
     assert llamada["serie"] == "F001"
     assert llamada["numero"] == "00000001"
-    assert llamada["monto_total"] == Decimal("118.00")
+    # El WSDL real de getStatusCdr no declara montoTotal (lo confirmamos en prod).
+    assert "monto_total" not in llamada
 
 
 def test_la_respuesta_no_expone_tramas_ni_credenciales(

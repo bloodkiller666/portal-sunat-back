@@ -1,0 +1,57 @@
+# Secretos: nunca entran a la imagen (regla 1).
+.env
+.env.*
+!.env.example
+secrets/
+*.pfx
+*.p12
+*.pem
+*.key
+*.crt
+*.cer
+
+# Pruebas, documentación y demo: no son parte del runtime.
+tests/
+demo/
+*.md
+!README.md
+supabase/migrations/*.md
+
+# WSDL descargados y cachés locales.
+cpe-wsdl/
+*.wsdl
+*.xsd
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Control de versiones y herramientas.
+.git/
+.gitignore
+.github/
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Runtime de Node/Freebuff presente en esta carpeta (no es parte del backend).
+node_modules/
+dist/
+node.exe
+npm*
+npx*
+pnpm.exe
+corepack*
+opencode*
+freebuff*
+claude*
+nodevars.bat
+install_tools.bat
+package.json
+pnpm-lock.yaml

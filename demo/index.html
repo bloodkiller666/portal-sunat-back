@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Demo · Portal de Facturación Electrónica</title>
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #171e2e;
+    --panel-2: #1e2740;
+    --border: #2a3550;
+    --text: #e6ebf5;
+    --muted: #93a0bb;
+    --accent: #4c8dff;
+    --ok: #2ecc71;
+    --warn: #f5a623;
+    --err: #ff5c7a;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    line-height: 1.45;
+  }
+  header {
+    padding: 18px 24px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: 380px 1fr; gap: 0; min-height: calc(100vh - 61px); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  aside { padding: 18px; border-right: 1px solid var(--border); overflow: auto; }
+  section.results { padding: 18px; overflow: auto; }
+  fieldset { border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin: 0 0 14px; }
+  legend { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; padding: 0 6px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 3px; }
+  input[type=text], input[type=password], input[type=email], input[type=url], input[type=file] {
+    width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text); font-size: 13px; font-family: var(--mono);
+  }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  button {
+    cursor: pointer; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel-2); color: var(--text); padding: 8px 12px; font-size: 13px;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .badge { display: inline-block; min-width: 42px; text-align: center; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; font-family: var(--mono); }
+  .badge.ok { background: rgba(46,204,113,.15); color: var(--ok); }
+  .badge.warn { background: rgba(245,166,35,.15); color: var(--warn); }
+  .badge.err { background: rgba(255,92,122,.15); color: var(--err); }
+  .step { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; background: var(--panel); overflow: hidden; }
+  .step .head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; }
+  .step .head .name { font-weight: 600; font-size: 14px; }
+  .step .head .ep { color: var(--muted); font-size: 12px; font-family: var(--mono); margin-left: auto; }
+  .step .body { border-top: 1px solid var(--border); padding: 10px 12px; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 12px; color: #cdd6ea; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .kpis { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; min-width: 120px; }
+  .kpi .v { font-size: 20px; font-weight: 700; }
+  .kpi .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  code { font-family: var(--mono); background: var(--panel-2); padding: 1px 5px; border-radius: 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Demo · Portal de Facturación Electrónica</h1>
+  <span class="sub">Backend FastAPI + Supabase Auth + SUNAT (consulta). Sin frontend: esta página hace de cliente.</span>
+</header>
+
+<main>
+  <aside>
+    <fieldset>
+      <legend>Backend</legend>
+      <label for="apiBase">Base de la API</label>
+      <input id="apiBase" type="url" value="http://127.0.0.1:8000" />
+      <div class="hint">Debe coincidir con el origen en <code>CORS_ORIGINS</code>.</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Supabase (login)</legend>
+      <label for="supabaseUrl">SUPABASE_URL</label>
+      <input id="supabaseUrl" type="url" placeholder="https://xxxx.supabase.co" />
+      <label for="anonKey">SUPABASE_ANON_KEY</label>
+      <input id="anonKey" type="password" placeholder="eyJhbGciOi..." />
+      <label for="email">Email</label>
+      <input id="email" type="email" placeholder="demo@empresa.pe" />
+      <label for="password">Contraseña</label>
+      <input id="password" type="password" />
+      <div class="row">
+        <button id="btnLogin" class="primary">Iniciar sesión</button>
+      </div>
+      <div class="hint" id="loginState">Sin sesión.</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Datos</legend>
+      <label for="ruc">RUC (opcional)</label>
+      <input id="ruc" type="text" placeholder="se toma de /companies" />
+      <label for="token">Token (se llena al iniciar sesión)</label>
+      <input id="token" type="password" placeholder="Bearer token" />
+      <div class="hint">También puedes pegar un token a mano.</div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Acciones</legend>
+      <div class="row">
+        <button id="btnAll" class="primary">Ejecutar demostración</button>
+        <button id="btnClear">Limpiar</button>
+      </div>
+      <label for="xml">XML UBL para importar (opcional)</label>
+      <input id="xml" type="file" accept=".xml,application/xml" />
+      <div class="hint">Sin archivo se usa <code>demo/factura-demo.xml</code>, con el RUC de la
+        empresa y el correlativo siguiente ya sustituidos.</div>
+    </fieldset>
+  </aside>
+
+  <section class="results">
+    <div class="kpis">
+      <div class="kpi"><div class="v" id="kpiOk">0</div><div class="k">OK</div></div>
+      <div class="kpi"><div class="v" id="kpiErr">0</div><div class="k">Fallos</div></div>
+      <div class="kpi"><div class="v" id="kpiMs">0</div><div class="k">ms totales</div></div>
+      <div class="kpi"><div class="v" id="kpiRuc">—</div><div class="k">RUC</div></div>
+    </div>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script src="vendor/supabase.js"></script>
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const log = $("log");
+let sb = null;
+let token = "";
+let ruc = "";
+let comprobanteId = "";
+const stats = { ok: 0, err: 0, ms: 0 };
+
+const CAMPOS = ["apiBase", "supabaseUrl", "anonKey", "email", "ruc"];
+
+function cargarConfig() {
+  try {
+    const cfg = JSON.parse(localStorage.getItem("demo-config") || "{}");
+    for (const k of CAMPOS) if (cfg[k]) $(k).value = cfg[k];
+  } catch (_) { /* configuración corrupta: se ignora */ }
+}
+function guardarConfig() {
+  const cfg = {};
+  for (const k of CAMPOS) cfg[k] = $(k).value;
+  localStorage.setItem("demo-config", JSON.stringify(cfg));
+}
+
+function pintarKpis() {
+  $("kpiOk").textContent = stats.ok;
+  $("kpiErr").textContent = stats.err;
+  $("kpiMs").textContent = stats.ms;
+  $("kpiRuc").textContent = ruc || "—";
+}
+
+function claseStatus(status) {
+  if (status >= 200 && status < 300) return "ok";
+  if (status === 401 || status === 403 || status === 404 || status === 409) return "warn";
+  return "err";
+}
+
+function limpiar() {
+  log.innerHTML = "";
+  stats.ok = 0; stats.err = 0; stats.ms = 0;
+  pintarKpis();
+}
+
+function addStep(nombre, metodo, ruta, status, ms, cuerpo) {
+  const esOk = status >= 200 && status < 300;
+  if (esOk) stats.ok++; else stats.err++;
+  stats.ms += ms;
+  pintarKpis();
+
+  const el = document.createElement("div");
+  el.className = "step";
+  const details = document.createElement("details");
+  details.open = !esOk;
+  details.innerHTML = `
+    <summary class="head">
+      <span class="badge ${claseStatus(status)}">${status || "ERR"}</span>
+      <span class="name">${nombre}</span>
+      <span class="ep">${metodo} ${ruta}</span>
+    </summary>
+    <div class="body">
+      <div class="muted">${ms} ms</div>
+      <pre>${escapar(typeof cuerpo === "string" ? cuerpo : JSON.stringify(cuerpo, null, 2))}</pre>
+    </div>`;
+  el.appendChild(details);
+  log.appendChild(el);
+}
+
+function escapar(s) {
+  return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+async function api(nombre, metodo, ruta, { auth = true, body = null, raw = false } = {}) {
+  const base = $("apiBase").value.replace(/\/$/, "");
+  const headers = {};
+  if (auth) {
+    if (!token) { addStep(nombre, metodo, ruta, 0, 0, "Sin token. Inicia sesión primero."); return null; }
+    headers["Authorization"] = "Bearer " + token;
+  }
+  if (body && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
+
+  const t0 = performance.now();
+  try {
+    const res = await fetch(base + ruta, {
+      method: metodo,
+      headers,
+      body: body instanceof FormData ? body : (body ? JSON.stringify(body) : undefined),
+    });
+    const ms = Math.round(performance.now() - t0);
+    const texto = await res.text();
+    let json = texto;
+    try { json = texto ? JSON.parse(texto) : null; } catch (_) { /* respuesta no JSON */ }
+    addStep(nombre, metodo, ruta, res.status, ms, json);
+    return { ok: res.ok, status: res.status, data: json };
+  } catch (err) {
+    const ms = Math.round(performance.now() - t0);
+    addStep(nombre, metodo, ruta, 0, ms, "Error de red/CORS: " + err.message +
+      "\n¿El backend está corriendo y CORS_ORIGINS incluye este origen?");
+    return null;
+  }
+}
+
+async function login() {
+  const url = $("supabaseUrl").value.trim();
+  const key = $("anonKey").value.trim();
+  if (!url || !key) { $("loginState").textContent = "Falta SUPABASE_URL o la anon key."; return; }
+  guardarConfig();
+
+  sb = window.supabase.createClient(url, key);
+  const { data, error } = await sb.auth.signInWithPassword({
+    email: $("email").value.trim(),
+    password: $("password").value,
+  });
+  if (error) {
+    $("loginState").textContent = "Error de login: " + error.message;
+    $("loginState").style.color = "var(--err)";
+    return;
+  }
+  token = data.session.access_token;
+  $("token").value = token;
+  $("loginState").textContent = "Sesión iniciada como " + data.user.email + " (" + data.user.id + ")";
+  $("loginState").style.color = "var(--ok)";
+}
+
+async function demoCompleta() {
+  limpiar();
+  if (!token) { await login(); if (!token) return; }
+  guardarConfig();
+
+  await api("Salud del servicio", "GET", "/health", { auth: false });
+
+  const empresas = await api("Empresas del usuario", "GET", "/api/v1/companies");
+  if (empresas?.ok && empresas.data.items?.length) {
+    ruc = ($("ruc").value.trim() || empresas.data.items[0].ruc);
+    $("ruc").value = ruc;
+    pintarKpis();
+  } else {
+    ruc = $("ruc").value.trim();
+  }
+  if (!ruc) { addStep("Falta RUC", "-", "-", 0, 0, "El usuario no tiene empresas; define un RUC."); return; }
+
+  await api("Probar conexión SUNAT", "GET", `/api/v1/companies/${ruc}/sunat/status`);
+
+  const lista = await api("Listar comprobantes", "GET", `/api/v1/companies/${ruc}/comprobantes`);
+  comprobanteId = lista?.data?.items?.[0]?.id || "";
+
+  if (comprobanteId) {
+    await api("Refrescar estado/CDR", "POST", `/api/v1/comprobantes/${comprobanteId}/refresh-cdr`);
+  } else {
+    addStep("Refrescar estado/CDR", "POST", "/api/v1/comprobantes/{id}/refresh-cdr", 0, 0,
+      "No hay comprobantes para refrescar. Importa uno primero.");
+  }
+
+  await importarXml();
+}
+
+async function siguienteCorrelativo() {
+  const base = $("apiBase").value.replace(/\/$/, "");
+  const res = await fetch(`${base}/api/v1/companies/${ruc}/comprobantes?limit=100`, {
+    headers: { Authorization: "Bearer " + token },
+  });
+  if (!res.ok) return 1;
+  const datos = await res.json();
+  const usados = (datos.items || []).filter((i) => i.serie === "F001").map((i) => i.correlativo);
+  return (usados.length ? Math.max(...usados) : 0) + 1;
+}
+
+async function importarXml() {
+  const archivo = $("xml").files[0];
+  let texto;
+  let nombre;
+  if (archivo) {
+    texto = await archivo.text();
+    nombre = archivo.name;
+  } else {
+    texto = await (await fetch("factura-demo.xml")).text();
+    const correlativo = await siguienteCorrelativo();
+    texto = texto
+      .replace(/20123456789/g, ruc)
+      .replace(/F001-00000001/g, `F001-${String(correlativo).padStart(8, "0")}`);
+    nombre = "factura-demo.xml";
+  }
+  const form = new FormData();
+  form.append("archivo", new Blob([texto], { type: "application/xml" }), nombre);
+  await api("Importar XML UBL", "POST", `/api/v1/companies/${ruc}/comprobantes/import`, { body: form });
+}
+
+$("btnLogin").addEventListener("click", async () => { await login(); });
+$("btnAll").addEventListener("click", async () => { await demoCompleta(); });
+$("btnClear").addEventListener("click", limpiar);
+for (const k of CAMPOS) $(k).addEventListener("change", guardarConfig);
+$("token").addEventListener("input", (e) => { token = e.target.value.trim(); });
+
+cargarConfig();
+</script>
+</body>
+</html>

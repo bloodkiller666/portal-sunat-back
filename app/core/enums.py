@@ -46,6 +46,27 @@ _ETIQUETAS_ESTADO: dict[EstadoComprobante, str] = {
 }
 
 
+class OrigenComprobante(StrEnum):
+    """De quién es el comprobante dentro del portal.
+
+    `emitido` es de la empresa (el emisor es su RUC); `recibido` es una compra a
+    un tercero, que se archiva para el registro de compras.
+    """
+
+    emitido = "emitido"
+    recibido = "recibido"
+
+    @property
+    def etiqueta(self) -> str:
+        return _ETIQUETAS_ORIGEN[self]
+
+
+_ETIQUETAS_ORIGEN: dict[OrigenComprobante, str] = {
+    OrigenComprobante.emitido: "Emitido",
+    OrigenComprobante.recibido: "Recibido",
+}
+
+
 class TipoOperacionSunat(StrEnum):
     """Tipo de interacción con SUNAT que se registra en `sunat_envios`."""
 

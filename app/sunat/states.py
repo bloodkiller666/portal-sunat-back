@@ -30,35 +30,56 @@ from app.sunat.models import CdrInfo
 
 CODIGO_ACEPTADO = "0"
 CODIGO_EN_PROCESO = "98"
+# SUNAT responde con este código cuando el comprobante todavía no obra en sus
+# registros: no es un rechazo, es que aún no lo ha recibido. `0011` es el que
+# devuelve hoy `billConsultService.getStatus` ("El comprobante de pago
+# electrónico no existe"); `1033` aparece en otras variantes/documentación.
+CODIGO_NO_INFORMADO = "1033"
+CODIGO_NO_EXISTE = "0011"
+# `getStatusCdr` devuelve este código cuando el comprobante no tiene ticket de
+# consulta asociado (respuesta observada en producción).
+CODIGO_TICKET_NO_EXISTE = "0127"
 
-_CODIGOS_CON_TABLA = frozenset({CODIGO_ACEPTADO, CODIGO_EN_PROCESO})
+# Códigos que, sin importar el mensaje, significan "todavía no disponible".
+_CODIGOS_PENDIENTES = frozenset(
+    {CODIGO_EN_PROCESO, CODIGO_NO_INFORMADO, CODIGO_NO_EXISTE, CODIGO_TICKET_NO_EXISTE}
+)
 
 # Cuando el código no está en la tabla, el mensaje decide: SUNAT avisa que el
 # comprobante todavía no obra en sus registros (no es un rechazo).
 _PATRONES_EN_PROCESO = (
     re.compile(r"en\s+proceso", re.IGNORECASE),
-    re.compile(r"no\s+(se\s+)?(existe|encontr|ubica)", re.IGNORECASE),
-    re.compile(r"no\s+ha\s+sido\s+(enviad|informad|recibid)", re.IGNORECASE),
+    re.compile(r"no\s+(se\s+)?(existe|encontr|ubica|registra)", re.IGNORECASE),
+    re.compile(r"sin\s+registro", re.IGNORECASE),
+    re.compile(r"no\s+hay\s+registro", re.IGNORECASE),
+    re.compile(r"no\s+ha\s+sido\s+(enviad|informad|recibid|remitid)", re.IGNORECASE),
+    re.compile(r"no\s+informad", re.IGNORECASE),
+    re.compile(r"no\s+remitid", re.IGNORECASE),
+    re.compile(r"a[uú]n\s+no", re.IGNORECASE),
     re.compile(r"pendiente\s+de", re.IGNORECASE),
+    re.compile(r"por\s+informar", re.IGNORECASE),
 )
 
 
 def map_codigo_a_estado(codigo: str | None, mensaje: str | None = None) -> EstadoComprobante:
-    """Traduce un código de SUNAT al estado del frontend."""
+    """Traduce un código de SUNAT al estado del frontend.
+
+    Reglas, en orden: código aceptado -> Aprobado; código/mensaje que indica que
+    SUNAT todavía no tiene el comprobante -> Pendiente; cualquier otra cosa ->
+    Rechazado.
+    """
     if codigo is None:
         return EstadoComprobante.pendiente
 
     normalizado = codigo.strip()
+    if not normalizado:
+        return EstadoComprobante.pendiente
     if normalizado == CODIGO_ACEPTADO:
         return EstadoComprobante.aprobado
-    if normalizado == CODIGO_EN_PROCESO:
+    if normalizado in _CODIGOS_PENDIENTES:
         return EstadoComprobante.pendiente
 
-    if (
-        normalizado not in _CODIGOS_CON_TABLA
-        and mensaje
-        and any(patron.search(mensaje) for patron in _PATRONES_EN_PROCESO)
-    ):
+    if mensaje and any(patron.search(mensaje) for patron in _PATRONES_EN_PROCESO):
         return EstadoComprobante.pendiente
 
     return EstadoComprobante.rechazado

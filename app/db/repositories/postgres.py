@@ -6,32 +6,51 @@ claims del usuario y el rol `authenticated`.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 from uuid import UUID
 
 import asyncpg
 
-from app.core.enums import EstadoComprobante
+from app.core.enums import EstadoComprobante, OrigenComprobante
+from app.core.errors import ConflictError
 from app.db.models import (
     Archivo,
+    ArchivoRegistro,
     Company,
     CompanyMember,
     Comprobante,
+    ComprobanteItem,
+    ComprobanteItemRegistro,
+    ComprobanteRegistro,
     Membership,
     SunatEnvio,
     SunatEnvioRegistro,
 )
 
 _COLUMNAS_COMPROBANTE = """
-    id, company_id, ruc_emisor, tipo_documento, serie, correlativo, numero, nombre_archivo,
+    id, company_id, origen, ruc_emisor, ruc_receptor, receptor_doc, razon_social_emisor,
+    razon_social_receptor, tipo_documento, serie, correlativo, numero, nombre_archivo,
     fecha_emision, moneda, monto_total, estado, sunat_ambiente, n_sap, orden_compra, check_sap,
     cdr_codigo, cdr_descripcion, cdr_notas, cdr_fecha, ultimo_envio_at, anulado_at,
     motivo_anulacion, created_at, updated_at, created_by
 """
 
+_COLUMNAS_ITEM = """
+    id, comprobante_id, item_nro, codigo, descripcion, unidad_medida, cantidad,
+    valor_unitario, precio_unitario, descuento, igv, isc, tip_afectacion_igv, total,
+    created_at, updated_at
+"""
+
 
 def _row(record: asyncpg.Record | None) -> dict[str, Any] | None:
     return dict(record) if record is not None else None
+
+
+def _patron_like(texto: str) -> str:
+    """Patrón `contains` para `ilike`, con los comodines del usuario escapados."""
+    escapado = texto.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escapado}%"
 
 
 class PostgresCompaniesRepository:
@@ -52,7 +71,7 @@ class PostgresCompaniesRepository:
             user_id,
         )
         return [
-            CompanyMember(company=Company.model_validate(record), rol=record["rol"])
+            CompanyMember(company=Company.model_validate(dict(record)), rol=record["rol"])
             for record in records
         ]
 
@@ -96,6 +115,100 @@ class PostgresComprobantesRepository:
         data = _row(record)
         return Comprobante.model_validate(data) if data else None
 
+    async def list_for_company(
+        self,
+        company_id: UUID,
+        *,
+        estado: EstadoComprobante | None = None,
+        origen: OrigenComprobante | None = None,
+        fecha_desde: date | None = None,
+        fecha_hasta: date | None = None,
+        tipo_documento: str | None = None,
+        serie: str | None = None,
+        q: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Comprobante]:
+        condiciones = ["company_id = $1"]
+        parametros: list[object] = [company_id]
+        if estado is not None:
+            parametros.append(estado.value)
+            condiciones.append(f"estado = ${len(parametros)}")
+        if origen is not None:
+            parametros.append(origen.value)
+            condiciones.append(f"origen = ${len(parametros)}")
+        if fecha_desde is not None:
+            parametros.append(fecha_desde)
+            condiciones.append(f"fecha_emision >= ${len(parametros)}")
+        if fecha_hasta is not None:
+            parametros.append(fecha_hasta)
+            condiciones.append(f"fecha_emision <= ${len(parametros)}")
+        if tipo_documento is not None:
+            parametros.append(tipo_documento)
+            condiciones.append(f"tipo_documento = ${len(parametros)}")
+        if serie is not None:
+            parametros.append(serie)
+            condiciones.append(f"serie = ${len(parametros)}")
+        if q is not None:
+            parametros.append(_patron_like(q))
+            condiciones.append(f"nombre_archivo ilike ${len(parametros)} escape '\\'")
+        parametros.extend([limit, offset])
+        limite_idx = len(parametros) - 1
+        offset_idx = len(parametros)
+        records = await self._connection.fetch(
+            f"""
+            select {_COLUMNAS_COMPROBANTE}
+            from public.comprobantes
+            where {" and ".join(condiciones)}
+            order by fecha_emision desc nulls last, correlativo desc
+            limit ${limite_idx} offset ${offset_idx}
+            """,
+            *parametros,
+        )
+        return [Comprobante.model_validate(_row(record)) for record in records]
+
+    async def create(self, registro: ComprobanteRegistro) -> Comprobante:
+        try:
+            record = await self._connection.fetchrow(
+                f"""
+                insert into public.comprobantes (
+                    company_id, origen, ruc_emisor, ruc_receptor, receptor_doc,
+                    razon_social_emisor, razon_social_receptor, tipo_documento, serie,
+                    correlativo, numero, nombre_archivo, fecha_emision, moneda, monto_total,
+                    estado, sunat_ambiente, created_by
+                )
+                values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                        $16, $17, $18)
+                returning {_COLUMNAS_COMPROBANTE}
+                """,
+                registro.company_id,
+                registro.origen.value,
+                registro.ruc_emisor,
+                registro.ruc_receptor,
+                registro.receptor_doc,
+                registro.razon_social_emisor,
+                registro.razon_social_receptor,
+                registro.tipo_documento,
+                registro.serie,
+                registro.correlativo,
+                registro.numero,
+                registro.nombre_archivo,
+                registro.fecha_emision,
+                registro.moneda,
+                registro.monto_total,
+                registro.estado.value,
+                registro.sunat_ambiente.value,
+                registro.created_by,
+            )
+        except asyncpg.UniqueViolationError as exc:
+            # Restricción comprobantes_unicos_por_ambiente.
+            raise ConflictError(
+                "Ese comprobante ya está registrado para la empresa en el mismo ambiente"
+            ) from exc
+        data = _row(record)
+        assert data is not None
+        return Comprobante.model_validate(data)
+
     async def update_sunat_state(
         self,
         comprobante_id: UUID,
@@ -108,7 +221,7 @@ class PostgresComprobantesRepository:
         record = await self._connection.fetchrow(
             """
             update public.comprobantes
-               set estado = $2,
+               set estado = $2::public.estado_comprobante,
                    cdr_codigo = coalesce($3, cdr_codigo),
                    cdr_descripcion = coalesce($4, cdr_descripcion),
                    cdr_notas = case
@@ -117,17 +230,14 @@ class PostgresComprobantesRepository:
                    end,
                    cdr_fecha = case when $3 is null then cdr_fecha else now() end,
                    anulado_at = case
-                       when $2 = 'anulado' then coalesce(anulado_at, now())
+                       when $2::public.estado_comprobante = 'anulado'
+                           then coalesce(anulado_at, now())
                        else anulado_at
                    end,
                    ultimo_envio_at = now(),
                    updated_at = now()
              where id = $1
-            returning id, company_id, ruc_emisor, tipo_documento, serie, correlativo, numero,
-                      nombre_archivo, fecha_emision, moneda, monto_total, estado, sunat_ambiente,
-                      n_sap, orden_compra, check_sap, cdr_codigo, cdr_descripcion, cdr_notas,
-                      cdr_fecha, ultimo_envio_at, anulado_at, motivo_anulacion, created_at,
-                      updated_at, created_by
+            returning {_COLUMNAS_COMPROBANTE}
             """,
             comprobante_id,
             estado.value,
@@ -141,6 +251,63 @@ class PostgresComprobantesRepository:
 
             raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
         return Comprobante.model_validate(data)
+
+
+class PostgresComprobanteItemsRepository:
+    """Líneas del detalle (`comprobante_items`), bajo las mismas políticas RLS."""
+
+    def __init__(self, connection: asyncpg.Connection) -> None:
+        self._connection = connection
+
+    async def create_many(
+        self, registros: list[ComprobanteItemRegistro]
+    ) -> list[ComprobanteItem]:
+        if not registros:
+            return []
+        filas = [
+            (
+                registro.comprobante_id,
+                registro.item_nro,
+                registro.codigo,
+                registro.descripcion,
+                registro.unidad_medida,
+                registro.cantidad,
+                registro.valor_unitario,
+                registro.precio_unitario,
+                registro.descuento,
+                registro.igv,
+                registro.isc,
+                registro.tip_afectacion_igv,
+                registro.total,
+            )
+            for registro in registros
+        ]
+        # `executemany` no soporta RETURNING: se releen al final, en la misma
+        # transacción de la petición.
+        await self._connection.executemany(
+            """
+            insert into public.comprobante_items (
+                comprobante_id, item_nro, codigo, descripcion, unidad_medida, cantidad,
+                valor_unitario, precio_unitario, descuento, igv, isc,
+                tip_afectacion_igv, total
+            )
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            """,
+            filas,
+        )
+        return await self.list_for_comprobante(registros[0].comprobante_id)
+
+    async def list_for_comprobante(self, comprobante_id: UUID) -> list[ComprobanteItem]:
+        records = await self._connection.fetch(
+            f"""
+            select {_COLUMNAS_ITEM}
+            from public.comprobante_items
+            where comprobante_id = $1
+            order by item_nro
+            """,
+            comprobante_id,
+        )
+        return [ComprobanteItem.model_validate(_row(record)) for record in records]
 
 
 class PostgresSunatEnviosRepository:
@@ -200,10 +367,17 @@ class PostgresSunatEnviosRepository:
 
 
 class PostgresArchivosRepository:
-    """Solo lectura por ahora: la carga a SharePoint es de una fase posterior."""
+    """Referencias de archivos en Cloudflare R2 (bucket privado)."""
 
     def __init__(self, connection: asyncpg.Connection) -> None:
         self._connection = connection
+
+    async def get(self, archivo_id: UUID) -> Archivo | None:
+        record = await self._connection.fetchrow(
+            "select * from public.archivos where id = $1", archivo_id
+        )
+        data = _row(record)
+        return Archivo.model_validate(data) if data else None
 
     async def list_for_comprobante(self, comprobante_id: UUID) -> list[Archivo]:
         records = await self._connection.fetch(
@@ -211,3 +385,30 @@ class PostgresArchivosRepository:
             comprobante_id,
         )
         return [Archivo.model_validate(_row(record)) for record in records]
+
+    async def registrar(self, registro: ArchivoRegistro) -> Archivo:
+        record = await self._connection.fetchrow(
+            """
+            insert into public.archivos (
+                company_id, comprobante_id, tipo, nombre, mime_type, size_bytes, hash_sha256,
+                storage_provider, storage_bucket, storage_key, estado, error_detalle, subido_at
+            )
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
+            returning *
+            """,
+            registro.company_id,
+            registro.comprobante_id,
+            registro.tipo.value,
+            registro.nombre,
+            registro.mime_type,
+            registro.size_bytes,
+            registro.hash_sha256,
+            registro.storage_provider,
+            registro.storage_bucket,
+            registro.storage_key,
+            registro.estado.value,
+            registro.error_detalle,
+        )
+        data = _row(record)
+        assert data is not None
+        return Archivo.model_validate(data)

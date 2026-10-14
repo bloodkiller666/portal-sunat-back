@@ -37,6 +37,8 @@ def test_existen_las_migraciones_en_orden() -> None:
         "0001_schema.sql",
         "0002_functions_triggers.sql",
         "0003_rls.sql",
+        "0004_archivos_storage.sql",
+        "0005_comprobantes_recibidos.sql",
     ]
 
 
@@ -132,15 +134,21 @@ def test_comprobantes_tiene_los_campos_del_frontend() -> None:
         assert columna in sql
 
 
-def test_archivos_referencia_sharepoint() -> None:
-    sql = _leer("0001_schema.sql")
-    for columna in (
-        "sharepoint_drive_id",
-        "sharepoint_item_id",
-        "sharepoint_web_url",
-        "hash_sha256",
-    ):
-        assert columna in sql
+def test_archivos_referencian_el_objeto_en_r2() -> None:
+    sql = _leer("0004_archivos_storage.sql")
+    for columna in ("storage_provider", "storage_bucket", "storage_key"):
+        assert f"add column if not exists {columna}" in sql
+    assert "URL firmada" in sql
+
+
+def test_comprobantes_distinguen_emitidos_de_recibidos() -> None:
+    sql = _leer("0005_comprobantes_recibidos.sql")
+    assert "create type public.origen_comprobante as enum ('emitido', 'recibido')" in sql
+    for columna in ("origen", "ruc_receptor", "receptor_doc", "razon_social_emisor"):
+        assert f"add column {columna}" in sql
+    # La unicidad debe separar ventas de compras: la misma numeración puede
+    # existir como emitida y como recibida.
+    assert "unique (company_id, origen, tipo_documento, serie, correlativo, sunat_ambiente)" in sql
 
 
 def test_no_hay_columnas_de_credenciales() -> None:

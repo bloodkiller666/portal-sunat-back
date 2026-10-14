@@ -17,7 +17,9 @@ incompleta.
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
+from urllib.parse import urljoin
 
 import httpx
 from lxml import etree
@@ -32,10 +34,10 @@ logger = get_logger(__name__)
 _ELEMENTOS_CON_IMPORTS = frozenset({"import", "include", "redefine"})
 
 
-def _imports_absolutos(root: etree._Element) -> list[tuple[etree._Element, str, str]]:
-    """Devuelve los imports/includes que apuntan a URLs absolutas.
+def _referencias_imports(root: etree._Element) -> list[tuple[etree._Element, str, str]]:
+    """Devuelve los imports/includes y su referencia tal cual está escrita.
 
-    Solo se consideran `wsdl:import`/`xsd:import`/`xsd:include`; el
+    Solo se consideran `wsdl:import`/`xsd:import`/`xsd:include`/`xsd:redefine`; el
     `soap:address location` es la dirección del servicio, no un documento, y no
     debe reescribirse.
     """
@@ -47,7 +49,7 @@ def _imports_absolutos(root: etree._Element) -> list[tuple[etree._Element, str, 
             continue
         for atributo in ("location", "schemaLocation"):
             valor = elemento.get(atributo)
-            if valor and valor.startswith(("http://", "https://")):
+            if valor:
                 encontrados.append((elemento, atributo, valor))
                 break
     return encontrados
@@ -92,20 +94,30 @@ class WsdlLoader:
         visitados.add(url)
 
         texto = self._descargar(url)
-        contenido = self._reescribir_imports(texto, destino, visitados)
+        contenido = self._reescribir_imports(texto, destino, visitados, url)
         destino.parent.mkdir(parents=True, exist_ok=True)
         destino.write_text(contenido, encoding="utf-8")
         logger.info("WSDL de SUNAT guardado localmente (%s)", destino.name)
 
-    def _reescribir_imports(self, texto: str, destino: Path, visitados: set[str]) -> str:
-        """Copia los documentos importados junto al WSDL y apunta a ellos."""
+    def _reescribir_imports(
+        self, texto: str, destino: Path, visitados: set[str], url_documento: str
+    ) -> str:
+        """Copia los documentos importados junto al WSDL y apunta a ellos.
+
+        Las referencias relativas se resuelven contra la URL del documento que
+        las declara (los WSDL de SUNAT usan imports relativos como
+        `billService?ns1.wsdl`).
+        """
         try:
             root = etree.fromstring(texto.encode("utf-8"))
         except etree.XMLSyntaxError:
             logger.warning("El documento descargado no es XML válido; se guarda tal cual")
             return texto
 
-        for elemento, atributo, url_importada in _imports_absolutos(root):
+        for elemento, atributo, referencia in _referencias_imports(root):
+            url_importada = urljoin(url_documento, referencia)
+            if not url_importada.startswith(("http://", "https://")):
+                continue
             nombre_local = _nombre_local(url_importada)
             if url_importada not in visitados:
                 self._descargar_arbol(url_importada, destino.parent / nombre_local, visitados)
@@ -113,18 +125,29 @@ class WsdlLoader:
         return etree.tostring(root, encoding="unicode")
 
     def _descargar(self, url: str) -> str:
+        """Descarga con reintentos: el gateway de SUNAT suele responder 401/5xx
+        esporádeos al pedir los WSDL."""
         cliente = self._client or httpx.Client(timeout=30.0)
+        ultimo_error: httpx.HTTPError | None = None
         try:
-            response = cliente.get(url)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise SunatUnavailableError(
-                "No se pudo descargar el WSDL de SUNAT", details={"endpoint": url}
-            ) from exc
+            for intento in range(3):
+                try:
+                    response = cliente.get(url)
+                    response.raise_for_status()
+                    return response.text
+                except httpx.HTTPError as exc:
+                    ultimo_error = exc
+                    logger.warning(
+                        "Descarga de WSDL falló (intento %s/3): %s", intento + 1, exc
+                    )
+                    if intento < 2:
+                        time.sleep(0.5 * (intento + 1))
         finally:
             if self._client is None:
                 cliente.close()
-        return response.text
+        raise SunatUnavailableError(
+            "No se pudo descargar el WSDL de SUNAT", details={"endpoint": url}
+        ) from ultimo_error
 
 
 def _nombre_local(url: str) -> str:

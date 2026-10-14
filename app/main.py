@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api.routers import companies, comprobantes, health
+from app.api.routers import archivos, companies, comprobantes, health
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, get_logger, get_request_id
@@ -28,6 +28,7 @@ OPENAPI_TAGS = [
     {"name": "salud", "description": "Estado del servicio (público, sin token)."},
     {"name": "empresas", "description": "Empresas del usuario y prueba de credenciales SUNAT."},
     {"name": "comprobantes", "description": "Comprobantes y sincronización del estado con SUNAT."},
+    {"name": "archivos", "description": "XML, PDF y CDR del comprobante en el bucket privado."},
 ]
 
 API_DESCRIPTION = """
@@ -39,8 +40,8 @@ sin intermediarios.
   que el usuario pertenezca a la empresa solicitada.
 * Las credenciales por empresa (usuario y clave SOL, certificado .pfx) se
   resuelven con un `SecretsProvider`; nunca se guardan en la base ni en el código.
-* Esta fase es de **consulta**: la emisión, la firma del XML, el PDF, SharePoint,
-  SAP y el envío por correo están fuera de alcance.
+* Esta fase es de **consulta**: la emisión, la firma del XML, el PDF, SAP y el
+  envío por correo están fuera de alcance.
 """.strip()
 
 
@@ -165,6 +166,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(companies.router, prefix=settings.api_v1_prefix)
     app.include_router(comprobantes.router, prefix=settings.api_v1_prefix)
+    app.include_router(archivos.router, prefix=settings.api_v1_prefix)
 
     logger.info(
         "API lista (%s, SUNAT_ENV=%s, docs=%s)",

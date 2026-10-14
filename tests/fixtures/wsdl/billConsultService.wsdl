@@ -51,8 +51,7 @@
             <xsd:element name="rucComprobante" type="xsd:string"/>
             <xsd:element name="tipoComprobante" type="xsd:string"/>
             <xsd:element name="serieComprobante" type="xsd:string"/>
-            <xsd:element name="numeroComprobante" type="xsd:string"/>
-            <xsd:element name="montoTotal" type="xsd:decimal" minOccurs="0"/>
+            <xsd:element name="numeroComprobante" type="xsd:int"/>
           </xsd:sequence>
         </xsd:complexType>
       </xsd:element>

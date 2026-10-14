@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from app.core.concurrency import run_blocking
 from app.core.config import Settings
 from app.core.enums import RolEmpresa, SunatAmbiente, TipoOperacionSunat
 from app.core.errors import CredentialsNotConfiguredError
@@ -82,7 +83,9 @@ async def check_company_sunat_status(
     )
 
     client = client_factory(credentials, env)
-    resultado = client.check_availability()
+    # La llamada a SUNAT es síncrona (zeep): se ejecuta en un hilo para no
+    # congelar el event loop durante el timeout.
+    resultado = await run_blocking(client.check_availability)
     estado = _estado_desde_resultado(resultado)
 
     intento = await _registrar_intento(

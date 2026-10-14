@@ -1,0 +1,237 @@
+{
+  "info": {
+    "_postman_id": "b7f1c2d4-1e5a-4c33-9a10-0f2b6c9d7e01",
+    "name": "Portal de Facturación Electrónica",
+    "description": "Colección de la API de consulta (SUNAT + Supabase). Ejecuta en orden: 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9. El login guarda el token y el resto de pasos lo reutilizan.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://127.0.0.1:8000" },
+    { "key": "supabase_url", "value": "" },
+    { "key": "supabase_anon_key", "value": "" },
+    { "key": "email", "value": "" },
+    { "key": "password", "value": "" },
+    { "key": "token", "value": "" },
+    { "key": "ruc", "value": "" },
+    { "key": "comprobante_id", "value": "" },
+    { "key": "archivo_id", "value": "" },
+    { "key": "xml_path", "value": "demo/factura-demo.xml" }
+  ],
+  "item": [
+    {
+      "name": "0. Login (Supabase)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const j = pm.response.json();",
+              "pm.test('Devuelve access_token', () => pm.expect(j.access_token).to.be.a('string'));",
+              "if (j.access_token) {",
+              "  pm.collectionVariables.set('token', j.access_token);",
+              "  pm.test('Usuario identificado', () => pm.expect(j.user).to.be.an('object'));",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "apikey", "value": "{{supabase_anon_key}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+        },
+        "url": {
+          "raw": "{{supabase_url}}/auth/v1/token?grant_type=password",
+          "host": ["{{supabase_url}}"],
+          "path": ["auth", "v1", "token"],
+          "query": [{ "key": "grant_type", "value": "password" }]
+        },
+        "description": "Obtiene un JWT de Supabase Auth y lo guarda en {{token}}. Requiere SUPABASE_URL y la anon key del proyecto."
+      }
+    },
+    {
+      "name": "1. Salud",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/health",
+          "host": ["{{base_url}}"],
+          "path": ["health"]
+        },
+        "description": "Público, sin token. No toca base de datos ni SUNAT."
+      }
+    },
+    {
+      "name": "2. Empresas",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const j = pm.response.json();",
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "pm.test('El usuario tiene empresas', () => pm.expect(j.items.length).to.be.above(0));",
+              "if (j.items && j.items.length) {",
+              "  pm.collectionVariables.set('ruc', j.items[0].ruc);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/v1/companies",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "companies"]
+        },
+        "description": "Empresas del usuario y su rol. Guarda el primer RUC en {{ruc}}."
+      }
+    },
+    {
+      "name": "3. Probar conexión SUNAT",
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/v1/companies/{{ruc}}/sunat/status",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "companies", "{{ruc}}", "sunat", "status"]
+        },
+        "description": "Valida credenciales SOL contra SUNAT (solo lectura). Requiere rol admin o emisor."
+      }
+    },
+    {
+      "name": "4. Listar comprobantes",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const j = pm.response.json();",
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "if (j.items && j.items.length) {",
+              "  pm.collectionVariables.set('comprobante_id', j.items[0].id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/v1/companies/{{ruc}}/comprobantes?limit=50&offset=0",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "companies", "{{ruc}}", "comprobantes"],
+          "query": [
+            { "key": "limit", "value": "50" },
+            { "key": "offset", "value": "0" }
+          ]
+        },
+        "description": "Listado paginado. Guarda el primer id en {{comprobante_id}}."
+      }
+    },
+    {
+      "name": "5. Refrescar estado/CDR",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/v1/comprobantes/{{comprobante_id}}/refresh-cdr",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "comprobantes", "{{comprobante_id}}", "refresh-cdr"]
+        },
+        "description": "Consulta SUNAT y actualiza el estado del comprobante. Requiere rol admin o emisor."
+      }
+    },
+    {
+      "name": "6. Importar XML UBL",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "archivo",
+              "type": "file",
+              "src": "{{xml_path}}"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/companies/{{ruc}}/comprobantes/import",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "companies", "{{ruc}}", "comprobantes", "import"]
+        },
+        "description": "Importa una factura UBL. El RUC del XML debe coincidir con {{ruc}}. Revisa que xml_path apunte a un archivo cuyo RUC sea el de la empresa; un duplicado responde 409."
+      }
+    },
+    {
+      "name": "7. Archivos del comprobante",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const j = pm.response.json();",
+              "pm.test('200', () => pm.response.to.have.status(200));",
+              "if (j.items && j.items.length) {",
+              "  pm.collectionVariables.set('archivo_id', j.items[0].id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/v1/comprobantes/{{comprobante_id}}/archivos",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "comprobantes", "{{comprobante_id}}", "archivos"]
+        },
+        "description": "XML, PDF y CDR archivados del comprobante. Guarda el primer archivo en {{archivo_id}}. Si R2 no está configurado, la importación funciona igual pero no habrá archivos."
+      }
+    },
+    {
+      "name": "8. Descargar archivo (URL firmada)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/v1/archivos/{{archivo_id}}/download-url",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "archivos", "{{archivo_id}}", "download-url"]
+        },
+        "description": "Devuelve una URL firmada temporal (bucket privado, 15 min por defecto). Sin credenciales de R2 responde 503 storage_not_configured."
+      }
+    },
+    {
+      "name": "9. Actualizar pendientes (lote)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/v1/companies/{{ruc}}/comprobantes/refresh?limit=25",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "companies", "{{ruc}}", "comprobantes", "refresh"],
+          "query": [{ "key": "limit", "value": "25" }]
+        },
+        "description": "Refresca el estado en SUNAT de los pendientes de la empresa. Si SUNAT cae o rechaza las credenciales, se detiene y lo reporta en detenido_por. Requiere rol admin o emisor."
+      }
+    }
+  ]
+}

@@ -140,4 +140,5 @@ def parse_cdr_zip(content: str | bytes | bytearray) -> CdrInfo:
         raise CdrParseError("No se pudo abrir el ZIP del CDR") from exc
 
     info = parse_cdr_xml(xml)
-    return info.model_copy(update={"archivo": nombres[0]})
+    # El ZIP original se conserva para poder archivarlo tal como lo devolvió SUNAT.
+    return info.model_copy(update={"archivo": nombres[0], "zip_bytes": data})

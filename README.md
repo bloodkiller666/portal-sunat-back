@@ -17,13 +17,14 @@ Backend del portal multiempresa de comprobantes electrónicos del grupo. Se cone
 | B. Migraciones SQL de Supabase + RLS por empresa y rol | Hecho |
 | C. Cliente SOAP con WS-Security: consulta de estado y CDR | Hecho |
 | D. Mapeo de estados SUNAT → frontend (Aprobado/Rechazado/Pendiente/Anulado) | Hecho |
-| E. Endpoints (`/health`, empresas, `sunat/status`, `refresh-cdr`) | Hecho |
+| E. Endpoints (`/health`, empresas, `sunat/status`, `refresh-cdr`, listar/importar comprobantes) | Hecho |
 | F. CORS configurable y OpenAPI en `/docs` | Hecho |
 | G. README de puesta en marcha y pruebas | Hecho |
 
 **Fuera de alcance (interfaces preparadas, sin implementar):** emisión real,
-firma del XML (`signxml`), PDF, SharePoint/Microsoft Graph, SAP, SIRE, guías de
-remisión y envío por correo. Ver `app/integrations/`.
+SAP, SIRE, guías de remisión y envío por correo. Ver `app/integrations/`.
+La **firma XML** (`SunatXmlSigner`) y la **representación impresa en PDF**
+(`SunatPdfRenderer`, vía `GET /comprobantes/{id}/pdf`) ya están implementadas.
 
 ## Estructura
 
@@ -36,9 +37,12 @@ app/
   sunat/                  # endpoints oficiales, cliente SOAP, CDR, mapeo de estados
   db/                     # pool asyncpg con RLS, modelos y repositorios
   secrets/                # SecretsProvider (env) + stub de Azure Key Vault + certificado
-  integrations/           # interfaces pendientes (SharePoint, PDF, SAP, correo, firma)
-supabase/migrations/      # 0001 esquema, 0002 funciones/triggers, 0003 RLS
-tests/                    # 155 pruebas; SUNAT siempre mockeado
+  storage/                # Cloudflare R2 (bucket privado) con URLs firmadas
+  integrations/           # firma XML (implementada), PDF (implementado), SAP y correo (stubs)
+supabase/migrations/      # 0001 esquema, 0002 funciones/triggers, 0003 RLS, 0004 archivos
+Dockerfile                # imagen de producción
+.github/workflows/ci.yml  # lint + pruebas + build de la imagen
+tests/                    # pruebas; SUNAT siempre mockeado
 ```
 
 ## Requisitos
@@ -65,6 +69,7 @@ importantes:
 | `DATABASE_URL` | Conexión Postgres de Supabase (usar el puerto directo 5432 o el pooler en modo sesión). |
 | `CORS_ORIGINS` | Lista separada por comas o JSON. En `staging`/`prod` no se admite `*`. |
 | `SUNAT_CRED_{RUC}_*` | Credenciales por empresa: `SOL_USER`, `SOL_PASSWORD`, `CERT_PATH`, `CERT_PASSWORD` (y `CLIENT_ID`/`CLIENT_SECRET` para la fase REST). |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | Almacenamiento de archivos en Cloudflare R2 (bucket **privado**). `R2_SIGNED_URL_EXPIRES_SECONDS` controla la vigencia de las URLs firmadas. |
 
 ### 2. Credenciales por empresa
 
@@ -86,8 +91,8 @@ Para cambiar a Azure Key Vault más adelante solo hay que implementar
 
 ## Migraciones de Supabase
 
-Las migraciones están en `supabase/migrations/`. Aún **no se han ejecutado** (el
-proyecto Supabase todavía no existe), así que este paso es tuyo:
+Las migraciones están en `supabase/migrations/`. En el proyecto actual ya están
+aplicadas (`0001`–`0004`). Para un proyecto nuevo, este paso es tuyo:
 
 1. Crea el proyecto en [supabase.com](https://supabase.com) y anota la
    `DATABASE_URL`, `SUPABASE_URL` y el JWT secret.
@@ -119,7 +124,7 @@ where auth_users.email = 'usuario@empresa.pe' and c.ruc = '20123456789';
 
 Tablas: `companies`, `user_companies` (roles `admin`/`emisor`/`lector`),
 `comprobantes`, `comprobante_items`, `sunat_envios` (bitácora de cada intento) y
-`archivos` (referencia a SharePoint). Los helpers `app.is_company_member` y
+`archivos` (referencia al objeto en Cloudflare R2). Los helpers `app.is_company_member` y
 `app.has_company_role` son `security definer` para que las políticas de
 `user_companies` no entren en recursión.
 
@@ -177,7 +182,7 @@ curl -s "http://127.0.0.1:8000/api/v1/companies/20123456789/sunat/status" \
   "sunat_env": "beta",
   "estado": "autenticado",
   "autenticado": true,
-  "metodo": "getStatus",
+  "metodo": "getStatusAR",
   "endpoint": "https://e-beta.sunat.gob.pe/ol-ti-itcpfegem-beta/billService",
   "detalle": {"codigo": "0", "mensaje": "..."},
   "credenciales": {
@@ -231,6 +236,167 @@ Comportamiento ante errores:
 
 Una consulta **nunca revierte** un comprobante `Anulado`.
 
+### `GET /api/v1/companies/{ruc}/comprobantes`
+
+Lista paginada de los comprobantes de la empresa. Cualquier miembro (incluido
+`lector`) puede consultarla.
+
+```bash
+curl -s "http://127.0.0.1:8000/api/v1/companies/20123456789/comprobantes?estado=aprobado&limit=50&offset=0" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "items": [{
+    "id": "…", "tipo_documento": "01", "serie": "F001", "correlativo": 1,
+    "numero": "00000001", "nombre_archivo": "20123456789-01-F001-00000001",
+    "estado": "aprobado", "estado_label": "Aprobado", "monto_total": "118.00",
+    "fecha_emision": "2026-10-05", "moneda": "PEN", "sunat_ambiente": "beta"
+  }],
+  "limit": 50,
+  "offset": 0,
+  "has_more": false
+}
+```
+
+Parámetros: `estado`, `fecha_desde`, `fecha_hasta`, `tipo_documento` (`01`, `03`, `07`, `08`),
+`serie`, `q` (búsqueda parcial por nombre de archivo, mínimo 2 caracteres), `limit`
+(1–100, por defecto 50) y `offset`. `fecha_desde` posterior a `fecha_hasta` responde `422`.
+
+```bash
+curl -s "http://127.0.0.1:8000/api/v1/companies/20123456789/comprobantes\
+?estado=pendiente&fecha_desde=2026-10-01&fecha_hasta=2026-10-31&tipo_documento=01&serie=F001" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### `POST /api/v1/companies/{ruc}/comprobantes/refresh`
+
+Sincroniza de una vez el estado en SUNAT de los comprobantes **pendientes** de la
+empresa (admin/emisor). Es el botón "Actualizar todo" del panel.
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/v1/companies/20123456789/comprobantes/refresh?limit=25" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "ruc": "20123456789", "total": 3, "procesados": 3, "con_cambio": 2, "fallidos": 0,
+  "detenido_por": null,
+  "items": [{"numero": "20123456789-01-F001-00000001", "estado_anterior": "pendiente",
+             "estado_nuevo": "aprobado", "cambio_estado": true, "ok": true, "cdr_codigo": "0"}],
+  "consultado_at": "2026-10-14T15:04:05Z"
+}
+```
+
+Un fallo de infraestructura (**SUNAT caído**, **credenciales rechazadas**) **detiene**
+el lote y se reporta en `detenido_por`; los comprobantes restantes no se consultan
+para no encadenar timeouts. Un error puntual de un comprobante se registra en
+`items[].error_code` y el lote continúa.
+
+### `POST /api/v1/companies/{ruc}/comprobantes/import`
+
+Importa un comprobante desde su **XML UBL 2.1** (factura, boleta o nota de
+crédito/débito). Requiere rol `admin` o `emisor`.
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/v1/companies/20123456789/comprobantes/import" \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "archivo=@factura.xml;type=application/xml"
+```
+
+Responde `201` con el comprobante creado (estado inicial `pendiente`, ambiente
+según `SUNAT_ENV`). El RUC del emisor del XML debe coincidir con el de la
+empresa de la ruta; un XML repetido devuelve `409 conflict` y un XML inválido
+`422 invalid_document`. El XML original se archiva en el bucket privado si R2
+está configurado (si no, la importación responde igual y el fallo queda en el log).
+
+### `GET /api/v1/comprobantes/{id}`
+
+Detalle completo de un comprobante: cabecera + líneas del detalle (`items`),
+extraídas del XML UBL al importarlo y guardadas en `comprobante_items`.
+Cualquier miembro (incluido `lector`).
+
+```bash
+curl -s "http://127.0.0.1:8000/api/v1/comprobantes/$ID" -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "id": "…", "tipo_documento": "01", "serie": "F001", "numero": "00000001",
+  "razon_social_emisor": "ACME SAC", "razon_social_receptor": "CLIENTE EJEMPLO S.A.C.",
+  "monto_total": "188.80", "estado": "pendiente", "estado_label": "Pendiente",
+  "items": [{
+    "item_nro": 1, "codigo": "PROD-01", "descripcion": "Cemento Portland Tipo I",
+    "cantidad": "2.00", "unidad_medida": "NIU", "valor_unitario": "50.000000",
+    "precio_unitario": "59.000000", "igv": "18.00", "tip_afectacion_igv": "10",
+    "total": "100.00"
+  }]
+}
+```
+
+### `GET /api/v1/comprobantes/{id}/pdf`
+
+Representación impresa del comprobante en PDF, generada bajo demanda con los
+datos ya registrados (no depende del bucket ni de SUNAT). Cualquier miembro.
+
+```bash
+curl -s "http://127.0.0.1:8000/api/v1/comprobantes/$ID/pdf" \
+  -H "Authorization: Bearer $TOKEN" -o factura.pdf
+# Content-Disposition: attachment; filename="20123456789-01-F001-00000001.pdf"
+```
+
+El PDF incluye la cabecera del emisor, el cuadro del tipo de documento y número,
+el adquirente, la tabla de ítems (cantidad, unidad, descripción, precio unitario
+con IGV y valor de venta), los totales (base imponible, IGV y total a pagar) y
+el estado ante SUNAT con el mensaje del CDR, si ya se consultó.
+
+### `GET /api/v1/comprobantes/{id}/archivos`
+
+Lista los archivos almacenados del comprobante (XML importado, CDR recibido,
+PDF cuando exista). Cualquier miembro, incluido `lector`.
+
+```bash
+curl -s "http://127.0.0.1:8000/api/v1/comprobantes/$ID/archivos" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{
+  "comprobante_id": "…",
+  "items": [{
+    "id": "…", "tipo": "xml", "nombre": "20123456789-01-F001-00000001.xml",
+    "mime_type": "application/xml", "size_bytes": 1432, "hash_sha256": "…",
+    "estado": "subido", "subido_at": "2026-10-14T15:04:05Z"
+  }],
+  "total": 1
+}
+```
+
+### `POST /api/v1/archivos/{id}/download-url`
+
+El bucket es privado: la descarga se hace con una URL firmada temporal (por
+defecto 15 minutos, `R2_SIGNED_URL_EXPIRES_SECONDS`). Sin credenciales de R2 la
+respuesta es `503 storage_not_configured`.
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/v1/archivos/$ARCHIVO_ID/download-url" \
+  -H "Authorization: Bearer $TOKEN"
+# {"url":"https://<bucket>.r2.cloudflarestorage.com/...?X-Amz-Signature=...","expires_in":900,...}
+```
+
+### `GET /api/v1/comprobantes/{id}/envios`
+
+Bitácora de trazabilidad: cada intento contra SUNAT de ese comprobante (código,
+mensaje, latencia, error). Sin tramas SOAP y sin credenciales.
+
+```bash
+curl -s "http://127.0.0.1:8000/api/v1/comprobantes/$ID/envios?limit=20" \
+  -H "Authorization: Bearer $TOKEN"
+# {"items":[{"id":1,"tipo_operacion":"consulta_cdr","exito":true,"codigo":"0",...}],"total":1}
+```
+
 ## Conectar el frontend
 
 El frontend nunca habla con SUNAT: habla con esta API con un JWT de Supabase.
@@ -283,6 +449,16 @@ async function api(ruta: string, token: string, init: RequestInit = {}) {
 | Selector de empresa y rol del usuario | `GET /api/v1/companies` |
 | Botón "Probar conexión SUNAT" (admin/emisor) | `GET /api/v1/companies/{ruc}/sunat/status` |
 | Botón "Actualizar estado/CDR" (admin/emisor) | `POST /api/v1/comprobantes/{id}/refresh-cdr` |
+| Listado de comprobantes (cualquier rol) | `GET /api/v1/companies/{ruc}/comprobantes` |
+| Modal de detalle con ítems (cualquier rol) | `GET /api/v1/comprobantes/{id}` |
+| Botón "Descargar PDF" (cualquier rol) | `GET /api/v1/comprobantes/{id}/pdf` |
+| Botón "Actualizar pendientes" (admin/emisor) | `POST /api/v1/companies/{ruc}/comprobantes/refresh` |
+| Importar XML UBL (admin/emisor) | `POST /api/v1/companies/{ruc}/comprobantes/import` |
+| Importar lote ZIP de XML+PDF (admin/emisor) | `POST /api/v1/companies/{ruc}/comprobantes/import-paquete` |
+| Archivos del comprobante (cualquier rol) | `GET /api/v1/comprobantes/{id}/archivos` |
+| Botón "Descargar XML/CDR" (cualquier rol) | `POST /api/v1/archivos/{id}/download-url` |
+| Historial de intentos SUNAT (cualquier rol) | `GET /api/v1/comprobantes/{id}/envios` |
+| ¿La instancia está lista? (infraestructura) | `GET /health/ready` |
 
 ```ts
 const { items } = await api("/api/v1/companies", token);
@@ -327,14 +503,73 @@ UI: `pendiente`/Pendiente, `aprobado`/Aprobado, `rechazado`/Rechazado,
 ## Pruebas y calidad
 
 ```bash
-uv run pytest          # 164 pruebas, sin red y sin Postgres
+uv run pytest          # sin red y sin Postgres
 uv run ruff check
 ```
+
+Diagnóstico manual adicional: `scripts/sunat_probe.py` (credenciales/servicios
+SUNAT), `scripts/aplicar_migraciones.py` (aplica migraciones) y
+`scripts/e2e_supabase.py` (humo end-to-end contra Supabase real, con limpieza).
 
 Las llamadas a SUNAT se mockean con `respx` y un WSDL de prueba
 (`tests/fixtures/wsdl/`); el CDR se construye en memoria desde
 `tests/fixtures/cdr/`. La base de datos se reemplaza por repositorios en memoria
 que además emulan RLS (`tests/fakes.py`).
+
+## Despliegue
+
+El backend se despliega como **contenedor** (`Dockerfile` en la raíz) y no guarda
+nada en disco: todo el estado vive en Supabase y en el bucket privado de R2, así
+que se puede escalar con réplicas sin sesiones pegajosas.
+
+```bash
+docker build -t portal-facturacion .
+docker run --env-file .env -p 8000:8000 portal-facturacion
+```
+
+`PORT` (por defecto 8000) y `WEB_CONCURRENCY` (por defecto 1) los inyecta la
+plataforma. Cada worker es un proceso independiente; las llamadas SOAP de SUNAT
+corren en un pool de hilos, por lo que un worker atiende varias consultas a la
+vez sin bloquearse.
+
+### Sondas de salud
+
+| Ruta | Uso | Qué comprueba |
+| --- | --- | --- |
+| `GET /health` | Liveness (healthcheck del contenedor) | Solo que el proceso responde. No toca Postgres: un problema de base no reinicia el contenedor. |
+| `GET /health/ready` | Readiness (tráfico de la plataforma) | `select 1` a Postgres y que la verificación de JWT esté configurada. `503` mientras no esté listo. |
+
+### Checklist antes de desplegar
+
+1. **Migraciones aplicadas** (`0001`–`0004`): `supabase db push` o
+   `uv run python scripts/aplicar_migraciones.py`.
+2. **Variables de entorno de producción** completas (ver tabla abajo).
+3. **Empresas y usuarios** dados de alta en `companies` / `user_companies`.
+4. **Credenciales SOL y certificados** cargados como variables de entorno o en
+   el proveedor de secretos de la plataforma; nunca en la imagen.
+5. **`CONFIRM_PROD_EMISSION`** decidido a conciencia: con `SUNAT_ENV=prod` la
+   emisión queda bloqueada (403) hasta activarlo.
+6. **Rotar** cualquier credencial que haya circulado por chat, correo o capturas
+   (clave SOL, `SUPABASE_JWT_SECRET`, tokens de R2) **antes** del primer despliegue.
+
+### Variables críticas en producción
+
+| Variable | Valor recomendado | Por qué |
+| --- | --- | --- |
+| `ENVIRONMENT` | `prod` | Activa las validaciones de coherencia (CORS sin `*`, etc.). |
+| `SUNAT_ENV` | `prod` | Apunta a los servicios reales de SUNAT. |
+| `CONFIRM_PROD_EMISSION` | `false` hasta validar | Candado de la emisión real (regla 4). |
+| `DATABASE_URL` | pooler de Supabase (modo sesión) | Sin ella, todo endpoint con datos responde `503`. |
+| `SUPABASE_URL` + `SUPABASE_JWT_ALG`/`SUPABASE_JWT_JWKS_URL` | signing keys asimétricas (`ES256`) | Verificación del JWT sin compartir el secreto simétrico. |
+| `CORS_ORIGINS` | dominio exacto del SPA | En `staging`/`prod` no se admite `*`. |
+| `LOG_JSON` | `true` | Logs de una línea listos para el agregador. |
+| `DOCS_ENABLED` | `false` | No publicar `/docs` ni `/openapi.json` sin token. |
+| `SUNAT_VERIFY_SSL` | `true` | Validar el certificado de los servicios de SUNAT. |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | bucket privado | Sin esto, el archivado de XML/CDR y las URLs firmadas responden `503` (la importación y el refresco siguen funcionando). |
+
+Al arrancar, la aplicación registra `WARNING` por cada configuración faltante o
+peligrosa (por ejemplo `DOCS_ENABLED=true` en un entorno de producción), así que
+un `docker run` en falso muestra en el log lo que falta.
 
 ## Seguridad
 
@@ -368,16 +603,16 @@ decisión del proyecto: consultar el estado/CDR es una operación de **solo lect
 que no emite ni altera comprobantes tributarios. Como el *endpoint* es de
 producción, requiere credenciales SOL de producción; las de beta no autentican
 contra producción. Para probar credenciales en beta, `/sunat/status` sigue usando
-`billService.getStatus(fileName)` del beta, que sí es el ambiente de la empresa.
+`billService.getStatusAR(ruc, tipo, serie, numero)` del beta, que sí es el ambiente de la empresa.
 
 > La URL `https://e-factura.sunat.gob.pe/ol-it-wswebconsvalidcpe/billConsultService`
 > **no existe**: responde `404 Not Found` (verificado el 2026-10-07). El segmento
 > correcto del servicio de consulta es **`ol-it-wsconscpegem`**, cuyo WSDL se declara
 > con `name="billConsultService"` y expone `getStatus` y `getStatusCdr`.
 
-Parámetros de `getStatusCdr` (estándar UBL 2.1 de SUNAT): `rucComprobante`,
-`tipoComprobante`, `serieComprobante` y `numeroComprobante`; `montoTotal` solo se
-envía si está disponible.
+Parámetros de `getStatusCdr`: `rucComprobante`, `tipoComprobante`,
+`serieComprobante` y `numeroComprobante` (**entero**). El WSDL real **no** declara
+`montoTotal`, así que no se envía (confirmado contra producción el 2026-10-13).
 
 `SUNAT_WSDL_DIR` permite guardar los WSDL en disco (evita descargarlos en cada
 arranque y hace que las pruebas no toquen la red).
@@ -396,20 +631,21 @@ El mapeo vive en `app/sunat/states.py` y está cubierto por pruebas.
 
 ## Limitaciones conocidas y dudas abiertas
 
-1. **`/sunat/status` con credenciales reales no está verificado de punta a punta.**
-   Se probó con SUNAT mockeado (firma, WS-Security, tramas y fallos). Falta una
-   prueba manual con un usuario SOL secundario de beta.
-2. **Las migraciones no se han ejecutado** contra un Postgres real (el proyecto
-   Supabase aún no existe). Se validan de forma estática en `tests/test_migraciones.py`.
+1. **`/sunat/status` y `refresh-cdr` verificados de punta a punta** con una cuenta
+   SOL real en producción (`getStatus`→`0011`, `getStatusCdr`→`0127`). Beta solo
+   acepta el usuario demo `MODDATOS`, así que una cuenta real no autentica ahí.
+2. **Migraciones aplicadas** (`0001`–`0004`) contra Supabase; además se validan de
+   forma estática en `tests/test_migraciones.py`.
 3. **Consulta de CDR en beta (decisión tomada).** `billConsultService` solo existe
    en producción, así que el cliente usa esa URL también en beta (solo lectura).
    El `/sunat/status` de una empresa en beta se sigue validando contra el
    `billService` de beta. Consecuencia práctica: para que `refresh-cdr` funcione en
    beta hacen falta credenciales SOL **de producción**.
-4. **Parámetros de `getStatusCdr` (decisión tomada).** Se envían los 4 parámetros
-   estándar y `montoTotal` solo si existe. Falta confirmarlo con una respuesta real
-   de SUNAT.
+4. **`getStatusCdr` (corregido con respuesta real).** Se envían `rucComprobante`,
+   `tipoComprobante`, `serieComprobante` y `numeroComprobante` (entero). `montoTotal`
+   **no** se envía: el WSDL real de producción no lo declara.
 5. **`Anulado`** se resuelve con el flujo de comunicación de baja, que pertenece a
    la fase de emisión.
-6. **Azure Key Vault, SharePoint, SAP, PDF, correo y firma** están como interfaces
-   con `NotImplementedError`.
+6. **Azure Key Vault, SAP y correo** siguen como interfaces con
+   `NotImplementedError`. El **PDF** (`SunatPdfRenderer`) y la **firma XML**
+   (`SunatXmlSigner`) ya están implementados.

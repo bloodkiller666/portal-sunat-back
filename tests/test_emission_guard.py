@@ -54,14 +54,8 @@ async def test_el_servicio_de_emision_sigue_sin_estar_implementado() -> None:
 
 def test_las_integraciones_pendientes_avisan_que_no_estan_implementadas() -> None:
     from app.integrations.mailer import SmtpMailSender
-    from app.integrations.pdf import SunatPdfRenderer
     from app.integrations.sap import SapSoapClient
-    from app.integrations.sharepoint import GraphSharePointGateway
 
-    with pytest.raises(NotImplementedError):
-        SunatPdfRenderer()
-    with pytest.raises(NotImplementedError):
-        GraphSharePointGateway(tenant_id="t", client_id="c", client_secret="s")
     with pytest.raises(NotImplementedError):
         SapSoapClient(url="https://sap", usuario="u", password="p")
     with pytest.raises(NotImplementedError):

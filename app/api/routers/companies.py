@@ -2,29 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Annotated
-
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 
 from app.api.deps import (
+    AcessoOperativo,
     CurrentUserDep,
     SecretsProviderDep,
     SettingsDep,
     SunatClientFactoryDep,
     UowDep,
-    require_roles,
 )
-from app.core.enums import RolEmpresa
-from app.db.models import CompanyMember
 from app.services.companies import list_companies
 from app.services.results import CompaniesResponse, SunatStatusOut
 from app.services.sunat_status import check_company_sunat_status
 
 router = APIRouter(tags=["empresas"])
-
-AcessoOperativo = Annotated[
-    CompanyMember, Depends(require_roles(RolEmpresa.admin, RolEmpresa.emisor))
-]
 
 
 @router.get(

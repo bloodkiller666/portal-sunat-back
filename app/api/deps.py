@@ -111,3 +111,10 @@ CurrentUserDep = Annotated[AuthenticatedUser, Depends(get_current_user)]
 UowDep = Annotated[UnitOfWork, Depends(get_uow)]
 SecretsProviderDep = Annotated[SecretsProvider, Depends(get_secrets_provider)]
 SunatClientFactoryDep = Annotated[Callable, Depends(get_sunat_client_factory)]
+
+# Acceso a la empresa del RUC de la ruta (404 si no existe; 403 si no es miembro).
+CompanyAccessDep = Annotated[CompanyMember, Depends(get_company_access)]
+# Acceso operativo: además exige rol admin o emisor.
+AcessoOperativo = Annotated[
+    CompanyMember, Depends(require_roles(RolEmpresa.admin, RolEmpresa.emisor))
+]

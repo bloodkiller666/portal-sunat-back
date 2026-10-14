@@ -98,6 +98,35 @@ class ProdEmissionBlockedError(AppError):
     )
 
 
+class StorageError(AppError):
+    status_code = 502
+    code = "storage_error"
+    default_message = "No se pudo almacenar el archivo"
+
+
+class StorageNotConfiguredError(AppError):
+    status_code = 503
+    code = "storage_not_configured"
+    default_message = (
+        "El almacenamiento de archivos no está configurado en este entorno "
+        "(R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY y R2_BUCKET_NAME)"
+    )
+
+
+class FileTooLargeError(AppError):
+    status_code = 413
+    code = "file_too_large"
+    default_message = "El archivo supera el tamaño máximo permitido"
+
+
+class InvalidDocumentError(AppError):
+    """El XML recibido no es un comprobante UBL válido o no corresponde a la empresa."""
+
+    status_code = 422
+    code = "invalid_document"
+    default_message = "El archivo no es un comprobante electrónico válido"
+
+
 class SunatError(AppError):
     status_code = 502
     code = "sunat_error"

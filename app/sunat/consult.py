@@ -6,7 +6,10 @@ Operaciones implementadas:
   numeroComprobante)` → estado de un comprobante ya emitido. **Solo existe en
   producción.**
 * `billConsultService.getStatusCdr(...)` → estado + CDR (ZIP base64) del comprobante.
-* `billService.getStatus(fileName)` → sonda de disponibilidad/credenciales en beta.
+* `billService.getStatusAR(ruc, tipo, serie, numero)` → sonda de
+  disponibilidad/credenciales en beta. (El `getStatus(fileName)` histórico de beta
+  hoy consulta tickets de envíos masivos; la operación vigente por documento es
+  `getStatusAR`, verificada contra el WSDL real el 2026-10-12.)
 
 Autenticación: WS-Security `UsernameToken` con `Username = RUC + usuario SOL` y
 `PasswordText` con la clave SOL (documentado por SUNAT). Las tramas que se
@@ -45,6 +48,7 @@ logger = get_logger(__name__)
 
 NOMBRE_OPERACION_ESTADO = "getStatus"
 NOMBRE_OPERACION_CDR = "getStatusCdr"
+NOMBRE_OPERACION_ESTADO_BETA = "getStatusAR"
 
 
 class _CapturaTramas(Plugin):
@@ -123,22 +127,21 @@ class SunatConsultClient:
         serie: str,
         numero: str,
         ruc_comprobante: str | None = None,
-        monto_total: Any | None = None,
     ) -> ResultadoConsulta:
         """Consulta estado + CDR.
 
-        Parámetros estándar de SUNAT UBL 2.1: `rucComprobante`, `tipoComprobante`,
-        `serieComprobante` y `numeroComprobante`. `montoTotal` solo se envía si se
-        provee, para no romper con versiones del WSDL que no lo declaran.
+        El WSDL real de `billConsultService` declara exactamente
+        `rucComprobante`, `tipoComprobante`, `serieComprobante` y
+        `numeroComprobante` (entero). **No** declara `montoTotal`: enviarlo provoca
+        `got an unexpected keyword argument 'montoTotal'` (confirmado contra la
+        operación real de producción el 2026-10-13).
         """
         parametros: dict[str, Any] = {
             "rucComprobante": ruc_comprobante or self._credentials.ruc,
             "tipoComprobante": tipo_comprobante,
             "serieComprobante": serie,
-            "numeroComprobante": numero,
+            "numeroComprobante": _numero_comprobante(numero),
         }
-        if monto_total is not None:
-            parametros["montoTotal"] = monto_total
         return self._consultar(NOMBRE_OPERACION_CDR, parametros)
 
     def check_availability(self) -> ResultadoDisponibilidad:
@@ -180,23 +183,36 @@ class SunatConsultClient:
         )
 
     def _probar_con_bill_service(self) -> ResultadoDisponibilidad:
-        """Sonda válida en beta: `billService.getStatus(fileName)`."""
-        metodo = NOMBRE_OPERACION_ESTADO
-        nombre_archivo = (
-            f"{self._credentials.ruc}-{self._settings.sunat_probe_tipo}-"
-            f"{self._settings.sunat_probe_serie}-{self._settings.sunat_probe_numero}.zip"
-        )
+        """Sonda válida en beta: `billService.getStatusAR(ruc, tipo, serie, numero)`.
+
+        El WSDL vigente de beta declara `getStatus(ticket)` para tickets de envíos
+        masivos; la consulta por documento es `getStatusAR`, con la misma forma de
+        respuesta (`status.statusCode` / `status.statusMessage`).
+        """
+        metodo = NOMBRE_OPERACION_ESTADO_BETA
         try:
             resultado, tramas = self._invocar(
                 metodo,
-                {"fileName": nombre_archivo},
+                {
+                    "rucComprobante": self._credentials.ruc,
+                    "tipoComprobante": self._settings.sunat_probe_tipo,
+                    "serieComprobante": self._settings.sunat_probe_serie,
+                    "numeroComprobante": self._settings.sunat_probe_numero,
+                },
                 servicio=ServicioSunat.bill,
             )
         except SunatError as exc:
             return self._disponibilidad_desde_error(exc, metodo)
 
-        codigo = getattr(resultado, "statusCode", None)
-        mensaje = getattr(resultado, "statusMessage", None)
+        # zeep desenvuelve la respuesta cuando el mensaje de salida tiene una sola
+        # parte: el resultado puede ser el objeto `status` directamente (WSDL
+        # vigente) o el envoltorio con `status` anidado (variantes del WSDL).
+        contenedor = resultado
+        anidado = getattr(resultado, "status", None)
+        if anidado is not None and not hasattr(resultado, "statusCode"):
+            contenedor = anidado
+        codigo = getattr(contenedor, "statusCode", None)
+        mensaje = getattr(contenedor, "statusMessage", None)
         return ResultadoDisponibilidad(
             autenticado=True,
             metodo=metodo,
@@ -378,6 +394,12 @@ def _fault_a_error(fault: Fault, *, http_status: int | None = None) -> SunatErro
         clasificacion.mensaje,
         details={"codigo": clasificacion.codigo},
     )
+
+
+def _numero_comprobante(numero: str) -> int | str:
+    """El WSDL de `getStatusCdr` declara `numeroComprobante` como entero."""
+    texto = str(numero).strip()
+    return int(texto) if texto.isdigit() else texto
 
 
 def _extraer_estado(resultado: Any) -> tuple[str | None, str | None, Any | None]:

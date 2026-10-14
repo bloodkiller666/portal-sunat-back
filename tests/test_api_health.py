@@ -29,9 +29,19 @@ def test_docs_y_openapi_disponibles(client: TestClient) -> None:
     esquema = client.get("/openapi.json").json()
     assert set(esquema["paths"]) == {
         "/health",
+        "/health/ready",
         "/api/v1/companies",
         "/api/v1/companies/{ruc}/sunat/status",
+        "/api/v1/companies/{ruc}/comprobantes",
+        "/api/v1/companies/{ruc}/comprobantes/import",
+        "/api/v1/companies/{ruc}/comprobantes/refresh",
+        "/api/v1/companies/{ruc}/comprobantes/import-paquete",
+        "/api/v1/comprobantes/{comprobante_id}",
+        "/api/v1/comprobantes/{comprobante_id}/pdf",
         "/api/v1/comprobantes/{comprobante_id}/refresh-cdr",
+        "/api/v1/comprobantes/{comprobante_id}/envios",
+        "/api/v1/comprobantes/{comprobante_id}/archivos",
+        "/api/v1/archivos/{archivo_id}/download-url",
     }
 
 

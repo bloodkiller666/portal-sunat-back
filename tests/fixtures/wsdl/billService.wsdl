@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- WSDL de pruebas con la forma de billService.getStatus(fileName),
-     la operación de solo lectura disponible en beta. -->
+<!-- WSDL de pruebas con la forma del billService real de beta:
+     getStatusAR(ruc, tipo, serie, numero) es la operación de consulta por
+     documento; getStatus(ticket) consulta tickets de envíos masivos. -->
 <wsdl:definitions
     xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
     xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
@@ -11,25 +12,29 @@
 
   <wsdl:types>
     <xsd:schema targetNamespace="http://service.sunat.gob.pe" elementFormDefault="qualified">
-      <xsd:complexType name="statusResponseType">
+      <xsd:complexType name="statusResponseARType">
         <xsd:sequence>
+          <xsd:element name="content" type="xsd:base64Binary" minOccurs="0"/>
           <xsd:element name="statusCode" type="xsd:string" minOccurs="0"/>
           <xsd:element name="statusMessage" type="xsd:string" minOccurs="0"/>
         </xsd:sequence>
       </xsd:complexType>
 
-      <xsd:element name="getStatus">
+      <xsd:element name="getStatusAR">
         <xsd:complexType>
           <xsd:sequence>
-            <xsd:element name="fileName" type="xsd:string"/>
+            <xsd:element name="rucComprobante" type="xsd:string"/>
+            <xsd:element name="tipoComprobante" type="xsd:string"/>
+            <xsd:element name="serieComprobante" type="xsd:string"/>
+            <xsd:element name="numeroComprobante" type="xsd:string"/>
           </xsd:sequence>
         </xsd:complexType>
       </xsd:element>
 
-      <xsd:element name="getStatusResponse">
+      <xsd:element name="getStatusResponseAR">
         <xsd:complexType>
           <xsd:sequence>
-            <xsd:element name="status" type="tns:statusResponseType"/>
+            <xsd:element name="status" type="tns:statusResponseARType"/>
           </xsd:sequence>
         </xsd:complexType>
       </xsd:element>
@@ -53,11 +58,11 @@
     </xsd:schema>
   </wsdl:types>
 
-  <wsdl:message name="getStatusRequest">
-    <wsdl:part name="parameters" element="tns:getStatus"/>
+  <wsdl:message name="getStatusARRequest">
+    <wsdl:part name="parameters" element="tns:getStatusAR"/>
   </wsdl:message>
-  <wsdl:message name="getStatusResponse">
-    <wsdl:part name="parameters" element="tns:getStatusResponse"/>
+  <wsdl:message name="getStatusARResponse">
+    <wsdl:part name="parameters" element="tns:getStatusResponseAR"/>
   </wsdl:message>
   <wsdl:message name="sendBillRequest">
     <wsdl:part name="parameters" element="tns:sendBill"/>
@@ -71,9 +76,9 @@
       <wsdl:input message="tns:sendBillRequest"/>
       <wsdl:output message="tns:sendBillResponse"/>
     </wsdl:operation>
-    <wsdl:operation name="getStatus">
-      <wsdl:input message="tns:getStatusRequest"/>
-      <wsdl:output message="tns:getStatusResponse"/>
+    <wsdl:operation name="getStatusAR">
+      <wsdl:input message="tns:getStatusARRequest"/>
+      <wsdl:output message="tns:getStatusARResponse"/>
     </wsdl:operation>
   </wsdl:portType>
 
@@ -84,8 +89,8 @@
       <wsdl:input><soap:body use="literal"/></wsdl:input>
       <wsdl:output><soap:body use="literal"/></wsdl:output>
     </wsdl:operation>
-    <wsdl:operation name="getStatus">
-      <soap:operation soapAction="urn:getStatus"/>
+    <wsdl:operation name="getStatusAR">
+      <soap:operation soapAction="urn:getStatusAR"/>
       <wsdl:input><soap:body use="literal"/></wsdl:input>
       <wsdl:output><soap:body use="literal"/></wsdl:output>
     </wsdl:operation>

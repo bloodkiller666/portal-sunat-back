@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict
 from app.core.enums import (
     EstadoArchivo,
     EstadoComprobante,
+    OrigenComprobante,
     RolEmpresa,
     SunatAmbiente,
     TipoArchivo,
@@ -68,7 +69,12 @@ class CompanyMember(RowModel):
 class Comprobante(RowModel):
     id: UUID
     company_id: UUID
+    origen: OrigenComprobante = OrigenComprobante.emitido
     ruc_emisor: str
+    ruc_receptor: str | None = None
+    receptor_doc: str | None = None
+    razon_social_emisor: str | None = None
+    razon_social_receptor: str | None = None
     tipo_documento: str
     serie: str
     correlativo: int
@@ -97,6 +103,58 @@ class Comprobante(RowModel):
     def esta_anulado(self) -> bool:
         return self.estado is EstadoComprobante.anulado
 
+    @property
+    def es_recibido(self) -> bool:
+        """Compra a un tercero: el CDR no es nuestro, así que no se sincroniza."""
+        return self.origen is OrigenComprobante.recibido
+
+
+class ComprobanteRegistro(RowModel):
+    """Datos para dar de alta un comprobante (importado desde un XML UBL)."""
+
+    company_id: UUID
+    origen: OrigenComprobante = OrigenComprobante.emitido
+    ruc_emisor: str
+    ruc_receptor: str | None = None
+    receptor_doc: str | None = None
+    razon_social_emisor: str | None = None
+    razon_social_receptor: str | None = None
+    tipo_documento: str
+    serie: str
+    correlativo: int
+    numero: str = ""
+    nombre_archivo: str = ""
+    fecha_emision: date | None = None
+    moneda: str = "PEN"
+    monto_total: Decimal | None = None
+    estado: EstadoComprobante = EstadoComprobante.pendiente
+    sunat_ambiente: SunatAmbiente = SunatAmbiente.beta
+    created_by: UUID | None = None
+
+
+class ComprobanteItemRegistro(RowModel):
+    """Datos para dar de alta una línea del detalle en `comprobante_items`."""
+
+    comprobante_id: UUID
+    item_nro: int
+    descripcion: str
+    cantidad: Decimal
+    unidad_medida: str | None = None
+    codigo: str | None = None
+    valor_unitario: Decimal | None = None
+    precio_unitario: Decimal | None = None
+    descuento: Decimal = Decimal("0")
+    igv: Decimal = Decimal("0")
+    isc: Decimal = Decimal("0")
+    tip_afectacion_igv: str | None = None
+    total: Decimal | None = None
+
+
+class ComprobanteItem(ComprobanteItemRegistro):
+    id: UUID
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
 
 class SunatEnvioRegistro(RowModel):
     """Datos para registrar un intento en `sunat_envios`. Nunca lleva secretos."""
@@ -123,8 +181,9 @@ class SunatEnvio(SunatEnvioRegistro):
     created_at: datetime | None = None
 
 
-class Archivo(RowModel):
-    id: UUID
+class ArchivoRegistro(RowModel):
+    """Datos para registrar un archivo en `archivos`. La URL firmada no se persiste."""
+
     company_id: UUID
     comprobante_id: UUID | None = None
     tipo: TipoArchivo
@@ -132,12 +191,15 @@ class Archivo(RowModel):
     mime_type: str | None = None
     size_bytes: int | None = None
     hash_sha256: str | None = None
-    sharepoint_drive_id: str | None = None
-    sharepoint_item_id: str | None = None
-    sharepoint_web_url: str | None = None
-    sharepoint_path: str | None = None
+    storage_provider: str | None = None
+    storage_bucket: str | None = None
+    storage_key: str | None = None
     estado: EstadoArchivo = EstadoArchivo.pendiente
     error_detalle: str | None = None
+
+
+class Archivo(ArchivoRegistro):
+    id: UUID
     subido_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None

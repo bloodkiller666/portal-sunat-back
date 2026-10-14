@@ -3,28 +3,39 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import zipfile
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
-from app.core.enums import EstadoComprobante, RolEmpresa, SunatAmbiente
-from app.core.errors import NotFoundError
+from app.core.enums import (
+    EstadoComprobante,
+    OrigenComprobante,
+    RolEmpresa,
+    SunatAmbiente,
+)
+from app.core.errors import ConflictError, NotFoundError
 from app.db.models import (
     Archivo,
+    ArchivoRegistro,
     Company,
     CompanyMember,
     Comprobante,
+    ComprobanteItem,
+    ComprobanteItemRegistro,
+    ComprobanteRegistro,
     Membership,
     SunatEnvio,
     SunatEnvioRegistro,
 )
+from app.storage.base import FileUploadResult
 from app.sunat.models import (
     CdrInfo,
     EstadoSunat,
@@ -77,10 +88,14 @@ def construir_comprobante(
     estado: EstadoComprobante = EstadoComprobante.pendiente,
     ambiente: SunatAmbiente = SunatAmbiente.beta,
     monto_total: Decimal | None = Decimal("118.00"),
+    fecha_emision: date | None = None,
+    origen: OrigenComprobante = OrigenComprobante.emitido,
     comprobante_id: UUID | None = None,
 ) -> Comprobante:
     numero = f"{correlativo:08d}"
     return Comprobante(
+        origen=origen,
+        fecha_emision=fecha_emision,
         id=comprobante_id or uuid4(),
         company_id=company_id,
         ruc_emisor=ruc,
@@ -161,6 +176,65 @@ class InMemoryComprobantesRepository:
             return None
         return comprobante
 
+    async def list_for_company(
+        self,
+        company_id: UUID,
+        *,
+        estado: EstadoComprobante | None = None,
+        origen: OrigenComprobante | None = None,
+        fecha_desde: date | None = None,
+        fecha_hasta: date | None = None,
+        tipo_documento: str | None = None,
+        serie: str | None = None,
+        q: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Comprobante]:
+        if company_id not in self.company_ids_visibles:
+            return []
+        visibles = [c for c in self.comprobantes.values() if c.company_id == company_id]
+        if estado is not None:
+            visibles = [c for c in visibles if c.estado is estado]
+        if origen is not None:
+            visibles = [c for c in visibles if c.origen is origen]
+        if fecha_desde is not None:
+            visibles = [c for c in visibles if (c.fecha_emision or date.min) >= fecha_desde]
+        if fecha_hasta is not None:
+            visibles = [c for c in visibles if (c.fecha_emision or date.min) <= fecha_hasta]
+        if tipo_documento is not None:
+            visibles = [c for c in visibles if c.tipo_documento == tipo_documento]
+        if serie is not None:
+            visibles = [c for c in visibles if c.serie == serie]
+        if q is not None:
+            # Equivale al `ilike %q%` de Postgres sobre `nombre_archivo`.
+            visibles = [c for c in visibles if q.lower() in (c.nombre_archivo or "").lower()]
+        visibles.sort(
+            key=lambda c: (c.fecha_emision or date.min, c.correlativo), reverse=True
+        )
+        return visibles[offset : offset + limit]
+
+    async def create(self, registro: ComprobanteRegistro) -> Comprobante:
+        duplicado = next(
+            (
+                c
+                for c in self.comprobantes.values()
+                if c.company_id == registro.company_id
+                and c.origen is registro.origen
+                and c.tipo_documento == registro.tipo_documento
+                and c.serie == registro.serie
+                and c.correlativo == registro.correlativo
+                and c.sunat_ambiente == registro.sunat_ambiente
+            ),
+            None,
+        )
+        if duplicado is not None:
+            raise ConflictError(
+                "Ese comprobante ya está registrado para la empresa en el mismo ambiente"
+            )
+        creado = Comprobante(id=uuid4(), **registro.model_dump())
+        self.comprobantes[creado.id] = creado
+        return creado
+
     async def update_sunat_state(
         self,
         comprobante_id: UUID,
@@ -189,6 +263,31 @@ class InMemoryComprobantesRepository:
 
 
 @dataclass
+class InMemoryComprobanteItemsRepository:
+    items: list[ComprobanteItem] = field(default_factory=list)
+
+    async def create_many(
+        self, registros: list[ComprobanteItemRegistro]
+    ) -> list[ComprobanteItem]:
+        ahora = datetime.now(tz=UTC)
+        creados = [
+            ComprobanteItem(
+                id=uuid4(),
+                created_at=ahora,
+                updated_at=ahora,
+                **registro.model_dump(),
+            )
+            for registro in registros
+        ]
+        self.items.extend(creados)
+        return creados
+
+    async def list_for_comprobante(self, comprobante_id: UUID) -> list[ComprobanteItem]:
+        coincidencias = [i for i in self.items if i.comprobante_id == comprobante_id]
+        return sorted(coincidencias, key=lambda i: i.item_nro)
+
+
+@dataclass
 class InMemorySunatEnviosRepository:
     envios: list[SunatEnvio] = field(default_factory=list)
     fallar: bool = False
@@ -213,10 +312,28 @@ class InMemorySunatEnviosRepository:
 
 @dataclass
 class InMemoryArchivosRepository:
+    """`company_ids_visibles` emula lo que haría RLS en Postgres."""
+
     archivos: list[Archivo] = field(default_factory=list)
+    company_ids_visibles: set[UUID] = field(default_factory=set)
+
+    async def get(self, archivo_id: UUID) -> Archivo | None:
+        archivo = next((a for a in self.archivos if a.id == archivo_id), None)
+        if archivo is None or archivo.company_id not in self.company_ids_visibles:
+            return None
+        return archivo
 
     async def list_for_comprobante(self, comprobante_id: UUID) -> list[Archivo]:
         return [a for a in self.archivos if a.comprobante_id == comprobante_id]
+
+    async def registrar(self, registro: ArchivoRegistro) -> Archivo:
+        archivo = Archivo(
+            id=uuid4(),
+            subido_at=datetime.now(tz=UTC),
+            **registro.model_dump(),
+        )
+        self.archivos.append(archivo)
+        return archivo
 
 
 @dataclass
@@ -224,6 +341,9 @@ class FakeUnitOfWork:
     companies: InMemoryCompaniesRepository = field(default_factory=InMemoryCompaniesRepository)
     comprobantes: InMemoryComprobantesRepository = field(
         default_factory=InMemoryComprobantesRepository
+    )
+    items: InMemoryComprobanteItemsRepository = field(
+        default_factory=InMemoryComprobanteItemsRepository
     )
     sunat_envios: InMemorySunatEnviosRepository = field(
         default_factory=InMemorySunatEnviosRepository
@@ -246,6 +366,33 @@ def uow_factory(uow: FakeUnitOfWork):
 # --------------------------------------------------------------------------- #
 # Doble del cliente SUNAT
 # --------------------------------------------------------------------------- #
+class FakeStorageProvider:
+    """Doble del `StorageProvider`: guarda las subidas y firma URLs ficticias."""
+
+    def __init__(self) -> None:
+        self.upload: dict[str, str] | None = None
+        self.firmas: list[tuple[str, int | None]] = []
+
+    async def upload_file(
+        self, file_bytes: bytes, filename: str, content_type: str, folder_path: str
+    ) -> FileUploadResult:
+        self.upload = {
+            "nombre": filename,
+            "content_type": content_type,
+            "carpeta": folder_path,
+        }
+        return FileUploadResult(
+            file_key=f"{folder_path}/{filename}",
+            size_bytes=len(file_bytes),
+            content_type=content_type,
+            hash_sha256=hashlib.sha256(file_bytes).hexdigest(),
+        )
+
+    async def get_download_url(self, file_key: str, *, expires_in: int | None = None) -> str:
+        self.firmas.append((file_key, expires_in))
+        return f"https://firmada/{file_key}"
+
+
 @dataclass
 class FakeSunatClient:
     """Cliente SUNAT simulado. Se configura por prueba con `resultado` o `error`."""
@@ -320,12 +467,15 @@ def resultado_con_cdr(
     codigo: str | None = None,
     mensaje: str | None = None,
 ) -> ResultadoConsulta:
+    contenido = xml or cargar_cdr_xml("cdr_aceptado.xml")
     info = CdrInfo.model_validate(
         {
             "codigo": codigo or "0",
             "descripcion": mensaje or "La Factura numero F001-00000001, ha sido aceptada",
             "notas": ["El comprobante fue aceptado con observaciones"],
             "archivo": "R-20123456789-01-F001-00000001.xml",
+            # Igual que en producción, el ZIP original queda disponible.
+            "zip_bytes": empaquetar_cdr_zip(contenido),
         }
     )
     return ResultadoConsulta(
@@ -346,7 +496,7 @@ def resultado_sin_cdr(codigo: str, mensaje: str) -> ResultadoConsulta:
 def disponibilidad_autenticado() -> ResultadoDisponibilidad:
     return ResultadoDisponibilidad(
         autenticado=True,
-        metodo="getStatus",
+        metodo="getStatusAR",
         endpoint=ENDPOINT_BILL,
         codigo="0",
         mensaje="El comprobante no existe",
@@ -360,7 +510,7 @@ def disponibilidad_autenticado() -> ResultadoDisponibilidad:
 def disponibilidad_credenciales_invalidas() -> ResultadoDisponibilidad:
     return ResultadoDisponibilidad(
         autenticado=False,
-        metodo="getStatus",
+        metodo="getStatusAR",
         endpoint=ENDPOINT_BILL,
         codigo="0104",
         mensaje="La clave ingresada es incorrecta",
@@ -373,7 +523,7 @@ def disponibilidad_credenciales_invalidas() -> ResultadoDisponibilidad:
 def disponibilidad_servicio_caido() -> ResultadoDisponibilidad:
     return ResultadoDisponibilidad(
         autenticado=False,
-        metodo="getStatus",
+        metodo="getStatusAR",
         endpoint=ENDPOINT_BILL,
         mensaje="No se pudo contactar a SUNAT (timeout o error de red)",
         duracion_ms=20000,

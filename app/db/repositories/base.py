@@ -6,15 +6,20 @@ implementaciones en memoria (ver `tests/fakes.py`).
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-from app.core.enums import EstadoComprobante
+from app.core.enums import EstadoComprobante, OrigenComprobante
 from app.db.models import (
     Archivo,
+    ArchivoRegistro,
     Company,
     CompanyMember,
     Comprobante,
+    ComprobanteItem,
+    ComprobanteItemRegistro,
+    ComprobanteRegistro,
     Membership,
     SunatEnvio,
     SunatEnvioRegistro,
@@ -36,6 +41,23 @@ class CompaniesRepository(Protocol):
 class ComprobantesRepository(Protocol):
     async def get(self, comprobante_id: UUID) -> Comprobante | None: ...
 
+    async def list_for_company(
+        self,
+        company_id: UUID,
+        *,
+        estado: EstadoComprobante | None = None,
+        origen: OrigenComprobante | None = None,
+        fecha_desde: date | None = None,
+        fecha_hasta: date | None = None,
+        tipo_documento: str | None = None,
+        serie: str | None = None,
+        q: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Comprobante]: ...
+
+    async def create(self, registro: ComprobanteRegistro) -> Comprobante: ...
+
     async def update_sunat_state(
         self,
         comprobante_id: UUID,
@@ -45,6 +67,17 @@ class ComprobantesRepository(Protocol):
         cdr_descripcion: str | None,
         cdr_notas: list[str],
     ) -> Comprobante: ...
+
+
+@runtime_checkable
+class ComprobanteItemsRepository(Protocol):
+    """Líneas del detalle de un comprobante (`comprobante_items`)."""
+
+    async def create_many(
+        self, registros: list[ComprobanteItemRegistro]
+    ) -> list[ComprobanteItem]: ...
+
+    async def list_for_comprobante(self, comprobante_id: UUID) -> list[ComprobanteItem]: ...
 
 
 @runtime_checkable
@@ -58,9 +91,13 @@ class SunatEnviosRepository(Protocol):
 
 @runtime_checkable
 class ArchivosRepository(Protocol):
-    """Preparado para la fase de SharePoint (fuera de alcance)."""
+    """Referencias de archivos alojados en Cloudflare R2 (bucket privado)."""
+
+    async def get(self, archivo_id: UUID) -> Archivo | None: ...
 
     async def list_for_comprobante(self, comprobante_id: UUID) -> list[Archivo]: ...
+
+    async def registrar(self, registro: ArchivoRegistro) -> Archivo: ...
 
 
 @runtime_checkable
@@ -69,5 +106,6 @@ class UnitOfWork(Protocol):
 
     companies: CompaniesRepository
     comprobantes: ComprobantesRepository
+    items: ComprobanteItemsRepository
     sunat_envios: SunatEnviosRepository
     archivos: ArchivosRepository

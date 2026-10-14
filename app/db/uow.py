@@ -11,6 +11,7 @@ from app.db.pool import Database
 from app.db.repositories.postgres import (
     PostgresArchivosRepository,
     PostgresCompaniesRepository,
+    PostgresComprobanteItemsRepository,
     PostgresComprobantesRepository,
     PostgresSunatEnviosRepository,
 )
@@ -22,6 +23,7 @@ UowFactory = Callable[[Mapping[str, Any]], AbstractAsyncContextManager]
 class PostgresUnitOfWork:
     companies: PostgresCompaniesRepository
     comprobantes: PostgresComprobantesRepository
+    items: PostgresComprobanteItemsRepository
     sunat_envios: PostgresSunatEnviosRepository
     archivos: PostgresArchivosRepository
 
@@ -35,6 +37,7 @@ def build_uow_factory(database: Database) -> UowFactory:
             yield PostgresUnitOfWork(
                 companies=PostgresCompaniesRepository(connection),
                 comprobantes=PostgresComprobantesRepository(connection),
+                items=PostgresComprobanteItemsRepository(connection),
                 sunat_envios=PostgresSunatEnviosRepository(connection),
                 archivos=PostgresArchivosRepository(connection),
             )

@@ -176,7 +176,7 @@ create index sunat_envios_comprobante_idx on public.sunat_envios (comprobante_id
 create index sunat_envios_company_idx on public.sunat_envios (company_id, created_at desc);
 
 -- --------------------------------------------------------------------------- --
--- archivos: referencia a los archivos alojados en SharePoint
+-- archivos: referencia a los archivos alojados en Cloudflare R2
 -- --------------------------------------------------------------------------- --
 create table public.archivos (
     id                  uuid primary key default gen_random_uuid(),
@@ -187,10 +187,6 @@ create table public.archivos (
     mime_type           text,
     size_bytes          bigint check (size_bytes is null or size_bytes >= 0),
     hash_sha256         text,
-    sharepoint_drive_id text,
-    sharepoint_item_id  text,
-    sharepoint_web_url  text,
-    sharepoint_path     text,
     estado              public.estado_archivo not null default 'pendiente',
     error_detalle       text,
     subido_at           timestamptz,
@@ -200,7 +196,7 @@ create table public.archivos (
 );
 
 comment on table public.archivos is
-    'Referencia a PDF/XML/CDR en SharePoint (Microsoft Graph). La carga es de una fase posterior';
+    'Referencia a PDF/XML/CDR en Cloudflare R2 (bucket privado). La clave del objeto se agrega en la migración 0004';
 
 create index archivos_comprobante_idx on public.archivos (comprobante_id, tipo);
 create index archivos_empresa_estado_idx on public.archivos (company_id, estado);

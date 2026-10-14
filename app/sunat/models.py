@@ -32,6 +32,8 @@ class CdrInfo(BaseModel):
     identificador: str | None = None
     fecha_respuesta: datetime | None = None
     xml: str | None = None
+    # Bytes del ZIP tal como los devolvió SUNAT: se guardan en el almacenamiento.
+    zip_bytes: bytes | None = None
 
     @property
     def aceptado(self) -> bool:

@@ -43,6 +43,53 @@ def test_codigo_desconocido_sin_mensaje_se_rechaza() -> None:
     assert map_codigo_a_estado("9999") is EstadoComprobante.rechazado
 
 
+@pytest.mark.parametrize(
+    "codigo", ["1033", "1033 ", " 1033", "98", " 98 ", "0011", "0127"]
+)
+def test_codigos_no_informados_o_en_proceso_sin_mensaje(codigo: str) -> None:
+    """El código por sí solo ya decide aunque SUNAT no mande mensaje."""
+    assert map_codigo_a_estado(codigo) is EstadoComprobante.pendiente
+
+
+@pytest.mark.parametrize(
+    ("codigo", "mensaje"),
+    [
+        # `billConsultService.getStatus` en producción.
+        ("0011", "El comprobante de pago electrónico no existe."),
+        # `billConsultService.getStatusCdr` con un comprobante sin ticket.
+        ("0127", "El ticket no existe"),
+    ],
+)
+def test_respuestas_reales_de_sunat_son_pendiente(codigo: str, mensaje: str) -> None:
+    assert map_codigo_a_estado(codigo, mensaje) is EstadoComprobante.pendiente
+
+
+@pytest.mark.parametrize("codigo", [None, "", "   "])
+def test_codigo_ausente_o_vacio_es_pendiente(codigo: str | None) -> None:
+    assert map_codigo_a_estado(codigo) is EstadoComprobante.pendiente
+
+
+@pytest.mark.parametrize(
+    "mensaje",
+    [
+        "El comprobante aún no ha sido informado",
+        "El comprobante aun no ha sido enviado",
+        "No hay registro de la factura",
+        "El comprobante no registra información",
+        "Comprobante no remitido por el emisor",
+        "Documento por informar",
+    ],
+)
+def test_mensajes_de_no_informado_se_reconocen(mensaje: str) -> None:
+    assert map_codigo_a_estado("1033", mensaje) is EstadoComprobante.pendiente
+    assert map_codigo_a_estado("9999", mensaje) is EstadoComprobante.pendiente
+
+
+def test_codigo_aceptado_manda_sobre_el_mensaje() -> None:
+    # Aunque el texto suene a pendiente, el código 0 es aceptación.
+    assert map_codigo_a_estado("0", "no existe algo con ese código") is EstadoComprobante.aprobado
+
+
 def test_etiquetas_del_frontend() -> None:
     assert map_cdr_a_estado(_cdr("0")).etiqueta == "Aprobado"
     assert map_cdr_a_estado(_cdr("98")).etiqueta == "Pendiente"

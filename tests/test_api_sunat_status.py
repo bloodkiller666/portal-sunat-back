@@ -57,7 +57,7 @@ def test_autenticacion_correcta_sin_exponer_secretos(
     cuerpo = respuesta.json()
     assert cuerpo["estado"] == "autenticado"
     assert cuerpo["autenticado"] is True
-    assert cuerpo["metodo"] == "getStatus"
+    assert cuerpo["metodo"] == "getStatusAR"
     assert cuerpo["detalle"]["codigo"] == "0"
     assert cuerpo["credenciales"]["sol_user_configurado"] is True
     assert cuerpo["credenciales"]["certificado"]["configurado"] is False

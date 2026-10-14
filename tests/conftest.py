@@ -16,6 +16,7 @@ from app.core.enums import RolEmpresa
 from app.db.models import Company
 from app.main import create_app
 from tests.fakes import (
+    FakeStorageProvider,
     FakeSunatClient,
     FakeUnitOfWork,
     construir_empresa,
@@ -76,6 +77,7 @@ def uow(empresa_principal: Company, empresa_ajena: Company) -> FakeUnitOfWork:
     ]
     # Emula RLS: solo la empresa del usuario es visible.
     unidad.comprobantes.company_ids_visibles = {empresa_principal.id}
+    unidad.archivos.company_ids_visibles = {empresa_principal.id}
     return unidad
 
 
@@ -100,6 +102,46 @@ def app(
 @pytest.fixture
 def client(app: FastAPI) -> Iterator[TestClient]:
     with TestClient(app) as cliente:
+        yield cliente
+
+
+@pytest.fixture
+def settings_con_r2() -> Settings:
+    """Configuración con el bucket privado configurado (el proveedor va con doble)."""
+    return Settings(
+        _env_file=None,
+        environment="local",
+        sunat_env="beta",
+        supabase_jwt_secret=JWT_SECRET,
+        supabase_jwt_audience="authenticated",
+        cors_origins=["http://localhost:3000"],
+        r2_account_id="cuenta",
+        r2_access_key_id="AKID",
+        r2_secret_access_key="SECRET",
+        r2_bucket_name="bucket-privado",
+    )
+
+
+@pytest.fixture
+def app_r2(
+    settings_con_r2: Settings,
+    uow: FakeUnitOfWork,
+    entorno_credenciales: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> FastAPI:
+    """App con R2 configurado y el proveedor de almacenamiento reemplazado."""
+    aplicacion = create_app(settings_con_r2)
+    aplicacion.state.uow_factory = uow_factory(uow)
+    aplicacion.state.sunat_client_factory = fabricar_cliente_sunat(FakeSunatClient())
+    monkeypatch.setattr(
+        "app.services.store.get_storage_provider", lambda _settings: FakeStorageProvider()
+    )
+    return aplicacion
+
+
+@pytest.fixture
+def cliente_r2(app_r2: FastAPI) -> Iterator[TestClient]:
+    with TestClient(app_r2) as cliente:
         yield cliente
 
 

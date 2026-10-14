@@ -36,6 +36,11 @@ _CAMPOS_VACIOS_A_NONE = frozenset(
         "supabase_jwt_issuer",
         "database_url",
         "azure_keyvault_url",
+        "r2_account_id",
+        "r2_access_key_id",
+        "r2_secret_access_key",
+        "r2_bucket_name",
+        "r2_endpoint_url",
     }
 )
 
@@ -98,23 +103,24 @@ class Settings(BaseSettings):
         default_factory=lambda: ["Authorization", "Content-Type", "X-Request-Id"]
     )
 
-    # ---------------- Secretos ----------------
-    secrets_provider: Literal["env", "azure_keyvault"] = "env"
-    azure_keyvault_url: str | None = None
-
-    # ------------------------------------------------------------------ #
-    # Validaciones
-    # ------------------------------------------------------------------ #
-    @field_validator(*sorted(_CAMPOS_VACIOS_A_NONE), mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _blank_to_none(cls, value: Any) -> Any:
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
+    def _vacios_a_none(cls, data: Any) -> Any:
+        """`VAR=` (cadena vacía) en el .env o en los kwargs equivale a no configurado."""
+        if not isinstance(data, dict):
+            return data
+        for clave, valor in list(data.items()):
+            if (
+                isinstance(clave, str)
+                and clave.lower() in _CAMPOS_VACIOS_A_NONE
+                and valor == ""
+            ):
+                data[clave] = None
+        return data
 
     @field_validator("cors_origins", "cors_allow_methods", "cors_allow_headers", mode="before")
     @classmethod
-    def _parse_list(cls, value: Any) -> Any:
+    def _parse_list_field(cls, value: Any) -> Any:
         """Acepta CSV (`a,b`) o JSON (`["a","b"]`) en las variables de entorno."""
         if value is None:
             return []
@@ -127,11 +133,22 @@ class Settings(BaseSettings):
             return [item.strip() for item in raw.split(",") if item.strip()]
         return value
 
-    @field_validator("log_level", mode="before")
-    @classmethod
-    def _upper_level(cls, value: Any) -> Any:
-        return value.upper() if isinstance(value, str) else value
+    # ---------------- Secretos ----------------
+    secrets_provider: Literal["env", "azure_keyvault"] = "env"
+    azure_keyvault_url: str | None = None
 
+    # ---------------- Almacenamiento de archivos (Cloudflare R2) ----------------
+    # Bucket privado: nunca se expone una URL pública, se firman URLs temporales.
+    r2_account_id: str | None = None
+    r2_access_key_id: SecretStr | None = None
+    r2_secret_access_key: SecretStr | None = None
+    r2_bucket_name: str | None = None
+    # Override opcional del endpoint S3 (por defecto se deriva de la cuenta).
+    r2_endpoint_url: str | None = None
+    # Vigencia de las URLs firmadas (por defecto 15 min; máximo 7 días en S3).
+    r2_signed_url_expires_seconds: int = Field(default=900, gt=0, le=604800)
+
+    # Validaciones globales (CORS y pool).
     @model_validator(mode="after")
     def _check_coherencia(self) -> Settings:
         if self.environment in (Entorno.staging, Entorno.prod):
@@ -181,6 +198,24 @@ class Settings(BaseSettings):
         return not self.supabase_jwt_alg.startswith("HS")
 
     @property
+    def r2_endpoint(self) -> str | None:
+        """Endpoint S3 de R2: `https://<account_id>.r2.cloudflarestorage.com`."""
+        if self.r2_endpoint_url:
+            return self.r2_endpoint_url.rstrip("/")
+        if self.r2_account_id:
+            return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
+        return None
+
+    @property
+    def r2_configured(self) -> bool:
+        return bool(
+            self.r2_endpoint
+            and self.r2_access_key_id
+            and self.r2_secret_access_key
+            and self.r2_bucket_name
+        )
+
+    @property
     def auth_configured(self) -> bool:
         if self.jwt_uses_asymmetric_keys:
             return self.jwks_url is not None
@@ -212,6 +247,23 @@ class Settings(BaseSettings):
             warnings.append(
                 "SUNAT_ENV=prod con CONFIRM_PROD_EMISSION=false: la emisión queda bloqueada."
             )
+        if not self.r2_configured:
+            warnings.append(
+                "El almacenamiento (Cloudflare R2) no está configurado: la carga de "
+                "archivos responderá 503."
+            )
+        if self.is_production_like:
+            if self.docs_enabled:
+                warnings.append(
+                    "DOCS_ENABLED=true en un entorno de producción: /docs, /redoc y "
+                    "/openapi.json quedan publicados sin token."
+                )
+            if not self.log_json:
+                warnings.append(
+                    "LOG_JSON=false con ENVIRONMENT="
+                    f"{self.environment.value}: los logs de contenedor se ingieren "
+                    "mejor en JSON (LOG_JSON=true)."
+                )
         if self.database_apply_rls and self.database_configured:
             warnings.append(
                 "RLS activo: la conexión hará `set local role authenticated` con los claims "

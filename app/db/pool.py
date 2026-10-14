@@ -72,6 +72,20 @@ class Database:
             self._settings.database_pool_max_size,
         )
 
+    async def ping(self) -> None:
+        """Comprueba que el pool responde (`select 1`).
+
+        Se usa en el readiness: si la base no contesta, la instancia no debe
+        recibir tráfico. No aplica RLS porque no lee datos del usuario.
+        """
+        if self._pool is None:
+            if not self._settings.database_configured:
+                raise DatabaseNotConfiguredError()
+            await self.connect()
+        assert self._pool is not None
+        async with self._pool.acquire() as connection:
+            await connection.fetchval("select 1")
+
     async def close(self) -> None:
         if self._pool is not None:
             await self._pool.close()
