@@ -99,3 +99,23 @@ def wsdl_url(
     url = service_url(servicio, env=env, settings=settings)
     assert url is not None  # required=True garantiza una URL
     return f"{url}{WSDL_SUFFIX}"
+
+
+# --------------------------------------------------------------------------- #
+# SIRE (API REST). Fuente: «Manual del servicio API del Registro de Ventas e
+# Información Electrónica» v31 (cpe.sunat.gob.pe), §5.1, §5.2 y §5.18.
+# --------------------------------------------------------------------------- #
+SIRE_SCOPE = "https://api-sire.sunat.gob.pe"
+SIRE_TOKEN_URL = "https://api-seguridad.sunat.gob.pe/v1/clientessol/{client_id}/oauth2/token/"
+SIRE_RVIE_COD_LIBRO = "140000"
+SIRE_PERIODOS_RVIE_URL = (
+    SIRE_SCOPE + "/v1/contribuyente/migeigv/libros/rvierce/padron/web/omisos/"
+    + SIRE_RVIE_COD_LIBRO + "/periodos"
+)
+SIRE_EXPORTAR_PROPUESTA_URL = (
+    SIRE_SCOPE + "/v1/contribuyente/migeigv/libros/rvie/propuesta/web/propuesta/"
+    "{periodo}/exportapropuesta"
+)
+_SIRE_MASIVO = "/v1/contribuyente/migeigv/libros/rvierce/gestionprocesosmasivos/web/masivo/"
+SIRE_TICKETS_URL = SIRE_SCOPE + _SIRE_MASIVO + "consultaestadotickets"
+SIRE_ARCHIVO_REPORTE_URL = SIRE_SCOPE + _SIRE_MASIVO + "archivoreporte"

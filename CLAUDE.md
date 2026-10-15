@@ -11,7 +11,7 @@ dos repositorios:
 | Repositorio | Ruta local | Despliegue |
 | --- | --- | --- |
 | **Backend** (este repo) | `factura-sunat-main-back` | Docker (por desplegar) |
-| **Frontend** | `C:\Users\mcotaquispe\Downloads\Node.js\factura-sunat-main` | Vercel (ya hosteado) |
+| **Frontend** | `C:\Users\majco\Desktop\factura-sunat-main` | Vercel (ya hosteado) |
 
 - **Stack backend**: Python 3.12 + uv, FastAPI, Pydantic v2, asyncpg (Supabase
   Postgres con RLS), zeep (SOAP SUNAT), aioboto3 (Cloudflare R2), signxml,
@@ -27,7 +27,7 @@ referencia de la API.
 
 ## 2. Estado actual (lo que YA funciona — no lo rehagas)
 
-Backend (`uv run pytest -q` → 326 passed; `uv run ruff check` → limpio):
+Backend (`uv run pytest -q` → 414 passed; `uv run ruff check` → limpio):
 
 - **SUNAT real (SOAP)**: `GET /companies/{ruc}/sunat/status` (valida SOL +
   certificado), `POST /comprobantes/{id}/refresh-cdr` (estado + CDR real),
@@ -92,65 +92,83 @@ El `Dockerfile` y CI (`.github/workflows/ci.yml`) ya existen. Falta:
    `CORS_ORIGINS` (dominio exacto de Vercel, sin `*`), `LOG_JSON=true`,
    `DOCS_ENABLED=false`, `SUNAT_VERIFY_SSL=true`, credenciales
    `SUNAT_CRED_20514831620_*` y las de R2.
-4. Aplicar migraciones `0001`–`0005`
-   (`uv run python -m scripts.aplicar_migraciones`).
+4. Migraciones `0001`–`0007` (las 0006 y 0007 ya están en el Supabase actual).
+   `scripts.aplicar_migraciones` solo sirve para una base **vacía** (reaplica
+   todo); en una base existente aplique únicamente las nuevas.
 5. Rotar cualquier credencial que haya circulado por chat/correo antes del
    primer despliegue.
 
-### P2 — Prueba end-to-end frontend ↔ backend
+### P2 — Prueba end-to-end frontend ↔ backend ✅ HECHO (local)
 
-1. Backend local: `uv run fastapi dev`. Frontend local: `pnpm dev` con
-   `.env.local` apuntando a `http://127.0.0.1:8000`.
-2. Flujo a validar: login → empresas → listado → detalle con ítems →
-   descargar PDF → descargar XML → importar XML → sincronizar SUNAT.
-3. Ajustar `CORS_ORIGINS` si el navegador bloquea (el error es claro).
+Backend `uv run fastapi run --port 8000` con `CORS_ORIGINS=http://localhost:3000`;
+frontend `pnpm dev` con `.env.local`. Validado con Edge headless (Playwright) y
+por API: login → empresas → listado (249 comprobantes) → PDF → Check SAP
+persistente → detalle → importar XML (archivado en R2) → sincronizar SIRE.
+Falta repetirlo contra el dominio real tras desplegar (ver CORS de R2 abajo).
 
-### P3 — Persistir el "Check SAP" (única marca que se pierde al recargar)
+### P3 — Check SAP persistente ✅ HECHO
 
-- Backend: `PATCH /api/v1/comprobantes/{id}` con body `{ "check_sap": bool }`
-  (y opcionalmente `n_sap`), rol admin/emisor, actualizar columna y devolver
-  `ComprobanteOut`. `check_sap`/`n_sap` ya son columnas de `comprobantes`.
-  Pruebas en `tests/test_api_comprobantes.py`.
-- Frontend: `onAlternarCheckSap` en `app/page.tsx` debe llamar al endpoint
-  (hoy solo cambia estado local) con manejo de error 403 para `lector`.
+`PATCH /api/v1/comprobantes/{id}` (`check_sap` y/o `n_sap`, admin/emisor; el
+`lector` recibe 403). El frontend lo llama con actualización optimista y revierte
+con aviso si falla (`alternarCheckSap` en `app/page.tsx`). Verificado en
+navegador: la marca sobrevive a recargar la página.
 
-### P4 — Fecha de vencimiento y forma de pago reales
+### P4 — Vencimiento y forma de pago ✅ HECHO
 
-El frontend muestra esos columnas con valores por defecto (`lib/api.ts`,
-`mapComprobante`). Completarlos de verdad:
+El parser UBL lee `DueDate`, `PaymentTerms/PaymentDueDate` (última cuota) y
+`Payment/PaymentDueDate`; la forma de pago sale como `Contado`, `Crédito` o
+`Crédito N días`. Migración `0006_comprobante_pago.sql` (aplicada). Los
+comprobantes de SIRE traen vencimiento solo si SUNAT lo informa (hoy viene vacío)
+y no traen forma de pago.
 
-1. Parser UBL: `cac:Payment/cbc:PaymentDueDate` (vencimiento) y
-   `cac:PaymentTerms/cbc:PaymentMeansID` o `cbc:ID` (forma de pago: Contado/
-   Crédito con días) — tolerante a ausencia.
-2. Migración `0006_comprobante_pago.sql`: `fecha_vencimiento date`,
-   `forma_pago text` en `comprobantes` (+ actualizar `tests/test_migraciones.py`
-   si valida columnas).
-3. Guardarlos en `import_comprobante_xml` y exponerlos en `ComprobanteOut`
-   (`app/services/results.py`) y `to_comprobante_out`.
-4. Frontend: mapear en `mapComprobante` (ya tiene los campos).
+### P5 — Diagnóstico SIRE ✅ HECHO (la empresa SÍ está acogida)
 
-### P5 — Diagnóstico SIRE (confirmar que la empresa está acogida)
+`uv run python -m scripts.sire_probe --ruc 20514831620 --periodo 202609`.
+**Correcciones al manual v31** respecto al texto original de esta guía:
 
-Las credenciales API ya están en el `.env`
-(`SUNAT_CRED_20514831620_CLIENT_ID/CLIENT_SECRET`) y el SOL user también.
+- Token: `POST https://api-seguridad.sunat.gob.pe/v1/clientessol/{client_id}/oauth2/token/`
+  (es `clientessol`, no `clientes_extranet`), `grant_type=password`,
+  `scope=https://api-sire.sunat.gob.pe`, `client_id`, `client_secret`,
+  `username` = RUC + usuario SOL, `password` = clave SOL. Dura 1 hora.
+- El manual no define un código de «no incorporado»: el probe valida con los
+  periodos habilitados (§5.2) y con «Descargar propuesta» (§5.18); un 401/403 o
+  un error de acceso indica que no está acogida.
+- URLs SIRE en `app/sunat/endpoints.py`; cliente en `app/sunat/sire.py`.
 
-1. Crear `scripts/sire_probe.py` (mismo estilo que `scripts/sunat_probe.py`):
-   - Pedir token a `https://api-seguridad.sunat.gob.pe/v1/clientes_extranet/{ruc}/{client_id}/oauth2/token`
-     con `grant_type=client_credentials`... (revisar el manual oficial del API
-     SIRE: el token se genera con client_id + client_secret + RUC + usuario SOL
-     + clave SOL; sigue exactamente lo que diga el manual v31/v28).
-   - Llamar "Descargar propuesta" RVIE de un periodo (ej. 09-2026) y reportar:
-     200/ticket → acogida; error "no incorporado" → no acogida.
-2. **No loguear** el client_secret ni la clave SOL; reutilizar `redact`.
+### P6 — Sincronización de ventas desde SIRE ✅ HECHO (solo lectura)
 
-### P6 — Cliente SIRE (fase 3: poblar el portal con las ventas reales)
+`POST /api/v1/companies/{ruc}/sire/ventas/sync` con `{ "periodo": "202609" }`
+(admin/emisor). Flujo por tickets: pedir propuesta (§5.18) → consultar estado
+(§5.16) → descargar ZIP (§5.17) → parsear el TXT (`app/sunat/sire_rvie.py`, 40
+columnas separadas por `|`, UTF-8 con BOM) → insertar con
+`create_if_absent` (idempotente). Si SUNAT tarda más de ~25 s responde
+`estado=en_proceso` + `ticket`; se vuelve a llamar con ese `ticket`.
 
-Depende de P5 (empresa acogida). Servicios RVIE: descargar propuesta →
-aceptar/reemplazar → registrar preliminar; el flujo de descarga es asíncrono
-con **tickets** (pedir → consultar estado → descargar ZIP particionado).
-Guardar los registros en `comprobantes` con `origen=emitido` idempotente
-(única por ambiente ya garantiza no duplicar). Diseñar con límites de tamaño
-(similar a `paquetes.py`). Todo esto es backend; el frontend ya pinta los datos.
+Decisiones de diseño (no las revierta sin motivo):
+
+- Los registros SIRE se guardan con `sunat_ambiente=prod` y `fuente=sire`
+  (migración `0007_comprobante_fuente.sql`); no traen ítems ni XML.
+- `Est. Comp` 2 (o 0) = dado de baja (total 0) → `anulado`; los demás → `aprobado`.
+  Los importes negativos de notas de crédito se guardan en positivo.
+- Boletas resumidas en rango (`Nro Final`) y tipos distintos de 01/03/07/08 se
+  omiten y se cuentan en `omitidos`.
+- Importar después el XML de un comprobante `fuente=sire` lo **completa**
+  (ítems, XML en R2) en vez de dar 409 (`completar_desde_xml`). Ojo: solo
+  coincide si el ambiente de importación es `prod`; en local (`SUNAT_ENV=beta`)
+  el XML crea una fila aparte.
+- No se implementa aceptar/reemplazar/registrar preliminar: el portal NO escribe
+  en SIRE.
+
+### Notas de la verificación end-to-end (2026-10-15)
+
+- Las `SUNAT_CRED_*` del `.env` ahora llegan al entorno al arrancar
+  (`get_settings`); antes, en local, el proveedor de secretos no las veía.
+- Se añadió tolerancia de 30 s de desfase de reloj al validar el JWT
+  (`LEEWAY_RELOJ_SEGUNDOS`); sin ella había 401 intermitentes con tokens recién
+  emitidos.
+- **Pendiente de infraestructura**: el bucket R2 debe tener CORS para el origen
+  del frontend (GET); si no, el navegador bloquea la descarga del XML con URL
+  firmada.
 
 ### P7 — Filtros server-side y paginación real (solo si la empresa crece)
 
@@ -174,7 +192,7 @@ paginación con contador en el frontend.
 
 ```bash
 cd factura-sunat-main-back
-uv run pytest -q      # debe terminar sin fallos (326+ passed)
+uv run pytest -q      # debe terminar sin fallos (414+ passed)
 uv run ruff check     # All checks passed
 
 cd ../factura-sunat-main
@@ -187,7 +205,7 @@ de Node (`node.exe`, `pnpm.exe`, etc. — ya ignorados).
 
 ## 6. Datos útiles
 
-- Migraciones aplicadas en el Supabase actual: `0001`–`0005`. La conexión vive
+- Migraciones aplicadas en el Supabase actual: `0001`–`0007`. La conexión vive
   en `DATABASE_URL` del `.env` local.
 - El CDR de una compra (`origen=recibido`) no se sincroniza: lo informa el
   proveedor (decisión de diseño ya implementada).

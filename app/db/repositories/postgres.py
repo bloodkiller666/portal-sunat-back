@@ -12,7 +12,7 @@ from uuid import UUID
 
 import asyncpg
 
-from app.core.enums import EstadoComprobante, OrigenComprobante
+from app.core.enums import EstadoComprobante, OrigenComprobante, SunatAmbiente
 from app.core.errors import ConflictError
 from app.db.models import (
     Archivo,
@@ -31,9 +31,10 @@ from app.db.models import (
 _COLUMNAS_COMPROBANTE = """
     id, company_id, origen, ruc_emisor, ruc_receptor, receptor_doc, razon_social_emisor,
     razon_social_receptor, tipo_documento, serie, correlativo, numero, nombre_archivo,
-    fecha_emision, moneda, monto_total, estado, sunat_ambiente, n_sap, orden_compra, check_sap,
+    fecha_emision, fecha_vencimiento, forma_pago, moneda, monto_total, estado, sunat_ambiente,
+    n_sap, orden_compra, check_sap,
     cdr_codigo, cdr_descripcion, cdr_notas, cdr_fecha, ultimo_envio_at, anulado_at,
-    motivo_anulacion, created_at, updated_at, created_by
+    motivo_anulacion, created_at, updated_at, created_by, fuente
 """
 
 _COLUMNAS_ITEM = """
@@ -168,17 +169,95 @@ class PostgresComprobantesRepository:
         return [Comprobante.model_validate(_row(record)) for record in records]
 
     async def create(self, registro: ComprobanteRegistro) -> Comprobante:
+        creado = await self._insertar(registro, ignorar_duplicado=False)
+        assert creado is not None
+        return creado
+
+    async def create_if_absent(self, registro: ComprobanteRegistro) -> Comprobante | None:
+        """Inserta o devuelve `None` si ya existía (no aborta la transacción)."""
+        return await self._insertar(registro, ignorar_duplicado=True)
+
+    async def find_by_key(
+        self,
+        company_id: UUID,
+        *,
+        origen: OrigenComprobante,
+        tipo_documento: str,
+        serie: str,
+        correlativo: int,
+        sunat_ambiente: SunatAmbiente,
+    ) -> Comprobante | None:
+        record = await self._connection.fetchrow(
+            f"""
+            select {_COLUMNAS_COMPROBANTE} from public.comprobantes
+            where company_id = $1 and origen = $2 and tipo_documento = $3
+              and serie = $4 and correlativo = $5 and sunat_ambiente = $6
+            """,
+            company_id,
+            origen.value,
+            tipo_documento,
+            serie,
+            correlativo,
+            sunat_ambiente.value,
+        )
+        data = _row(record)
+        return Comprobante.model_validate(data) if data else None
+
+    async def completar_desde_xml(
+        self, comprobante_id: UUID, registro: ComprobanteRegistro
+    ) -> Comprobante:
+        """Un XML importado reemplaza la cabecera de un registro que vino de SIRE."""
+        record = await self._connection.fetchrow(
+            f"""
+            update public.comprobantes
+               set ruc_receptor = $2, receptor_doc = $3, razon_social_emisor = $4,
+                   razon_social_receptor = $5, nombre_archivo = $6, fecha_emision = $7,
+                   fecha_vencimiento = $8, forma_pago = $9, moneda = $10, monto_total = $11,
+                   fuente = 'xml', updated_at = now()
+             where id = $1
+            returning {_COLUMNAS_COMPROBANTE}
+            """,
+            comprobante_id,
+            registro.ruc_receptor,
+            registro.receptor_doc,
+            registro.razon_social_emisor,
+            registro.razon_social_receptor,
+            registro.nombre_archivo,
+            registro.fecha_emision,
+            registro.fecha_vencimiento,
+            registro.forma_pago,
+            registro.moneda,
+            registro.monto_total,
+        )
+        data = _row(record)
+        if data is None:
+            from app.core.errors import NotFoundError
+
+            raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
+        return Comprobante.model_validate(data)
+
+    async def _insertar(
+        self, registro: ComprobanteRegistro, *, ignorar_duplicado: bool
+    ) -> Comprobante | None:
+        # `on conflict do nothing` evita el error de unicidad, que dejaría
+        # abortada la transacción de la petición en las cargas masivas.
+        al_conflicto = (
+            "on conflict on constraint comprobantes_unicos_por_ambiente do nothing"
+            if ignorar_duplicado
+            else ""
+        )
         try:
             record = await self._connection.fetchrow(
                 f"""
                 insert into public.comprobantes (
                     company_id, origen, ruc_emisor, ruc_receptor, receptor_doc,
                     razon_social_emisor, razon_social_receptor, tipo_documento, serie,
-                    correlativo, numero, nombre_archivo, fecha_emision, moneda, monto_total,
-                    estado, sunat_ambiente, created_by
+                    correlativo, numero, nombre_archivo, fecha_emision, fecha_vencimiento,
+                    forma_pago, moneda, monto_total, estado, sunat_ambiente, created_by, fuente
                 )
                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                        $16, $17, $18)
+                        $16, $17, $18, $19, $20, $21)
+                {al_conflicto}
                 returning {_COLUMNAS_COMPROBANTE}
                 """,
                 registro.company_id,
@@ -194,11 +273,14 @@ class PostgresComprobantesRepository:
                 registro.numero,
                 registro.nombre_archivo,
                 registro.fecha_emision,
+                registro.fecha_vencimiento,
+                registro.forma_pago,
                 registro.moneda,
                 registro.monto_total,
                 registro.estado.value,
                 registro.sunat_ambiente.value,
                 registro.created_by,
+                registro.fuente,
             )
         except asyncpg.UniqueViolationError as exc:
             # Restricción comprobantes_unicos_por_ambiente.
@@ -206,8 +288,7 @@ class PostgresComprobantesRepository:
                 "Ese comprobante ya está registrado para la empresa en el mismo ambiente"
             ) from exc
         data = _row(record)
-        assert data is not None
-        return Comprobante.model_validate(data)
+        return Comprobante.model_validate(data) if data else None
 
     async def update_sunat_state(
         self,
@@ -219,9 +300,9 @@ class PostgresComprobantesRepository:
         cdr_notas: list[str],
     ) -> Comprobante:
         record = await self._connection.fetchrow(
-            """
+            f"""
             update public.comprobantes
-               set estado = $2::public.estado_comprobante,
+               set estado =$2::public.estado_comprobante,
                    cdr_codigo = coalesce($3, cdr_codigo),
                    cdr_descripcion = coalesce($4, cdr_descripcion),
                    cdr_notas = case
@@ -244,6 +325,36 @@ class PostgresComprobantesRepository:
             cdr_codigo,
             cdr_descripcion,
             cdr_notas,
+        )
+        data = _row(record)
+        if data is None:
+            from app.core.errors import NotFoundError
+
+            raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
+        return Comprobante.model_validate(data)
+
+    async def update_sap(
+        self,
+        comprobante_id: UUID,
+        *,
+        check_sap: bool | None = None,
+        n_sap: str | None = None,
+        cambiar_n_sap: bool = False,
+    ) -> Comprobante:
+        # `cambiar_n_sap` distingue "no tocar" de "limpiar" (n_sap=None).
+        record = await self._connection.fetchrow(
+            f"""
+            update public.comprobantes
+               set check_sap = coalesce($2, check_sap),
+                   n_sap = case when $3 then $4 else n_sap end,
+                   updated_at = now()
+             where id = $1
+            returning {_COLUMNAS_COMPROBANTE}
+            """,
+            comprobante_id,
+            check_sap,
+            cambiar_n_sap,
+            n_sap,
         )
         data = _row(record)
         if data is None:

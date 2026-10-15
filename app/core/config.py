@@ -7,10 +7,12 @@ Todos los valores provienen de variables de entorno o del archivo `.env`
 from __future__ import annotations
 
 import json
+import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+from dotenv import dotenv_values
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -272,6 +274,23 @@ class Settings(BaseSettings):
         return warnings
 
 
+def _exportar_credenciales_del_env_file(ruta: str = ".env") -> None:
+    """Pone en `os.environ` las `SUNAT_CRED_*` del `.env` (sin pisar las ya definidas).
+
+    `Settings` solo conoce sus propios campos, y el proveedor de secretos lee
+    `os.environ`: sin esto, en local (`fastapi dev/run`) las credenciales por
+    empresa del `.env` nunca llegarían. En Docker o en la nube la plataforma ya las
+    inyecta en el entorno real, que siempre tiene prioridad.
+    """
+    archivo = Path(ruta)
+    if not archivo.is_file():
+        return
+    for clave, valor in dotenv_values(archivo, encoding="utf-8").items():
+        if clave.startswith("SUNAT_CRED_") and valor is not None:
+            os.environ.setdefault(clave, valor)
+
+
 def get_settings() -> Settings:
     """Configuración leída del entorno. Se cachea en `app.state` al crear la app."""
+    _exportar_credenciales_del_env_file()
     return Settings()

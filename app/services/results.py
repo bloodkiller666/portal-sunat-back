@@ -130,6 +130,9 @@ class ComprobanteOut(BaseModel):
     numero: str
     nombre_archivo: str
     fecha_emision: date | None = None
+    fecha_vencimiento: date | None = None
+    forma_pago: str | None = None
+    fuente: str = "xml"
     moneda: str = "PEN"
     monto_total: Decimal | None = None
     estado: EstadoComprobante
@@ -304,3 +307,17 @@ class RefreshCdrOut(BaseModel):
     sunat_env: SunatAmbiente
     intento: IntentoOut | None = None
     consultado_at: datetime
+
+
+class SireSyncOut(BaseModel):
+    """Resultado de sincronizar las ventas de un periodo desde SIRE."""
+
+    periodo: str
+    ticket: str | None = None
+    estado: Literal["completado", "en_proceso", "sin_datos"]
+    total_filas: int = 0
+    nuevos: int = 0
+    ya_existian: int = 0
+    anulados: int = 0
+    omitidos: dict[str, int] = Field(default_factory=dict)
+    mensaje: str

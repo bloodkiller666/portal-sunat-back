@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api.routers import archivos, companies, comprobantes, health
+from app.api.routers import archivos, companies, comprobantes, health, sire
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, get_logger, get_request_id
@@ -21,6 +21,7 @@ from app.db.pool import Database
 from app.db.uow import build_uow_factory
 from app.secrets.factory import build_secrets_provider
 from app.sunat.consult import SunatConsultClient
+from app.sunat.sire import SireClient
 
 logger = get_logger(__name__)
 
@@ -50,6 +51,15 @@ def crear_cliente_sunat(settings: Settings) -> Callable[..., SunatConsultClient]
 
     def factory(credentials, env=None) -> SunatConsultClient:
         return SunatConsultClient(credentials, settings, env=env)
+
+    return factory
+
+
+def crear_cliente_sire() -> Callable[..., SireClient]:
+    """Fábrica del cliente SIRE (API REST). Se sustituye en pruebas."""
+
+    def factory(credentials, settings: Settings) -> SireClient:
+        return SireClient(credentials, settings)
 
     return factory
 
@@ -158,6 +168,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.secrets_provider = build_secrets_provider(settings)
     app.state.uow_factory = build_uow_factory(database)
     app.state.sunat_client_factory = crear_cliente_sunat(settings)
+    app.state.sire_client_factory = crear_cliente_sire()
 
     register_cors(app, settings)
     register_request_context(app)
@@ -167,6 +178,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(companies.router, prefix=settings.api_v1_prefix)
     app.include_router(comprobantes.router, prefix=settings.api_v1_prefix)
     app.include_router(archivos.router, prefix=settings.api_v1_prefix)
+    app.include_router(sire.router, prefix=settings.api_v1_prefix)
 
     logger.info(
         "API lista (%s, SUNAT_ENV=%s, docs=%s)",

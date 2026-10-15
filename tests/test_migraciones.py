@@ -39,6 +39,8 @@ def test_existen_las_migraciones_en_orden() -> None:
         "0003_rls.sql",
         "0004_archivos_storage.sql",
         "0005_comprobantes_recibidos.sql",
+        "0006_comprobante_pago.sql",
+        "0007_comprobante_fuente.sql",
     ]
 
 
@@ -178,3 +180,10 @@ def test_nomenclatura_sunat_se_completa_con_trigger() -> None:
     sql = _leer("0002_functions_triggers.sql")
     assert "lpad(new.correlativo::text, 8, '0')" in sql
     assert "new.ruc_emisor || '-' || new.tipo_documento || '-' || new.serie" in sql
+
+
+def test_migracion_0006_agrega_las_condiciones_de_pago() -> None:
+    sql = _leer("0006_comprobante_pago.sql")
+    assert "add column fecha_vencimiento date" in sql
+    assert "add column forma_pago text" in sql
+    assert sql.count("begin;") == 1 and sql.count("commit;") == 1

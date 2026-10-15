@@ -235,6 +235,85 @@ class InMemoryComprobantesRepository:
         self.comprobantes[creado.id] = creado
         return creado
 
+    def _buscar(
+        self,
+        company_id: UUID,
+        *,
+        origen: OrigenComprobante,
+        tipo_documento: str,
+        serie: str,
+        correlativo: int,
+        sunat_ambiente: SunatAmbiente,
+    ) -> Comprobante | None:
+        return next(
+            (
+                c
+                for c in self.comprobantes.values()
+                if c.company_id == company_id
+                and c.origen is origen
+                and c.tipo_documento == tipo_documento
+                and c.serie == serie
+                and c.correlativo == correlativo
+                and c.sunat_ambiente == sunat_ambiente
+            ),
+            None,
+        )
+
+    async def find_by_key(
+        self,
+        company_id: UUID,
+        *,
+        origen: OrigenComprobante,
+        tipo_documento: str,
+        serie: str,
+        correlativo: int,
+        sunat_ambiente: SunatAmbiente,
+    ) -> Comprobante | None:
+        return self._buscar(
+            company_id,
+            origen=origen,
+            tipo_documento=tipo_documento,
+            serie=serie,
+            correlativo=correlativo,
+            sunat_ambiente=sunat_ambiente,
+        )
+
+    async def create_if_absent(self, registro: ComprobanteRegistro) -> Comprobante | None:
+        existente = self._buscar(
+            registro.company_id,
+            origen=registro.origen,
+            tipo_documento=registro.tipo_documento,
+            serie=registro.serie,
+            correlativo=registro.correlativo,
+            sunat_ambiente=registro.sunat_ambiente,
+        )
+        if existente is not None:
+            return None
+        return await self.create(registro)
+
+    async def completar_desde_xml(
+        self, comprobante_id: UUID, registro: ComprobanteRegistro
+    ) -> Comprobante:
+        comprobante = self.comprobantes.get(comprobante_id)
+        if comprobante is None:
+            raise NotFoundError("El comprobante no existe")
+        campos = (
+            "ruc_receptor",
+            "receptor_doc",
+            "razon_social_emisor",
+            "razon_social_receptor",
+            "nombre_archivo",
+            "fecha_emision",
+            "fecha_vencimiento",
+            "forma_pago",
+            "moneda",
+            "monto_total",
+        )
+        cambios = {campo: getattr(registro, campo) for campo in campos}
+        actualizado = comprobante.model_copy(update={**cambios, "fuente": "xml"})
+        self.comprobantes[comprobante_id] = actualizado
+        return actualizado
+
     async def update_sunat_state(
         self,
         comprobante_id: UUID,
@@ -259,6 +338,26 @@ class InMemoryComprobantesRepository:
         )
         self.comprobantes[comprobante_id] = actualizado
         self.actualizaciones.append(actualizado)
+        return actualizado
+
+    async def update_sap(
+        self,
+        comprobante_id: UUID,
+        *,
+        check_sap: bool | None = None,
+        n_sap: str | None = None,
+        cambiar_n_sap: bool = False,
+    ) -> Comprobante:
+        comprobante = self.comprobantes.get(comprobante_id)
+        if comprobante is None:
+            raise NotFoundError("El comprobante no existe")
+        cambios: dict[str, object] = {}
+        if check_sap is not None:
+            cambios["check_sap"] = check_sap
+        if cambiar_n_sap:
+            cambios["n_sap"] = n_sap
+        actualizado = comprobante.model_copy(update=cambios)
+        self.comprobantes[comprobante_id] = actualizado
         return actualizado
 
 
@@ -529,3 +628,112 @@ def disponibilidad_servicio_caido() -> ResultadoDisponibilidad:
         duracion_ms=20000,
         error_tipo="sunat_unavailable",
     )
+
+
+# --------------------------------------------------------------------------- #
+# SIRE (propuesta RVIE)
+# --------------------------------------------------------------------------- #
+def fila_propuesta(ruc: str, **campos: str) -> dict[str, str]:
+    """Fila de la propuesta RVIE con valores válidos; `campos` pisa lo indicado."""
+    base = {
+        "Ruc": ruc,
+        "Razon Social": "ACME SAC",
+        "Periodo": "202609",
+        "CAR SUNAT": "2051483162001FF010000001",
+        "Fecha de emisión": "01/09/2026",
+        "Fecha Vcto/Pago": "",
+        "Tipo CP/Doc.": "01",
+        "Serie del CDP": "FF01",
+        "Nro CP o Doc. Nro Inicial (Rango)": "1",
+        "Nro Final (Rango)": "",
+        "Tipo Doc Identidad": "6",
+        "Nro Doc Identidad": "20987654321",
+        "Apellidos Nombres/ Razón Social": "CLIENTE EJEMPLO SAC",
+        "BI Gravada": "100.00",
+        "IGV / IPM": "18.00",
+        "Total CP": "118.00",
+        "Moneda": "PEN",
+        "Tipo Cambio": "1.000",
+        "Est. Comp": "1",
+    }
+    base.update(campos)
+    return base
+
+
+def construir_zip_propuesta(
+    filas: list[dict[str, str]],
+    *,
+    nombre: str = "LE20123456789202610014040001EXP2.txt",
+    cabecera: tuple[str, ...] | None = None,
+) -> bytes:
+    """ZIP con un TXT de la propuesta en el formato real (`|`, UTF-8 con BOM)."""
+    import io
+    import zipfile
+
+    from app.sunat.sire_rvie import CABECERA
+
+    columnas = cabecera or CABECERA
+    lineas = ["|".join(columnas)]
+    for fila in filas:
+        lineas.append("|".join(fila.get(columna, "") for columna in columnas))
+    texto = "\r\n".join(lineas) + "\r\n"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(nombre, texto.encode("utf-8-sig"))
+    return buffer.getvalue()
+
+
+@dataclass
+class FakeSireClient:
+    """Cliente SIRE simulado: el ticket recorre `estados` y luego entrega `zips`."""
+
+    estados: list[str] = field(default_factory=lambda: ["06"])
+    zips: list[bytes] = field(default_factory=list)
+    ticket: str = "20260300000001"
+    error_solicitud: Exception | None = None
+    error_ticket: Exception | None = None
+    credentials: Any = None
+    solicitudes: list[str] = field(default_factory=list)
+    consultas: int = 0
+    descargas: int = 0
+
+    def solicitar_propuesta(self, periodo: str) -> str:
+        self.solicitudes.append(periodo)
+        if self.error_solicitud is not None:
+            raise self.error_solicitud
+        return self.ticket
+
+    def consultar_ticket(self, ticket: str, periodo: str):
+        from app.sunat.sire import ArchivoTicket, EstadoTicket
+
+        if self.error_ticket is not None:
+            raise self.error_ticket
+        codigo = self.estados[min(self.consultas, len(self.estados) - 1)]
+        self.consultas += 1
+        archivos = (
+            tuple(ArchivoTicket(f"parte{i}.zip", "01") for i, _ in enumerate(self.zips))
+            if codigo == "06"
+            else ()
+        )
+        return EstadoTicket(
+            numero=ticket,
+            periodo=periodo,
+            codigo_estado=codigo,
+            descripcion="",
+            proceso="10",
+            archivos=archivos,
+        )
+
+    def descargar_archivo(self, estado: Any, archivo: Any) -> bytes:
+        self.descargas += 1
+        return self.zips[int(archivo.nombre.removeprefix("parte").removesuffix(".zip"))]
+
+
+def fabricar_cliente_sire(cliente: FakeSireClient):
+    """Fábrica compatible con `app.state.sire_client_factory`."""
+
+    def factory(credentials: Any, settings: Any = None) -> FakeSireClient:
+        cliente.credentials = credentials
+        return cliente
+
+    return factory

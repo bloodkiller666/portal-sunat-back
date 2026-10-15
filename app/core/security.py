@@ -23,6 +23,10 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Tolerancia al desfase entre el reloj de Supabase y el del servidor: sin ella, un token
+# recién emitido (`iat` unos segundos adelante) se rechazaba de forma intermitente.
+LEEWAY_RELOJ_SEGUNDOS = 30
+
 
 class AuthenticatedUser(BaseModel):
     """Usuario autenticado extraído del JWT."""
@@ -115,6 +119,7 @@ class JwtVerifier:
                 audience=audience,
                 issuer=issuer,
                 options=options,
+                leeway=LEEWAY_RELOJ_SEGUNDOS,
             )
         except jwt.ExpiredSignatureError as exc:
             raise AuthenticationError("El token expiró") from exc

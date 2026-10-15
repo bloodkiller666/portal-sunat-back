@@ -10,7 +10,7 @@ from datetime import date
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-from app.core.enums import EstadoComprobante, OrigenComprobante
+from app.core.enums import EstadoComprobante, OrigenComprobante, SunatAmbiente
 from app.db.models import (
     Archivo,
     ArchivoRegistro,
@@ -58,6 +58,23 @@ class ComprobantesRepository(Protocol):
 
     async def create(self, registro: ComprobanteRegistro) -> Comprobante: ...
 
+    async def create_if_absent(self, registro: ComprobanteRegistro) -> Comprobante | None: ...
+
+    async def find_by_key(
+        self,
+        company_id: UUID,
+        *,
+        origen: OrigenComprobante,
+        tipo_documento: str,
+        serie: str,
+        correlativo: int,
+        sunat_ambiente: SunatAmbiente,
+    ) -> Comprobante | None: ...
+
+    async def completar_desde_xml(
+        self, comprobante_id: UUID, registro: ComprobanteRegistro
+    ) -> Comprobante: ...
+
     async def update_sunat_state(
         self,
         comprobante_id: UUID,
@@ -66,6 +83,15 @@ class ComprobantesRepository(Protocol):
         cdr_codigo: str | None,
         cdr_descripcion: str | None,
         cdr_notas: list[str],
+    ) -> Comprobante: ...
+
+    async def update_sap(
+        self,
+        comprobante_id: UUID,
+        *,
+        check_sap: bool | None = None,
+        n_sap: str | None = None,
+        cambiar_n_sap: bool = False,
     ) -> Comprobante: ...
 
 

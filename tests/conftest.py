@@ -16,11 +16,13 @@ from app.core.enums import RolEmpresa
 from app.db.models import Company
 from app.main import create_app
 from tests.fakes import (
+    FakeSireClient,
     FakeStorageProvider,
     FakeSunatClient,
     FakeUnitOfWork,
     construir_empresa,
     construir_membresia,
+    fabricar_cliente_sire,
     fabricar_cliente_sunat,
     uow_factory,
 )
@@ -87,15 +89,22 @@ def sunat() -> FakeSunatClient:
 
 
 @pytest.fixture
+def sire() -> FakeSireClient:
+    return FakeSireClient()
+
+
+@pytest.fixture
 def app(
     settings: Settings,
     uow: FakeUnitOfWork,
     sunat: FakeSunatClient,
+    sire: FakeSireClient,
     entorno_credenciales: None,
 ) -> FastAPI:
     aplicacion = create_app(settings)
     aplicacion.state.uow_factory = uow_factory(uow)
     aplicacion.state.sunat_client_factory = fabricar_cliente_sunat(sunat)
+    aplicacion.state.sire_client_factory = fabricar_cliente_sire(sire)
     return aplicacion
 
 

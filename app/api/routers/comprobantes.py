@@ -25,6 +25,7 @@ from app.services.comprobantes import (
     MAX_INTENTOS_PAGINA,
     MAX_LOTE_REFRESCO,
     TAMANO_MAXIMO_XML,
+    actualizar_sap,
     generar_pdf_comprobante,
     import_comprobante_xml,
     list_comprobantes,
@@ -213,6 +214,46 @@ async def get_comprobante(
 ) -> ComprobanteDetalleOut:
     """Comprobante completo (cabecera + líneas del detalle); cualquier miembro."""
     return await obtener_detalle(uow=uow, user=user, comprobante_id=comprobante_id)
+
+
+class ActualizarSapIn(BaseModel):
+    """Campos de gestión SAP editables; lo que no se envía no se modifica."""
+
+    check_sap: bool | None = Field(default=None, description="Marca de conciliación con SAP")
+    n_sap: str | None = Field(
+        default=None, max_length=50, description="N° SAP; null o vacío lo limpia"
+    )
+
+    @model_validator(mode="after")
+    def _al_menos_un_campo(self) -> ActualizarSapIn:
+        if not self.model_fields_set & {"check_sap", "n_sap"}:
+            raise ValueError("Envíe check_sap y/o n_sap")
+        if "check_sap" in self.model_fields_set and self.check_sap is None:
+            raise ValueError("check_sap debe ser true o false")
+        return self
+
+
+@router.patch(
+    "/comprobantes/{comprobante_id}",
+    response_model=ComprobanteOut,
+    summary="Actualiza el Check SAP / N° SAP del comprobante",
+)
+async def patch_comprobante(
+    user: CurrentUserDep,
+    uow: UowDep,
+    cuerpo: ActualizarSapIn,
+    comprobante_id: UUID = Path(description="Identificador del comprobante"),
+) -> ComprobanteOut:
+    """Persiste la marca SAP (admin/emisor); el `lector` recibe 403."""
+    n_sap = (cuerpo.n_sap or "").strip() or None
+    return await actualizar_sap(
+        uow=uow,
+        user=user,
+        comprobante_id=comprobante_id,
+        check_sap=cuerpo.check_sap,
+        n_sap=n_sap,
+        cambiar_n_sap="n_sap" in cuerpo.model_fields_set,
+    )
 
 
 @router.get(

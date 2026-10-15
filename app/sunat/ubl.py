@@ -82,6 +82,8 @@ class ComprobanteUbl:
     ruc_receptor: str | None = None
     razon_social_receptor: str | None = None
     items: tuple[ItemUbl, ...] = ()
+    fecha_vencimiento: date | None = None
+    forma_pago: str | None = None
 
     @property
     def nombre_archivo(self) -> str:
@@ -172,13 +174,17 @@ def parse_comprobante_ubl(xml: bytes, *, ruc_esperado: str | None = None) -> Com
     emisor = _hijo(root, "AccountingSupplierParty", "Party")
     receptor = _hijo(root, "AccountingCustomerParty", "Party")
     receptor_doc = _documento_party(receptor)
+    fecha_emision = _fecha(root)
+    vencimiento = _vencimiento(root)
 
     return ComprobanteUbl(
         tipo_documento=tipo_documento,
         serie=serie,
         correlativo=correlativo,
         ruc_emisor=ruc_emisor,
-        fecha_emision=_fecha(root),
+        fecha_emision=fecha_emision,
+        fecha_vencimiento=vencimiento,
+        forma_pago=_forma_pago(root, fecha_emision, vencimiento),
         moneda=(_texto_en(root, "DocumentCurrencyCode") or "PEN").upper()[:3],
         monto_total=_monto_total(root),
         razon_social_emisor=_razon_social(emisor),
@@ -245,6 +251,65 @@ def _fecha(root: etree._Element) -> date | None:
         return date.fromisoformat(valor)
     except ValueError:
         return None
+
+
+def _fecha_iso(valor: str | None) -> date | None:
+    if not valor:
+        return None
+    try:
+        return date.fromisoformat(valor[:10])
+    except ValueError:
+        return None
+
+
+def _hijos(elemento: etree._Element, nombre: str) -> list[etree._Element]:
+    return [
+        hijo for hijo in elemento if isinstance(hijo.tag, str) and _localname(hijo) == nombre
+    ]
+
+
+def _vencimiento(root: etree._Element) -> date | None:
+    """Fecha de vencimiento: `DueDate` de la cabecera o, si no, la última cuota.
+
+    Un crédito en cuotas declara una `PaymentTerms/PaymentDueDate` por cuota; el
+    comprobante vence cuando vence la última. También se tolera el formato
+    `Payment/PaymentDueDate` de algunos emisores.
+    """
+    directa = _fecha_iso(_texto_en(root, "DueDate"))
+    if directa is not None:
+        return directa
+    fechas = [
+        fecha
+        for termino in _hijos(root, "PaymentTerms")
+        if (fecha := _fecha_iso(_texto_en(termino, "PaymentDueDate"))) is not None
+    ]
+    fechas += [
+        fecha
+        for pago in _hijos(root, "Payment")
+        if (fecha := _fecha_iso(_texto_en(pago, "PaymentDueDate"))) is not None
+    ]
+    return max(fechas) if fechas else None
+
+
+def _forma_pago(
+    root: etree._Element, emision: date | None, vencimiento: date | None
+) -> str | None:
+    """`Contado`, `Crédito` o `Crédito N días`; `None` si el XML no la declara.
+
+    SUNAT la informa en `PaymentTerms` (`PaymentMeansID` = Contado/Credito, y
+    `CuotaNNN` para las cuotas, que aquí se ignoran). Los días salen de restar la
+    emisión al vencimiento cuando ambos existen.
+    """
+    for termino in _hijos(root, "PaymentTerms"):
+        for nombre in ("PaymentMeansID", "ID"):
+            valor = (_texto_en(termino, nombre) or "").lower().replace("é", "e")
+            if valor == "contado":
+                return "Contado"
+            if valor == "credito":
+                if emision and vencimiento and vencimiento > emision:
+                    return f"Crédito {(vencimiento - emision).days} días"
+                return "Crédito"
+    return None
 
 
 def _monto_total(root: etree._Element) -> Decimal | None:

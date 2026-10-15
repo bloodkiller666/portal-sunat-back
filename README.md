@@ -397,6 +397,37 @@ curl -s "http://127.0.0.1:8000/api/v1/comprobantes/$ID/envios?limit=20" \
 # {"items":[{"id":1,"tipo_operacion":"consulta_cdr","exito":true,"codigo":"0",...}],"total":1}
 ```
 
+### `PATCH /api/v1/comprobantes/{id}`
+
+Persiste el Check SAP (y opcionalmente el N° SAP). Solo `admin`/`emisor`; el
+`lector` recibe 403. Lo que no se envía no se modifica; `"n_sap": ""` lo limpia.
+
+```bash
+curl -s -X PATCH "http://127.0.0.1:8000/api/v1/comprobantes/$ID" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"check_sap": true, "n_sap": "4500926001"}'
+```
+
+### `POST /api/v1/companies/{ruc}/sire/ventas/sync`
+
+Trae del SIRE de SUNAT (propuesta RVIE) las ventas reales de un periodo y las
+registra como comprobantes (`origen=emitido`, `fuente=sire`, ambiente `prod`).
+Solo lectura hacia SUNAT, idempotente y solo `admin`/`emisor`. Requiere
+`SUNAT_CRED_<RUC>_CLIENT_ID/CLIENT_SECRET` (Credenciales de API SUNAT).
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/v1/companies/$RUC/sire/ventas/sync" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"periodo": "202609"}'
+# {"periodo":"202609","ticket":"20260300000078","estado":"completado",
+#  "total_filas":247,"nuevos":247,"ya_existian":0,"anulados":13,"omitidos":{},...}
+```
+
+Si SUNAT todavía genera el archivo responde `"estado":"en_proceso"` con el
+`ticket`; repita la llamada enviando `"ticket"` para retomarla sin pedir otra
+propuesta. Estados: `completado`, `en_proceso`, `sin_datos`. Diagnóstico previo:
+`uv run python -m scripts.sire_probe --ruc $RUC --periodo 202609`.
+
 ## Conectar el frontend
 
 El frontend nunca habla con SUNAT: habla con esta API con un JWT de Supabase.

@@ -345,6 +345,9 @@ def to_comprobante_out(comprobante: Comprobante) -> ComprobanteOut:
         numero=comprobante.numero,
         nombre_archivo=comprobante.nombre_archivo,
         fecha_emision=comprobante.fecha_emision,
+        fecha_vencimiento=comprobante.fecha_vencimiento,
+        forma_pago=comprobante.forma_pago,
+        fuente=comprobante.fuente,
         moneda=comprobante.moneda,
         monto_total=comprobante.monto_total,
         estado=comprobante.estado,
@@ -572,13 +575,28 @@ async def import_comprobante_xml(
         numero=f"{dato.correlativo:08d}",
         nombre_archivo=dato.nombre_archivo,
         fecha_emision=dato.fecha_emision,
+        fecha_vencimiento=dato.fecha_vencimiento,
+        forma_pago=dato.forma_pago,
         moneda=dato.moneda,
         monto_total=dato.monto_total,
         estado=EstadoComprobante.pendiente,
         sunat_ambiente=settings.effective_sunat_env(access.company.sunat_ambiente),
         created_by=user.id,
     )
-    creado = await uow.comprobantes.create(registro)
+    # Un registro que vino de SIRE solo tiene cabecera: el XML lo completa (con
+    # sus ítems y el archivo) en lugar de chocar con él como duplicado.
+    existente = await uow.comprobantes.find_by_key(
+        access.company_id,
+        origen=origen,
+        tipo_documento=registro.tipo_documento,
+        serie=registro.serie,
+        correlativo=registro.correlativo,
+        sunat_ambiente=registro.sunat_ambiente,
+    )
+    if existente is not None and existente.fuente == "sire":
+        creado = await uow.comprobantes.completar_desde_xml(existente.id, registro)
+    else:
+        creado = await uow.comprobantes.create(registro)
     logger.info(
         "Comprobante %s importado (%s-%s)", origen.value, creado.serie, creado.numero
     )
@@ -660,6 +678,35 @@ async def obtener_detalle(
     items = await uow.items.list_for_comprobante(comprobante_id)
     base = to_comprobante_out(comprobante)
     return ComprobanteDetalleOut(**base.model_dump(), items=[to_item_out(item) for item in items])
+
+
+async def actualizar_sap(
+    *,
+    uow: UnitOfWork,
+    user: AuthenticatedUser,
+    comprobante_id: UUID,
+    check_sap: bool | None,
+    n_sap: str | None,
+    cambiar_n_sap: bool,
+) -> ComprobanteOut:
+    """Persiste la marca de conciliación SAP (y opcionalmente el N° SAP).
+
+    Solo admin/emisor: es un dato de gestión que el `lector` no debe alterar.
+    Aplica tanto a ventas como a compras.
+    """
+    comprobante = await uow.comprobantes.get(comprobante_id)
+    if comprobante is None:
+        raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
+
+    await require_membership(uow, user, comprobante.company_id, roles=ROLES_OPERATIVOS)
+
+    actualizado = await uow.comprobantes.update_sap(
+        comprobante_id,
+        check_sap=check_sap,
+        n_sap=n_sap,
+        cambiar_n_sap=cambiar_n_sap,
+    )
+    return to_comprobante_out(actualizado)
 
 
 async def generar_pdf_comprobante(

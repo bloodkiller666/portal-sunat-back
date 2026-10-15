@@ -81,6 +81,9 @@ class Comprobante(RowModel):
     numero: str = ""
     nombre_archivo: str = ""
     fecha_emision: date | None = None
+    fecha_vencimiento: date | None = None
+    fuente: str = "xml"
+    forma_pago: str | None = None
     moneda: str = "PEN"
     monto_total: Decimal | None = None
     estado: EstadoComprobante = EstadoComprobante.pendiente
@@ -125,6 +128,9 @@ class ComprobanteRegistro(RowModel):
     numero: str = ""
     nombre_archivo: str = ""
     fecha_emision: date | None = None
+    fecha_vencimiento: date | None = None
+    fuente: str = "xml"
+    forma_pago: str | None = None
     moneda: str = "PEN"
     monto_total: Decimal | None = None
     estado: EstadoComprobante = EstadoComprobante.pendiente

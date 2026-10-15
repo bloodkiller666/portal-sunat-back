@@ -44,6 +44,10 @@ def get_secrets_provider(request: Request) -> SecretsProvider:
     return request.app.state.secrets_provider
 
 
+def get_sire_client_factory(request: Request) -> Callable:
+    return request.app.state.sire_client_factory
+
+
 def get_sunat_client_factory(request: Request) -> Callable:
     return request.app.state.sunat_client_factory
 
@@ -111,6 +115,7 @@ CurrentUserDep = Annotated[AuthenticatedUser, Depends(get_current_user)]
 UowDep = Annotated[UnitOfWork, Depends(get_uow)]
 SecretsProviderDep = Annotated[SecretsProvider, Depends(get_secrets_provider)]
 SunatClientFactoryDep = Annotated[Callable, Depends(get_sunat_client_factory)]
+SireClientFactoryDep = Annotated[Callable, Depends(get_sire_client_factory)]
 
 # Acceso a la empresa del RUC de la ruta (404 si no existe; 403 si no es miembro).
 CompanyAccessDep = Annotated[CompanyMember, Depends(get_company_access)]

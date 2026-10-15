@@ -217,3 +217,127 @@ async def test_la_lectura_aborta_al_pasar_el_limite_sin_leer_todo() -> None:
     assert recibido > maximo
     # Cortó al primer bloque que pasó del límite: no leyó los 400 KB.
     assert recibido <= maximo + BLOQUE_LECTURA_BYTES
+
+
+def _sembrar(uow: FakeUnitOfWork, empresa: Company):
+    comprobante = construir_comprobante(empresa.id, ruc=RUC_PRINCIPAL, correlativo=7)
+    uow.comprobantes.comprobantes[comprobante.id] = comprobante
+    return comprobante
+
+
+def test_patch_check_sap_persiste_la_marca(
+    client: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+) -> None:
+    comprobante = _sembrar(uow, empresa_principal)
+
+    respuesta = client.patch(
+        f"/api/v1/comprobantes/{comprobante.id}", headers=auth, json={"check_sap": True}
+    )
+
+    assert respuesta.status_code == 200
+    assert respuesta.json()["check_sap"] is True
+    assert uow.comprobantes.comprobantes[comprobante.id].check_sap is True
+
+
+def test_patch_n_sap_se_guarda_y_se_limpia(
+    client: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+) -> None:
+    comprobante = _sembrar(uow, empresa_principal)
+    url = f"/api/v1/comprobantes/{comprobante.id}"
+
+    guardado = client.patch(url, headers=auth, json={"check_sap": True, "n_sap": " 4500123 "})
+    assert guardado.json()["n_sap"] == "4500123"
+    assert guardado.json()["check_sap"] is True
+
+    # Sin n_sap en el cuerpo no se toca; con null/vacío se limpia.
+    intacto = client.patch(url, headers=auth, json={"check_sap": False})
+    assert intacto.json()["n_sap"] == "4500123"
+    limpio = client.patch(url, headers=auth, json={"n_sap": ""})
+    assert limpio.json()["n_sap"] is None
+    assert limpio.json()["check_sap"] is False
+
+
+def test_patch_como_lector_devuelve_403(
+    client: TestClient,
+    auth_lector: dict[str, str],
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+) -> None:
+    comprobante = _sembrar(uow, empresa_principal)
+
+    respuesta = client.patch(
+        f"/api/v1/comprobantes/{comprobante.id}", headers=auth_lector, json={"check_sap": True}
+    )
+
+    assert respuesta.status_code == 403
+    assert respuesta.json()["error"]["details"]["rol"] == "lector"
+    assert uow.comprobantes.comprobantes[comprobante.id].check_sap is False
+
+
+def test_patch_sin_token_devuelve_401(client: TestClient) -> None:
+    respuesta = client.patch(f"/api/v1/comprobantes/{uuid4()}", json={"check_sap": True})
+    assert respuesta.status_code == 401
+
+
+def test_patch_comprobante_inexistente_devuelve_404(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    respuesta = client.patch(
+        f"/api/v1/comprobantes/{uuid4()}", headers=auth, json={"check_sap": True}
+    )
+    assert respuesta.status_code == 404
+
+
+@pytest.mark.parametrize("cuerpo", [{}, {"check_sap": None}, {"n_sap": "x" * 51}])
+def test_patch_cuerpo_invalido_devuelve_422(
+    client: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+    cuerpo: dict[str, object],
+) -> None:
+    comprobante = _sembrar(uow, empresa_principal)
+    respuesta = client.patch(f"/api/v1/comprobantes/{comprobante.id}", headers=auth, json=cuerpo)
+    assert respuesta.status_code == 422
+    assert "error" in respuesta.json()
+
+
+def test_importar_credito_guarda_vencimiento_y_forma_de_pago(
+    client: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+) -> None:
+    respuesta = client.post(
+        IMPORT,
+        headers=auth,
+        files={"archivo": ("f.xml", _xml("factura_credito.xml"), "application/xml")},
+    )
+
+    assert respuesta.status_code == 201
+    cuerpo = respuesta.json()
+    assert cuerpo["fecha_vencimiento"] == "2026-11-04"
+    assert cuerpo["forma_pago"] == "Crédito 30 días"
+    guardado = next(iter(uow.comprobantes.comprobantes.values()))
+    assert guardado.fecha_vencimiento is not None
+    assert guardado.forma_pago == "Crédito 30 días"
+
+
+def test_importar_sin_condiciones_de_pago_devuelve_null(
+    client: TestClient, auth: dict[str, str], empresa_principal: Company
+) -> None:
+    respuesta = client.post(
+        IMPORT,
+        headers=auth,
+        files={"archivo": ("f.xml", _xml("factura.xml"), "application/xml")},
+    )
+
+    assert respuesta.status_code == 201
+    assert respuesta.json()["fecha_vencimiento"] is None
+    assert respuesta.json()["forma_pago"] is None

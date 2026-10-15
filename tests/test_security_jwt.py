@@ -132,3 +132,30 @@ async def test_no_acepta_hs256_cuando_se_espera_es256(monkeypatch: pytest.Monkey
     # Token HS256 firmado con el mismo material: debe rechazarse por algoritmo.
     with pytest.raises(AuthenticationError):
         await JwtVerifier(settings).verify(crear_token(secret=SECRETO, algoritmo="HS256"))
+
+
+def _token_con_iat(desfase_segundos: int) -> str:
+    import time
+
+    ahora = int(time.time())
+    return jwt.encode(
+        {
+            "sub": str(USUARIO_ID),
+            "aud": "authenticated",
+            "role": "authenticated",
+            "iat": ahora + desfase_segundos,
+            "exp": ahora + 3600,
+        },
+        SECRETO,
+        algorithm="HS256",
+    )
+
+
+async def test_un_token_recien_emitido_con_reloj_adelantado_se_acepta() -> None:
+    usuario = await JwtVerifier(_settings()).verify(_token_con_iat(5))
+    assert usuario.id == USUARIO_ID
+
+
+async def test_un_token_con_iat_muy_en_el_futuro_se_rechaza() -> None:
+    with pytest.raises(AuthenticationError):
+        await JwtVerifier(_settings()).verify(_token_con_iat(600))

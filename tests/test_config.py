@@ -137,3 +137,37 @@ def test_gitignore_excluye_env_y_secrets() -> None:
     assert "secrets/" in gitignore
     assert "*.pfx" in gitignore
     assert "!.env.example" in gitignore
+
+
+def test_las_credenciales_del_env_file_llegan_al_entorno_sin_pisar_el_real(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core import config
+
+    ruta = tmp_path / ".env"
+    ruta.write_text(
+        "SUNAT_CRED_20123456789_SOL_USER=DESDEARCHIVO\n"
+        "SUNAT_CRED_20123456789_SOL_PASSWORD=clave-archivo\n"
+        "OTRA_VARIABLE=no-debe-exportarse\n",
+        encoding="utf-8",
+    )
+    entorno = {"SUNAT_CRED_20123456789_SOL_PASSWORD": "clave-del-entorno-real"}
+    monkeypatch.setattr(config.os, "environ", entorno)
+
+    config._exportar_credenciales_del_env_file(str(ruta))
+
+    assert entorno["SUNAT_CRED_20123456789_SOL_USER"] == "DESDEARCHIVO"
+    # El entorno real (Docker/nube) siempre manda sobre el archivo.
+    assert entorno["SUNAT_CRED_20123456789_SOL_PASSWORD"] == "clave-del-entorno-real"
+    assert "OTRA_VARIABLE" not in entorno
+
+
+def test_sin_env_file_no_pasa_nada(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core import config
+
+    entorno: dict[str, str] = {}
+    monkeypatch.setattr(config.os, "environ", entorno)
+
+    config._exportar_credenciales_del_env_file(str(tmp_path / "no-existe.env"))
+
+    assert entorno == {}
