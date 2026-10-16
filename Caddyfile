@@ -1,0 +1,15 @@
+# Proxy inverso con HTTPS automático. El dominio llega por la variable API_DOMAIN.
+{$API_DOMAIN} {
+	encode gzip
+	reverse_proxy api:8000 {
+		# SUNAT SIRE puede tardar hasta ~25 s: margen para no cortar la petición.
+		transport http {
+			response_header_timeout 90s
+		}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+}

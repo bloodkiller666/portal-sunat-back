@@ -1,0 +1,56 @@
+# Despliegue en un VPS con Docker: API + Caddy (HTTPS automático con Let's Encrypt).
+#
+#   cp .env.prod.example .env.prod      # y complételo (nunca se versiona)
+#   docker compose up -d --build
+#
+# La API no publica puertos: solo Caddy (80/443) es alcanzable desde internet.
+services:
+  api:
+    build: .
+    image: portal-facturacion:latest
+    restart: unless-stopped
+    env_file: .env.prod
+    # Un worker por contenedor basta (la API es asíncrona y SUNAT va en hilos);
+    # suba WEB_CONCURRENCY en .env.prod solo si mide saturación de CPU.
+    expose:
+      - "8000"
+    # Certificado .pfx (solo cuando se active la emisión): se monta de solo lectura
+    # y SUNAT_CRED_<RUC>_CERT_PATH apunta a /app/secrets/<archivo>.pfx
+    # volumes:
+    #   - ./secrets:/app/secrets:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      # Caché de los WSDL de SUNAT: debe ir en un directorio escribible (aquí /tmp);
+      # si faltara, se vuelve a descargar de SUNAT tras cada reinicio.
+      SUNAT_WSDL_DIR: /tmp/cpe-wsdl
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Dominio público de la API, p. ej. api.midominio.com (el DNS debe apuntar al VPS).
+      API_DOMAIN: ${API_DOMAIN:?defina API_DOMAIN (p. ej. api.midominio.com)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

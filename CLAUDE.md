@@ -78,9 +78,11 @@ Frontend (ya conectado al backend):
 
 ## 4. Pendientes (en orden de prioridad para llegar a producción)
 
-### P1 — Desplegar el backend
+### P1 — Desplegar el backend (imagen y compose YA verificados en Docker local)
 
-El `Dockerfile` y CI (`.github/workflows/ci.yml`) ya existen. Falta:
+El `Dockerfile`, `docker-compose.yml` (API + Caddy con HTTPS) y CI ya existen y
+se probaron en Docker local con `ENVIRONMENT=prod` (ver README, «VPS con Docker
+Compose»). Falta:
 
 1. Elegir destino (VPS con Docker Compose, o Railway/Render/Fly) y definir
    `PORT`/`WEB_CONCURRENCY` (los inyecta la plataforma).

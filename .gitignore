@@ -70,4 +70,5 @@ Thumbs.db
 # Copias sueltas del .env (nunca versionar)
 env.txt
 *.env.txt
-/env.txt
+
+!.env.prod.example

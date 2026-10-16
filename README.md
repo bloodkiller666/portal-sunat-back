@@ -563,6 +563,32 @@ plataforma. Cada worker es un proceso independiente; las llamadas SOAP de SUNAT
 corren en un pool de hilos, por lo que un worker atiende varias consultas a la
 vez sin bloquearse.
 
+### En un VPS con Docker Compose (HTTPS automático)
+
+`docker-compose.yml` levanta la API y **Caddy** delante (certificado Let's Encrypt
+automático). La API no publica puertos; solo Caddy expone 80/443. Corre con el
+sistema de archivos de solo lectura, sin capacidades de Linux y con 512 MB de tope.
+
+```bash
+# 1. DNS: api.midominio.com -> IP del VPS (puertos 80 y 443 abiertos)
+git clone https://github.com/bloodkiller666/portal-sunat-back.git && cd portal-sunat-back
+cp .env.prod.example .env.prod      # complételo; NUNCA se versiona
+export API_DOMAIN=api.midominio.com # o póngalo en un archivo .env junto al compose
+docker compose up -d --build
+curl https://api.midominio.com/health
+```
+
+Luego, en Vercel: `NEXT_PUBLIC_API_URL=https://api.midominio.com` y volver a
+desplegar el frontend. `CORS_ORIGINS` debe ser el dominio exacto del frontend.
+Para actualizar: `git pull && docker compose up -d --build`. Las migraciones SQL
+**no** se aplican solas: en una base existente aplique solo las nuevas de
+`supabase/migrations/`.
+
+Verificado en local con esta misma configuración (`ENVIRONMENT=prod`): health y
+ready, docs apagados, CORS solo para el dominio del frontend, JWT ES256, listado,
+PDF, consulta SOAP real a SUNAT y sincronización SIRE a través del proxy. El caché
+de WSDL va a `/tmp` (`SUNAT_WSDL_DIR`) porque el resto del sistema es de solo lectura.
+
 ### Sondas de salud
 
 | Ruta | Uso | Qué comprueba |
