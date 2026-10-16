@@ -245,9 +245,20 @@ async def _guardar_cdr(
 
 
 def _siguiente_estado(actual: EstadoComprobante, propuesto: EstadoComprobante) -> EstadoComprobante:
-    """Una consulta de estado nunca revierte una anulación."""
+    """Una consulta de estado nunca revierte una anulación ni una aprobación.
+
+    Aprobado es definitivo: SUNAT ya lo aceptó (o lo lista en su RVIE). Una consulta
+    que no puede resolverlo —por ejemplo `0013`, comprobante emitido por otro
+    sistema— no debe degradarlo a Pendiente ni a Rechazado.
+    """
     if actual is EstadoComprobante.anulado and propuesto is not EstadoComprobante.anulado:
         logger.info("Se conserva el estado Anulado del comprobante consultado")
+        return actual
+    if actual is EstadoComprobante.aprobado and propuesto in (
+        EstadoComprobante.pendiente,
+        EstadoComprobante.rechazado,
+    ):
+        logger.info("Se conserva el estado Aprobado del comprobante consultado")
         return actual
     return propuesto
 
@@ -710,21 +721,42 @@ async def actualizar_sap(
 
 
 async def generar_pdf_comprobante(
-    *, uow: UnitOfWork, user: AuthenticatedUser, comprobante_id: UUID
+    *,
+    uow: UnitOfWork,
+    user: AuthenticatedUser,
+    comprobante_id: UUID,
+    settings: Settings | None = None,
 ) -> tuple[bytes, str]:
     """Representación impresa del comprobante en PDF.
 
     Genera el documento bajo demanda a partir de los datos registrados (no
-    depende del bucket ni de SUNAT). Devuelve `(contenido, nombre_archivo)`;
-    cualquier miembro (incluido `lector`) puede descargarlo.
+    depende de SUNAT). Devuelve `(contenido, nombre_archivo)`; cualquier miembro
+    (incluido `lector`) puede descargarlo.
+
+    La primera vez que un admin/emisor lo genera se archiva en R2 como **copia
+    informativa**: no se construye desde el XML firmado, así que no es la evidencia
+    ante SUNAT (esa es el XML con su CDR). El `lector` no archiva nada (no tiene
+    permiso de escritura) y un fallo de R2 no impide la descarga.
     """
     comprobante = await uow.comprobantes.get(comprobante_id)
     if comprobante is None:
         raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
 
-    await require_membership(uow, user, comprobante.company_id)
+    miembro = await require_membership(uow, user, comprobante.company_id)
 
     items = await uow.items.list_for_comprobante(comprobante_id)
     contenido = await SunatPdfRenderer().render(comprobante, items)
     nombre = f"{comprobante.nombre_archivo or comprobante.numero or 'comprobante'}.pdf"
+
+    if settings is not None and miembro.rol in ROLES_OPERATIVOS:
+        archivados = await uow.archivos.list_for_comprobante(comprobante_id)
+        if not any(archivo.tipo is TipoArchivo.pdf for archivo in archivados):
+            await guardar_archivo_sin_fallar(
+                uow=uow,
+                settings=settings,
+                comprobante_id=comprobante_id,
+                tipo=TipoArchivo.pdf,
+                file_bytes=contenido,
+                filename=nombre,
+            )
     return contenido, nombre

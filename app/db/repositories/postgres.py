@@ -12,7 +12,7 @@ from uuid import UUID
 
 import asyncpg
 
-from app.core.enums import EstadoComprobante, OrigenComprobante, SunatAmbiente
+from app.core.enums import EstadoComprobante, OrigenComprobante, SunatAmbiente, TipoArchivo
 from app.core.errors import ConflictError
 from app.db.models import (
     Archivo,
@@ -494,6 +494,18 @@ class PostgresArchivosRepository:
         records = await self._connection.fetch(
             "select * from public.archivos where comprobante_id = $1 order by created_at",
             comprobante_id,
+        )
+        return [Archivo.model_validate(_row(record)) for record in records]
+
+    async def list_evidencias(self, company_id: UUID, *, tipo: TipoArchivo) -> list[Archivo]:
+        records = await self._connection.fetch(
+            """
+            select * from public.archivos
+            where company_id = $1 and tipo = $2 and comprobante_id is null
+            order by created_at desc
+            """,
+            company_id,
+            tipo.value,
         )
         return [Archivo.model_validate(_row(record)) for record in records]
 

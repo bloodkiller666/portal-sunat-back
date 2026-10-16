@@ -136,6 +136,54 @@ async def guardar_archivo_sin_fallar(
     return None
 
 
+async def guardar_archivo_de_empresa_sin_fallar(
+    *,
+    uow: UnitOfWork,
+    settings: Settings,
+    company_id: UUID,
+    tipo: TipoArchivo,
+    file_bytes: bytes,
+    filename: str,
+    folder_path: str,
+    storage_provider: StorageProvider | None = None,
+) -> Archivo | None:
+    """Archiva en R2 un archivo de la empresa que no pertenece a un comprobante.
+
+    Es el caso de la evidencia de SIRE: el ZIP original de un periodo se guarda tal
+    como lo entregó SUNAT (con su hash SHA-256) para poder demostrar en una auditoría
+    qué tenía registrado SUNAT. Igual que con los demás archivos, un fallo de R2 no
+    rompe la operación principal: queda en el log.
+    """
+    try:
+        proveedor = storage_provider or get_storage_provider(settings)
+        subido = await proveedor.upload_file(
+            file_bytes=file_bytes,
+            filename=filename,
+            content_type=_tipo_mime(tipo),
+            folder_path=folder_path,
+        )
+        return await uow.archivos.registrar(
+            ArchivoRegistro(
+                company_id=company_id,
+                comprobante_id=None,
+                tipo=tipo,
+                nombre=filename,
+                mime_type=subido.content_type,
+                size_bytes=subido.size_bytes,
+                hash_sha256=subido.hash_sha256,
+                storage_provider=STORAGE_PROVIDER_NOMBRE,
+                storage_bucket=settings.r2_bucket_name,
+                storage_key=subido.file_key,
+                estado=EstadoArchivo.subido,
+            )
+        )
+    except StorageNotConfiguredError:
+        logger.warning("No se archivó %s: R2 no está configurado", filename)
+    except StorageError:
+        logger.warning("No se pudo archivar %s en el almacenamiento", filename)
+    return None
+
+
 async def url_descarga(
     *,
     settings: Settings,

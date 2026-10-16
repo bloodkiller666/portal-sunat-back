@@ -7,14 +7,15 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import (
     AcessoOperativo,
+    CompanyAccessDep,
     CurrentUserDep,
     SecretsProviderDep,
     SettingsDep,
     SireClientFactoryDep,
     UowDep,
 )
-from app.services.results import SireSyncOut
-from app.services.sire import sincronizar_ventas
+from app.services.results import EvidenciasPage, SireSyncOut
+from app.services.sire import listar_evidencias, sincronizar_ventas
 
 router = APIRouter(tags=["sire"])
 
@@ -56,3 +57,18 @@ async def post_sincronizar_ventas(
         periodo=cuerpo.periodo,
         ticket=cuerpo.ticket,
     )
+
+
+@router.get(
+    "/companies/{ruc}/sire/evidencias",
+    response_model=EvidenciasPage,
+    summary="Lista los ZIP originales de SIRE archivados (evidencia de auditoría)",
+)
+async def get_evidencias(
+    access: CompanyAccessDep, user: CurrentUserDep, uow: UowDep
+) -> EvidenciasPage:
+    """Cada sincronización guarda el ZIP tal como lo entregó SUNAT, con su SHA-256.
+
+    Para descargar uno use `POST /archivos/{id}/download-url` (URL firmada temporal).
+    """
+    return await listar_evidencias(uow=uow, user=user, access=access)

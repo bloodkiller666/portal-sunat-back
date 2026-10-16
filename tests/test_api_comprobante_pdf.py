@@ -90,3 +90,88 @@ def test_pdf_con_caracteres_especiales_no_falla(
 
     assert respuesta.status_code == 200
     assert respuesta.content.startswith(b"%PDF")
+
+
+# --------------------------------------------------------------------------- #
+# Copia informativa en R2
+# --------------------------------------------------------------------------- #
+def _importar_r2(cliente: TestClient, auth: dict[str, str]) -> dict:
+    respuesta = cliente.post(
+        IMPORT,
+        headers=auth,
+        files={"archivo": ("f.xml", _xml("factura_con_items.xml"), "application/xml")},
+    )
+    assert respuesta.status_code == 201
+    return respuesta.json()
+
+
+def _pdfs_archivados(uow: FakeUnitOfWork) -> list:
+    return [a for a in uow.archivos.archivos if a.tipo.value == "pdf"]
+
+
+def test_la_primera_descarga_archiva_el_pdf_una_sola_vez(
+    cliente_r2: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, almacenamiento
+) -> None:
+    creado = _importar_r2(cliente_r2, auth)
+    url = f"/api/v1/comprobantes/{creado['id']}/pdf"
+
+    primera = cliente_r2.get(url, headers=auth)
+    segunda = cliente_r2.get(url, headers=auth)
+
+    assert primera.status_code == segunda.status_code == 200
+    pdfs = _pdfs_archivados(uow)
+    assert len(pdfs) == 1
+    assert pdfs[0].nombre == f"{RUC_PRINCIPAL}-01-F001-00000001.pdf"
+    assert pdfs[0].comprobante_id is not None
+    # Lo archivado es exactamente lo que se descargó la primera vez.
+    import hashlib
+
+    assert pdfs[0].hash_sha256 == hashlib.sha256(primera.content).hexdigest()
+
+
+def test_el_lector_descarga_pero_no_archiva(
+    cliente_r2: TestClient,
+    auth: dict[str, str],
+    auth_lector: dict[str, str],
+    uow: FakeUnitOfWork,
+) -> None:
+    creado = _importar_r2(cliente_r2, auth)
+
+    respuesta = cliente_r2.get(f"/api/v1/comprobantes/{creado['id']}/pdf", headers=auth_lector)
+
+    assert respuesta.status_code == 200
+    assert not _pdfs_archivados(uow)
+
+
+def test_sin_r2_el_pdf_se_descarga_igual(
+    client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork
+) -> None:
+    creado = _importar(client, auth)
+
+    respuesta = client.get(f"/api/v1/comprobantes/{creado['id']}/pdf", headers=auth)
+
+    assert respuesta.status_code == 200
+    assert not _pdfs_archivados(uow)
+
+
+def test_si_r2_falla_el_pdf_se_descarga_igual(
+    cliente_r2: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    almacenamiento,
+    monkeypatch,
+) -> None:
+    from app.core.errors import StorageError
+
+    creado = _importar_r2(cliente_r2, auth)
+
+    async def _falla(*_a, **_k):
+        raise StorageError("R2 caído")
+
+    monkeypatch.setattr(almacenamiento, "upload_file", _falla)
+
+    respuesta = cliente_r2.get(f"/api/v1/comprobantes/{creado['id']}/pdf", headers=auth)
+
+    assert respuesta.status_code == 200
+    assert respuesta.content.startswith(b"%PDF")
+    assert not _pdfs_archivados(uow)

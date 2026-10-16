@@ -226,3 +226,63 @@ def test_la_respuesta_no_expone_tramas_ni_credenciales(
 def test_el_comprobante_debe_ser_un_uuid(client: TestClient, auth: dict[str, str]) -> None:
     respuesta = client.post("/api/v1/comprobantes/no-es-uuid/refresh-cdr", headers=auth)
     assert respuesta.status_code == 422
+
+
+# --------------------------------------------------------------------------- #
+# Caso real (producción): factura listada en SIRE, consultada con getStatusCdr
+# --------------------------------------------------------------------------- #
+MENSAJE_0013 = "El comprobante de pago electrónico no pertenece a GEM."
+
+
+def test_0013_no_degrada_un_comprobante_aprobado_de_sire(
+    client: TestClient,
+    auth: dict[str, str],
+    sunat: FakeSunatClient,
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+) -> None:
+    desde_sire = construir_comprobante(
+        empresa_principal.id, ruc=RUC_PRINCIPAL, estado=EstadoComprobante.aprobado
+    )
+    uow.comprobantes.comprobantes[desde_sire.id] = desde_sire
+    sunat.resultado = resultado_sin_cdr("0013", MENSAJE_0013)
+
+    respuesta = client.post(_ruta(desde_sire), headers=auth)
+
+    assert respuesta.status_code == 200
+    cuerpo = respuesta.json()
+    assert cuerpo["estado_nuevo"] == "aprobado"
+    assert cuerpo["cambio_estado"] is False
+    assert cuerpo["cdr"] is None
+    assert "0013" in cuerpo["mensaje"]
+    assert uow.comprobantes.comprobantes[desde_sire.id].estado is EstadoComprobante.aprobado
+
+
+@pytest.mark.parametrize("codigo", ["0011", "0127", "98", "2324"])
+def test_ninguna_respuesta_sin_cdr_degrada_un_aprobado(
+    client: TestClient,
+    auth: dict[str, str],
+    sunat: FakeSunatClient,
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+    codigo: str,
+) -> None:
+    aprobado = construir_comprobante(
+        empresa_principal.id, ruc=RUC_PRINCIPAL, estado=EstadoComprobante.aprobado
+    )
+    uow.comprobantes.comprobantes[aprobado.id] = aprobado
+    sunat.resultado = resultado_sin_cdr(codigo, "cualquier mensaje")
+
+    cuerpo = client.post(_ruta(aprobado), headers=auth).json()
+
+    assert cuerpo["estado_nuevo"] == "aprobado"
+
+
+def test_0013_en_un_pendiente_lo_deja_pendiente_y_no_rechazado(
+    client: TestClient, auth: dict[str, str], sunat: FakeSunatClient, comprobante: Comprobante
+) -> None:
+    sunat.resultado = resultado_sin_cdr("0013", MENSAJE_0013)
+
+    cuerpo = client.post(_ruta(comprobante), headers=auth).json()
+
+    assert cuerpo["estado_nuevo"] == "pendiente"

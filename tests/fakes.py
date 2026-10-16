@@ -20,6 +20,7 @@ from app.core.enums import (
     OrigenComprobante,
     RolEmpresa,
     SunatAmbiente,
+    TipoArchivo,
 )
 from app.core.errors import ConflictError, NotFoundError
 from app.db.models import (
@@ -425,6 +426,17 @@ class InMemoryArchivosRepository:
     async def list_for_comprobante(self, comprobante_id: UUID) -> list[Archivo]:
         return [a for a in self.archivos if a.comprobante_id == comprobante_id]
 
+    async def list_evidencias(self, company_id: UUID, *, tipo: TipoArchivo) -> list[Archivo]:
+        visibles = [
+            a
+            for a in self.archivos
+            if a.company_id == company_id
+            and a.tipo is tipo
+            and a.comprobante_id is None
+            and a.company_id in self.company_ids_visibles
+        ]
+        return sorted(visibles, key=lambda a: a.created_at or a.subido_at, reverse=True)
+
     async def registrar(self, registro: ArchivoRegistro) -> Archivo:
         archivo = Archivo(
             id=uuid4(),
@@ -471,10 +483,12 @@ class FakeStorageProvider:
     def __init__(self) -> None:
         self.upload: dict[str, str] | None = None
         self.firmas: list[tuple[str, int | None]] = []
+        self.subidas: list[dict[str, str]] = []
 
     async def upload_file(
         self, file_bytes: bytes, filename: str, content_type: str, folder_path: str
     ) -> FileUploadResult:
+        self.subidas.append({"nombre": filename, "carpeta": folder_path})
         self.upload = {
             "nombre": filename,
             "content_type": content_type,

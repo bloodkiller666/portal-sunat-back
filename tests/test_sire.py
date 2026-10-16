@@ -473,3 +473,130 @@ def test_un_xml_repetido_sigue_dando_409(
 
     assert client.post(url, headers=auth, files=archivo).status_code == 201
     assert client.post(url, headers=auth, files=archivo).status_code == 409
+
+
+# --------------------------------------------------------------------------- #
+# Evidencia: el ZIP original de SUNAT se archiva en R2 con su hash
+# --------------------------------------------------------------------------- #
+
+def test_cada_sincronizacion_archiva_el_zip_original_con_su_hash(
+    cliente_r2: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    sire: FakeSireClient,
+    almacenamiento,
+    empresa_principal: Company,
+) -> None:
+    import hashlib
+
+    contenido = construir_zip_propuesta([_fila()])
+    sire.zips = [contenido]
+
+    cuerpo = _sincronizar(cliente_r2, auth).json()
+
+    assert cuerpo["nuevos"] == 1
+    assert len(cuerpo["evidencias"]) == 1
+    evidencia = cuerpo["evidencias"][0]
+    assert evidencia["nombre"] == f"{RUC_PRINCIPAL}-RVIE-202609-{sire.ticket}-1.zip"
+    assert evidencia["tipo"] == "zip"
+    assert evidencia["comprobante_id"] is None
+    # El hash es el del archivo exacto que entregó SUNAT.
+    assert evidencia["hash_sha256"] == hashlib.sha256(contenido).hexdigest()
+    assert almacenamiento.subidas == [
+        {"nombre": evidencia["nombre"], "carpeta": f"sire/{RUC_PRINCIPAL}/202609"}
+    ]
+    guardado = uow.archivos.archivos[0]
+    assert guardado.company_id == empresa_principal.id
+    assert guardado.storage_key == f"sire/{RUC_PRINCIPAL}/202609/{evidencia['nombre']}"
+
+
+def test_un_zip_particionado_archiva_cada_parte(
+    cliente_r2: TestClient, auth: dict[str, str], sire: FakeSireClient, almacenamiento
+) -> None:
+    sire.zips = [
+        construir_zip_propuesta([_fila()]),
+        construir_zip_propuesta([_fila(**{NRO: "2"})]),
+    ]
+
+    cuerpo = _sincronizar(cliente_r2, auth).json()
+
+    assert [e["nombre"][-6:] for e in cuerpo["evidencias"]] == ["-1.zip", "-2.zip"]
+    assert len(almacenamiento.subidas) == 2
+
+
+def test_las_evidencias_se_listan_y_cualquier_miembro_las_ve(
+    cliente_r2: TestClient,
+    auth: dict[str, str],
+    auth_lector: dict[str, str],
+    sire: FakeSireClient,
+) -> None:
+    sire.zips = [construir_zip_propuesta([_fila()])]
+    _sincronizar(cliente_r2, auth)
+    url = f"/api/v1/companies/{RUC_PRINCIPAL}/sire/evidencias"
+
+    como_lector = cliente_r2.get(url, headers=auth_lector)
+
+    assert como_lector.status_code == 200
+    assert como_lector.json()["total"] == 1
+    assert como_lector.json()["items"][0]["nombre"].startswith(f"{RUC_PRINCIPAL}-RVIE-202609")
+    # Y se descarga con la URL firmada de siempre.
+    archivo_id = como_lector.json()["items"][0]["id"]
+    firmada = cliente_r2.post(f"/api/v1/archivos/{archivo_id}/download-url", headers=auth_lector)
+    assert firmada.status_code == 200
+
+
+def test_listar_evidencias_sin_token_o_de_otra_empresa(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    assert client.get(f"/api/v1/companies/{RUC_PRINCIPAL}/sire/evidencias").status_code == 401
+    ajena = client.get("/api/v1/companies/20999999999/sire/evidencias", headers=auth)
+    assert ajena.status_code in (403, 404)
+
+
+def test_si_r2_falla_los_comprobantes_se_registran_igual(
+    cliente_r2: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    sire: FakeSireClient,
+    almacenamiento,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.errors import StorageError
+
+    async def _falla(*_a, **_k):
+        raise StorageError("R2 caído")
+
+    monkeypatch.setattr(almacenamiento, "upload_file", _falla)
+    sire.zips = [construir_zip_propuesta([_fila()])]
+
+    respuesta = _sincronizar(cliente_r2, auth)
+
+    assert respuesta.status_code == 200
+    assert respuesta.json()["nuevos"] == 1
+    assert respuesta.json()["evidencias"] == []
+    assert len(uow.comprobantes.comprobantes) == 1
+
+
+def test_sin_r2_configurado_se_sincroniza_sin_evidencia(
+    client: TestClient, auth: dict[str, str], sire: FakeSireClient
+) -> None:
+    sire.zips = [construir_zip_propuesta([_fila()])]
+
+    cuerpo = _sincronizar(client, auth).json()
+
+    assert cuerpo["estado"] == "completado"
+    assert cuerpo["evidencias"] == []
+
+
+def test_un_zip_ilegible_no_deja_evidencia(
+    cliente_r2: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    sire: FakeSireClient,
+    almacenamiento,
+) -> None:
+    sire.zips = [b"esto no es un zip"]
+
+    assert _sincronizar(cliente_r2, auth).status_code == 502
+    assert almacenamiento.subidas == []
+    assert not uow.archivos.archivos

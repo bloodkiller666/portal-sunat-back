@@ -29,6 +29,7 @@ from app.core.enums import (
     EstadoComprobante,
     OrigenComprobante,
     SunatAmbiente,
+    TipoArchivo,
 )
 from app.core.errors import AppError, SunatFaultError
 from app.core.logging import get_logger
@@ -36,7 +37,9 @@ from app.core.security import AuthenticatedUser
 from app.db.models import CompanyMember, ComprobanteRegistro
 from app.db.repositories.base import UnitOfWork
 from app.secrets.base import CompanyCredentials, SecretsProvider
-from app.services.results import SireSyncOut
+from app.services.archivos import to_archivo_out
+from app.services.results import ArchivoOut, EvidenciasPage, SireSyncOut
+from app.services.store import guardar_archivo_de_empresa_sin_fallar
 from app.sunat.sire import (
     SireClient,
     SirePeriodoSinDatosError,
@@ -133,12 +136,28 @@ async def sincronizar_ventas(
         )
 
     propuesta = ResultadoPropuesta()
-    for archivo in estado.archivos[:MAX_ARCHIVOS_TICKET]:
+    evidencias: list[ArchivoOut] = []
+    for parte, archivo in enumerate(estado.archivos[:MAX_ARCHIVOS_TICKET], start=1):
         contenido = await run_blocking(cliente.descargar_archivo, estado, archivo)
         parcial = parse_propuesta_zip(contenido, ruc_esperado=ruc)
         propuesta.registros.extend(parcial.registros)
         for motivo, cantidad in parcial.omitidos.items():
             propuesta.omitidos[motivo] = propuesta.omitidos.get(motivo, 0) + cantidad
+
+        # Evidencia de auditoría: el ZIP exacto que entregó SUNAT, con su SHA-256.
+        # Se archiva solo si se pudo leer (un ZIP inválido no es evidencia útil) y un
+        # fallo de R2 no impide registrar los comprobantes.
+        guardado = await guardar_archivo_de_empresa_sin_fallar(
+            uow=uow,
+            settings=settings,
+            company_id=access.company_id,
+            tipo=TipoArchivo.zip,
+            file_bytes=contenido,
+            filename=f"{ruc}-RVIE-{periodo}-{ticket}-{parte}.zip",
+            folder_path=f"sire/{ruc}/{periodo}",
+        )
+        if guardado is not None:
+            evidencias.append(to_archivo_out(guardado))
 
     nuevos = existentes = anulados = 0
     for registro in propuesta.registros:
@@ -167,6 +186,7 @@ async def sincronizar_ventas(
         ya_existian=existentes,
         anulados=anulados,
         omitidos=propuesta.omitidos,
+        evidencias=evidencias,
         mensaje=f"{nuevos} comprobantes nuevos, {existentes} ya estaban registrados",
     )
 
@@ -199,3 +219,12 @@ def _a_registro(
         created_by=user.id,
         fuente="sire",
     )
+
+
+async def listar_evidencias(
+    *, uow: UnitOfWork, user: AuthenticatedUser, access: CompanyMember
+) -> EvidenciasPage:
+    """ZIP originales de SIRE archivados para la empresa (cualquier miembro)."""
+    archivos = await uow.archivos.list_evidencias(access.company_id, tipo=TipoArchivo.zip)
+    items = [to_archivo_out(archivo) for archivo in archivos]
+    return EvidenciasPage(items=items, total=len(items))

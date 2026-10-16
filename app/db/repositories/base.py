@@ -10,7 +10,7 @@ from datetime import date
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-from app.core.enums import EstadoComprobante, OrigenComprobante, SunatAmbiente
+from app.core.enums import EstadoComprobante, OrigenComprobante, SunatAmbiente, TipoArchivo
 from app.db.models import (
     Archivo,
     ArchivoRegistro,
@@ -122,6 +122,10 @@ class ArchivosRepository(Protocol):
     async def get(self, archivo_id: UUID) -> Archivo | None: ...
 
     async def list_for_comprobante(self, comprobante_id: UUID) -> list[Archivo]: ...
+
+    async def list_evidencias(self, company_id: UUID, *, tipo: TipoArchivo) -> list[Archivo]:
+        """Archivos de la empresa que no cuelgan de un comprobante (p. ej. ZIP de SIRE)."""
+        ...
 
     async def registrar(self, registro: ArchivoRegistro) -> Archivo: ...
 

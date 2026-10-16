@@ -263,15 +263,16 @@ async def patch_comprobante(
 async def get_comprobante_pdf(
     user: CurrentUserDep,
     uow: UowDep,
+    settings: SettingsDep,
     comprobante_id: UUID = Path(description="Identificador del comprobante"),
 ) -> Response:
     """Genera el PDF bajo demanda desde los datos registrados; cualquier miembro.
 
-    No depende del bucket ni de SUNAT: el PDF se construye con la cabecera y las
-    líneas ya guardadas en la base.
+    No depende de SUNAT: el PDF se construye con la cabecera y las líneas ya
+    guardadas en la base. La primera vez se archiva en R2 como copia informativa.
     """
     contenido, nombre = await generar_pdf_comprobante(
-        uow=uow, user=user, comprobante_id=comprobante_id
+        uow=uow, user=user, comprobante_id=comprobante_id, settings=settings
     )
     seguro = nombre.replace('"', "").replace("\\", "")
     return Response(

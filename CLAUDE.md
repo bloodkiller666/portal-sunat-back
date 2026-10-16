@@ -158,6 +158,14 @@ Decisiones de diseño (no las revierta sin motivo):
   (ítems, XML en R2) en vez de dar 409 (`completar_desde_xml`). Ojo: solo
   coincide si el ambiente de importación es `prod`; en local (`SUNAT_ENV=beta`)
   el XML crea una fila aparte.
+- Cada sincronización archiva en R2 el ZIP original de SUNAT (`sire/{ruc}/{periodo}/`,
+  tipo `zip`, sin comprobante, con SHA-256): es la evidencia de auditoría. Se lista en
+  `GET /companies/{ruc}/sire/evidencias`.
+- El PDF del portal se archiva en R2 la 1.ª vez que un admin/emisor lo descarga, como
+  **copia informativa** (no sale del XML firmado: no es evidencia ante SUNAT).
+- `getStatusCdr` devuelve `0013` («no pertenece a GEM») para facturas emitidas por otro
+  sistema aunque SIRE las liste: no hay CDR por ese canal y NO es un rechazo. Un
+  Aprobado nunca se degrada por una consulta (`_siguiente_estado`).
 - No se implementa aceptar/reemplazar/registrar preliminar: el portal NO escribe
   en SIRE.
 

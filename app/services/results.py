@@ -320,4 +320,12 @@ class SireSyncOut(BaseModel):
     ya_existian: int = 0
     anulados: int = 0
     omitidos: dict[str, int] = Field(default_factory=dict)
+    evidencias: list[ArchivoOut] = Field(default_factory=list)
     mensaje: str
+
+
+class EvidenciasPage(BaseModel):
+    """Archivos de evidencia de la empresa (p. ej. ZIP originales de SIRE)."""
+
+    items: list[ArchivoOut]
+    total: int

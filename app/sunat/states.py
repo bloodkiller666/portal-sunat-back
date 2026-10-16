@@ -39,10 +39,22 @@ CODIGO_NO_EXISTE = "0011"
 # `getStatusCdr` devuelve este código cuando el comprobante no tiene ticket de
 # consulta asociado (respuesta observada en producción).
 CODIGO_TICKET_NO_EXISTE = "0127"
+# «El comprobante de pago electrónico no pertenece a GEM»: el comprobante no fue
+# enviado por el canal que este servicio consulta (típico de lo emitido por un
+# OSE/PSE u otro sistema). SUNAT no lo está rechazando: simplemente esta consulta
+# no puede resolverlo, así que no debe cambiar su estado (observado en producción
+# con una factura que SUNAT sí lista en SIRE).
+CODIGO_FUERA_DE_ALCANCE = "0013"
 
 # Códigos que, sin importar el mensaje, significan "todavía no disponible".
 _CODIGOS_PENDIENTES = frozenset(
-    {CODIGO_EN_PROCESO, CODIGO_NO_INFORMADO, CODIGO_NO_EXISTE, CODIGO_TICKET_NO_EXISTE}
+    {
+        CODIGO_EN_PROCESO,
+        CODIGO_NO_INFORMADO,
+        CODIGO_NO_EXISTE,
+        CODIGO_TICKET_NO_EXISTE,
+        CODIGO_FUERA_DE_ALCANCE,
+    }
 )
 
 # Cuando el código no está en la tabla, el mensaje decide: SUNAT avisa que el

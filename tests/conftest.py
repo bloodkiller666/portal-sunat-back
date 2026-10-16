@@ -132,9 +132,17 @@ def settings_con_r2() -> Settings:
 
 
 @pytest.fixture
+def almacenamiento() -> FakeStorageProvider:
+    """El mismo doble de R2 durante toda la prueba, para poder inspeccionar las subidas."""
+    return FakeStorageProvider()
+
+
+@pytest.fixture
 def app_r2(
     settings_con_r2: Settings,
     uow: FakeUnitOfWork,
+    sire: FakeSireClient,
+    almacenamiento: FakeStorageProvider,
     entorno_credenciales: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> FastAPI:
@@ -142,9 +150,8 @@ def app_r2(
     aplicacion = create_app(settings_con_r2)
     aplicacion.state.uow_factory = uow_factory(uow)
     aplicacion.state.sunat_client_factory = fabricar_cliente_sunat(FakeSunatClient())
-    monkeypatch.setattr(
-        "app.services.store.get_storage_provider", lambda _settings: FakeStorageProvider()
-    )
+    aplicacion.state.sire_client_factory = fabricar_cliente_sire(sire)
+    monkeypatch.setattr("app.services.store.get_storage_provider", lambda _s: almacenamiento)
     return aplicacion
 
 

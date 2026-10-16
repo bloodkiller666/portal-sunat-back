@@ -104,3 +104,8 @@ def test_baja_aceptada_anula_el_comprobante() -> None:
 
 def test_la_baja_no_afecta_el_mapeo_de_comprobantes() -> None:
     assert map_cdr_a_estado(_cdr("0")) is EstadoComprobante.aprobado
+
+
+def test_0013_no_pertenece_a_gem_no_es_un_rechazo() -> None:
+    estado = map_codigo_a_estado("0013", "El comprobante de pago electrónico no pertenece a GEM.")
+    assert estado is EstadoComprobante.pendiente
