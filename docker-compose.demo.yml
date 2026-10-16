@@ -1,0 +1,44 @@
+# Demo desde tu PC: API en Docker + túnel con HTTPS para que el frontend de Vercel
+# la alcance. Se maneja con demo-start.ps1 / demo-stop.ps1.
+#
+#   quick  -> Cloudflare Tunnel "quick": gratis, sin cuenta; la URL cambia en cada inicio.
+#   ngrok  -> URL fija gratuita de ngrok (requiere cuenta): NGROK_AUTHTOKEN y NGROK_DOMAIN.
+name: portal-demo
+
+services:
+  api:
+    build: .
+    image: portal-facturacion:latest
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      SUNAT_WSDL_DIR: /tmp/cpe-wsdl
+    expose:
+      - "8000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  tunnel:
+    profiles: ["quick"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+
+  ngrok:
+    profiles: ["ngrok"]
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    command: http api:8000 --url=${NGROK_DOMAIN:-}
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    depends_on:
+      api:
+        condition: service_healthy
