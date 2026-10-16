@@ -20,6 +20,8 @@ from app.api.deps import (
 )
 from app.api.uploads import leer_con_limite
 from app.core.enums import EstadoComprobante, OrigenComprobante
+from app.services.cdr_paquete import TAMANO_MAXIMO_PAQUETE as TAMANO_MAXIMO_CDR
+from app.services.cdr_paquete import importar_cdrs
 from app.services.comprobantes import (
     MAX_COMPROBANTES_PAGINA,
     MAX_INTENTOS_PAGINA,
@@ -36,6 +38,7 @@ from app.services.comprobantes import (
 )
 from app.services.paquetes import TAMANO_MAXIMO_PAQUETE, importar_paquete
 from app.services.results import (
+    CdrPaqueteOut,
     ComprobanteDetalleOut,
     ComprobanteOut,
     ComprobantesPage,
@@ -199,6 +202,32 @@ async def post_importar_paquete(
         access=access,
         paquete=contenido,
         origen=origen,
+    )
+
+
+@router.post(
+    "/companies/{ruc}/comprobantes/import-cdr",
+    response_model=CdrPaqueteOut,
+    summary="Carga masiva de CDR (constancias de recepción) desde un ZIP",
+)
+async def post_importar_cdrs(
+    access: AcessoOperativo,
+    user: CurrentUserDep,
+    uow: UowDep,
+    settings: SettingsDep,
+    paquete: Annotated[
+        UploadFile, File(description="ZIP con los CDR R-{RUC}-{tipo}-{serie}-{numero}")
+    ],
+) -> CdrPaqueteOut:
+    """Asocia cada CDR del ZIP a su comprobante emitido por el nombre (admin/emisor).
+
+    Es la vía para los comprobantes que emite otro sistema (OSE/PSE/SAP): SUNAT no
+    devuelve su CDR por consulta. Cada CDR se archiva en R2 con su hash y actualiza
+    el estado; los que ya tienen CDR no se pisan.
+    """
+    contenido = await leer_con_limite(paquete, TAMANO_MAXIMO_CDR)
+    return await importar_cdrs(
+        uow=uow, settings=settings, user=user, access=access, paquete=contenido
     )
 
 

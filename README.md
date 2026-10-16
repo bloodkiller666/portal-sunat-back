@@ -397,6 +397,41 @@ curl -s "http://127.0.0.1:8000/api/v1/comprobantes/$ID/envios?limit=20" \
 # {"items":[{"id":1,"tipo_operacion":"consulta_cdr","exito":true,"codigo":"0",...}],"total":1}
 ```
 
+### `POST /api/v1/companies/{ruc}/comprobantes/import-cdr`
+
+Carga masiva de **CDR** (constancias de recepción) desde un ZIP. Es la vía para los
+comprobantes que emite otro sistema (OSE, PSE, SAP): SUNAT responde `0013` a la consulta
+`getStatusCdr` y no entrega su CDR, así que hay que traerlo de quien los envió.
+
+Cada archivo debe llamarse como lo entrega SUNAT, `R-{RUC}-{tipo}-{serie}-{número}`
+(`.zip` o `.xml`). Se asocia al comprobante **emitido** de la empresa, se archiva en R2
+con su SHA-256 y actualiza el estado (un Aprobado nunca se degrada). Un CDR que ya existe
+no se pisa; uno con problemas no detiene el resto. Solo `admin`/`emisor`.
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/v1/companies/$RUC/comprobantes/import-cdr" \
+  -H "Authorization: Bearer $TOKEN" -F "paquete=@cdrs.zip"
+# {"total":3,"asociados":2,"ya_tenian":0,"sin_comprobante":1,"con_error":0,"items":[...]}
+```
+
+El listado y el detalle de comprobantes traen además `tiene_xml`, `tiene_cdr` y
+`tiene_pdf`: qué respaldos hay archivados para cada uno.
+
+### `GET /api/v1/companies/{ruc}/sire/evidencias`
+
+Lista los ZIP originales de SUNAT que cada sincronización de SIRE archivó (evidencia de
+auditoría, con su hash). Se descargan con `POST /archivos/{id}/download-url`.
+
+### Respaldo del bucket
+
+```bash
+uv run python -m scripts.respaldar_r2 --destino D:\respaldos\portal-r2
+```
+
+Descarga de forma incremental lo que falte del bucket y deja un `manifiesto.csv` con el
+SHA-256 de cada archivo. Es de solo lectura sobre R2; conviene programarlo (Programador de
+tareas de Windows o cron) como copia de seguridad de la evidencia.
+
 ### `PATCH /api/v1/comprobantes/{id}`
 
 Persiste el Check SAP (y opcionalmente el N° SAP). Solo `admin`/`emisor`; el

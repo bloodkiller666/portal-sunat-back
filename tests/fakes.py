@@ -236,6 +236,21 @@ class InMemoryComprobantesRepository:
         self.comprobantes[creado.id] = creado
         return creado
 
+    async def find_emitido(
+        self, company_id: UUID, *, tipo_documento: str, serie: str, correlativo: int
+    ) -> Comprobante | None:
+        candidatos = [
+            c
+            for c in self.comprobantes.values()
+            if c.company_id == company_id
+            and c.origen is OrigenComprobante.emitido
+            and c.tipo_documento == tipo_documento
+            and c.serie == serie
+            and c.correlativo == correlativo
+        ]
+        candidatos.sort(key=lambda c: c.sunat_ambiente is SunatAmbiente.prod, reverse=True)
+        return candidatos[0] if candidatos else None
+
     def _buscar(
         self,
         company_id: UUID,
@@ -425,6 +440,19 @@ class InMemoryArchivosRepository:
 
     async def list_for_comprobante(self, comprobante_id: UUID) -> list[Archivo]:
         return [a for a in self.archivos if a.comprobante_id == comprobante_id]
+
+    async def tipos_por_comprobante(
+        self, comprobante_ids: list[UUID]
+    ) -> dict[UUID, set[TipoArchivo]]:
+        tipos: dict[UUID, set[TipoArchivo]] = {}
+        for a in self.archivos:
+            if (
+                a.comprobante_id in comprobante_ids
+                and a.company_id in self.company_ids_visibles
+                and a.estado.value == "subido"
+            ):
+                tipos.setdefault(a.comprobante_id, set()).add(a.tipo)
+        return tipos
 
     async def list_evidencias(self, company_id: UUID, *, tipo: TipoArchivo) -> list[Archivo]:
         visibles = [

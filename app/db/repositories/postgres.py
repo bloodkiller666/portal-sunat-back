@@ -203,6 +203,25 @@ class PostgresComprobantesRepository:
         data = _row(record)
         return Comprobante.model_validate(data) if data else None
 
+    async def find_emitido(
+        self, company_id: UUID, *, tipo_documento: str, serie: str, correlativo: int
+    ) -> Comprobante | None:
+        record = await self._connection.fetchrow(
+            f"""
+            select {_COLUMNAS_COMPROBANTE} from public.comprobantes
+            where company_id = $1 and origen = 'emitido' and tipo_documento = $2
+              and serie = $3 and correlativo = $4
+            order by (sunat_ambiente = 'prod') desc
+            limit 1
+            """,
+            company_id,
+            tipo_documento,
+            serie,
+            correlativo,
+        )
+        data = _row(record)
+        return Comprobante.model_validate(data) if data else None
+
     async def completar_desde_xml(
         self, comprobante_id: UUID, registro: ComprobanteRegistro
     ) -> Comprobante:
@@ -496,6 +515,24 @@ class PostgresArchivosRepository:
             comprobante_id,
         )
         return [Archivo.model_validate(_row(record)) for record in records]
+
+    async def tipos_por_comprobante(
+        self, comprobante_ids: list[UUID]
+    ) -> dict[UUID, set[TipoArchivo]]:
+        if not comprobante_ids:
+            return {}
+        records = await self._connection.fetch(
+            """
+            select comprobante_id, tipo from public.archivos
+            where comprobante_id = any($1::uuid[]) and estado = 'subido'
+            group by comprobante_id, tipo
+            """,
+            comprobante_ids,
+        )
+        tipos: dict[UUID, set[TipoArchivo]] = {}
+        for record in records:
+            tipos.setdefault(record["comprobante_id"], set()).add(TipoArchivo(record["tipo"]))
+        return tipos
 
     async def list_evidencias(self, company_id: UUID, *, tipo: TipoArchivo) -> list[Archivo]:
         records = await self._connection.fetch(

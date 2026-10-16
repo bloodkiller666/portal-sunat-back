@@ -71,6 +71,12 @@ class ComprobantesRepository(Protocol):
         sunat_ambiente: SunatAmbiente,
     ) -> Comprobante | None: ...
 
+    async def find_emitido(
+        self, company_id: UUID, *, tipo_documento: str, serie: str, correlativo: int
+    ) -> Comprobante | None:
+        """Comprobante emitido por clave, en cualquier ambiente (prefiere producción)."""
+        ...
+
     async def completar_desde_xml(
         self, comprobante_id: UUID, registro: ComprobanteRegistro
     ) -> Comprobante: ...
@@ -122,6 +128,12 @@ class ArchivosRepository(Protocol):
     async def get(self, archivo_id: UUID) -> Archivo | None: ...
 
     async def list_for_comprobante(self, comprobante_id: UUID) -> list[Archivo]: ...
+
+    async def tipos_por_comprobante(
+        self, comprobante_ids: list[UUID]
+    ) -> dict[UUID, set[TipoArchivo]]:
+        """Tipos de archivo ya subidos (xml, cdr, pdf...) de cada comprobante."""
+        ...
 
     async def list_evidencias(self, company_id: UUID, *, tipo: TipoArchivo) -> list[Archivo]:
         """Archivos de la empresa que no cuelgan de un comprobante (p. ej. ZIP de SIRE)."""

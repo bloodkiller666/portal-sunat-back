@@ -27,7 +27,7 @@ referencia de la API.
 
 ## 2. Estado actual (lo que YA funciona — no lo rehagas)
 
-Backend (`uv run pytest -q` → 414 passed; `uv run ruff check` → limpio):
+Backend (`uv run pytest -q` → 455 passed; `uv run ruff check` → limpio):
 
 - **SUNAT real (SOAP)**: `GET /companies/{ruc}/sunat/status` (valida SOL +
   certificado), `POST /comprobantes/{id}/refresh-cdr` (estado + CDR real),
@@ -202,11 +202,12 @@ paginación con contador en el frontend.
 
 ```bash
 cd factura-sunat-main-back
-uv run pytest -q      # debe terminar sin fallos (414+ passed)
+uv run pytest -q      # debe terminar sin fallos (455+ passed)
 uv run ruff check     # All checks passed
 
 cd ../factura-sunat-main
 pnpm lint             # 0 errores
+pnpm test             # pruebas unitarias de lib/ (vitest)
 pnpm build            # compilación y tipos OK
 ```
 
@@ -223,3 +224,15 @@ de Node (`node.exe`, `pnpm.exe`, etc. — ya ignorados).
   consultas de solo lectura: decisión documentada en el README).
 - Comunicación de errores SUNAT → estados: `app/sunat/states.py` (0→Aprobado,
   98/1033/0011/0127→Pendiente, resto→Rechazado).
+
+### Respaldo y auditoría (2026-10-16)
+
+- `POST /companies/{ruc}/comprobantes/import-cdr` (ZIP de `R-RUC-tipo-serie-número`) trae
+  los CDR de comprobantes emitidos por otro sistema; `getStatusCdr` no los entrega (0013).
+- `ComprobanteOut` trae `tiene_xml/tiene_cdr/tiene_pdf` (una consulta por página a
+  `archivos`, no una por fila). `siguiente_estado` (público) nunca degrada un Aprobado.
+- `scripts/respaldar_r2.py`: copia incremental del bucket a disco con manifiesto SHA-256.
+- Frontend rediseñado (sin glassmorphism ni GSAP; `<dialog>` nativo; tokens en
+  `globals.css`). Se eliminaron el XML fabricado en el navegador, el envío por correo (ruta
+  pública a direcciones inventadas) y la ficha SUNAT con datos fijos. El lote ZIP incluye
+  solo archivos reales + manifiesto.

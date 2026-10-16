@@ -133,6 +133,10 @@ class ComprobanteOut(BaseModel):
     fecha_vencimiento: date | None = None
     forma_pago: str | None = None
     fuente: str = "xml"
+    # Qué archivos de respaldo existen en R2 para este comprobante.
+    tiene_xml: bool = False
+    tiene_cdr: bool = False
+    tiene_pdf: bool = False
     moneda: str = "PEN"
     monto_total: Decimal | None = None
     estado: EstadoComprobante
@@ -329,3 +333,28 @@ class EvidenciasPage(BaseModel):
 
     items: list[ArchivoOut]
     total: int
+
+
+class CdrItemOut(BaseModel):
+    """Resultado de un archivo dentro del ZIP de CDR."""
+
+    archivo: str
+    ok: bool = True
+    comprobante_id: UUID | None = None
+    numero: str | None = None
+    estado: EstadoComprobante | None = None
+    code: str | None = None
+    mensaje: str | None = None
+
+
+class CdrPaqueteOut(BaseModel):
+    """Resumen de la carga masiva de CDR (constancias de recepción de SUNAT)."""
+
+    ruc: str
+    total: int
+    asociados: int
+    ya_tenian: int
+    sin_comprobante: int
+    con_error: int
+    items: list[CdrItemOut]
+    procesado_at: datetime

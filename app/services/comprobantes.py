@@ -124,7 +124,7 @@ async def refresh_cdr(
         if resultado.cdr is not None
         else map_codigo_a_estado(resultado.estado.codigo, resultado.estado.mensaje)
     )
-    estado_nuevo = _siguiente_estado(comprobante.estado, propuesto)
+    estado_nuevo = siguiente_estado(comprobante.estado, propuesto)
 
     actualizado = await uow.comprobantes.update_sunat_state(
         comprobante.id,
@@ -193,7 +193,7 @@ async def _manejar_error(
             exc.details["intento_id"] = intento.id
         raise exc
 
-    estado_nuevo = _siguiente_estado(comprobante.estado, EstadoComprobante.pendiente)
+    estado_nuevo = siguiente_estado(comprobante.estado, EstadoComprobante.pendiente)
     actualizado = await uow.comprobantes.update_sunat_state(
         comprobante.id,
         estado=estado_nuevo,
@@ -244,7 +244,7 @@ async def _guardar_cdr(
     )
 
 
-def _siguiente_estado(actual: EstadoComprobante, propuesto: EstadoComprobante) -> EstadoComprobante:
+def siguiente_estado(actual: EstadoComprobante, propuesto: EstadoComprobante) -> EstadoComprobante:
     """Una consulta de estado nunca revierte una anulación ni una aprobación.
 
     Aprobado es definitivo: SUNAT ya lo aceptó (o lo lista en su RVIE). Una consulta
@@ -405,12 +405,26 @@ async def list_comprobantes(
         offset=desplazamiento,
     )
     hay_mas = len(filas) > limite
+    pagina = filas[:limite]
+    # Una sola consulta para saber qué respaldos (XML/CDR/PDF) tiene cada fila.
+    tipos = await uow.archivos.tipos_por_comprobante([fila.id for fila in pagina])
     return ComprobantesPage(
-        items=[to_comprobante_out(fila) for fila in filas[:limite]],
+        items=[
+            _con_respaldos(to_comprobante_out(fila), tipos.get(fila.id, set()))
+            for fila in pagina
+        ],
         limit=limite,
         offset=desplazamiento,
         has_more=hay_mas,
     )
+
+
+def _con_respaldos(salida: ComprobanteOut, tipos: set[TipoArchivo]) -> ComprobanteOut:
+    """Marca qué archivos de respaldo tiene archivados el comprobante."""
+    salida.tiene_xml = TipoArchivo.xml in tipos
+    salida.tiene_cdr = TipoArchivo.cdr in tipos
+    salida.tiene_pdf = TipoArchivo.pdf in tipos
+    return salida
 
 
 def _validar_compra(dato: ComprobanteUbl, company: Company) -> None:
@@ -687,7 +701,8 @@ async def obtener_detalle(
     await require_membership(uow, user, comprobante.company_id)
 
     items = await uow.items.list_for_comprobante(comprobante_id)
-    base = to_comprobante_out(comprobante)
+    tipos = await uow.archivos.tipos_por_comprobante([comprobante_id])
+    base = _con_respaldos(to_comprobante_out(comprobante), tipos.get(comprobante_id, set()))
     return ComprobanteDetalleOut(**base.model_dump(), items=[to_item_out(item) for item in items])
 
 
