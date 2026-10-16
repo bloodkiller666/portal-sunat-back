@@ -41,6 +41,7 @@ logger = get_logger(__name__)
 DS_NS = "http://www.w3.org/2000/09/xmldsig#"
 EXT_NS = "urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"
 C14N_INCLUSIVE = "http://www.w3.org/TR/2001/REC-xml-c14n-20010315"
+ID_FIRMA = "SignatureSP"  # el que referencia el `cac:Signature` de app.sunat.ubl_builder
 
 
 @runtime_checkable
@@ -107,9 +108,13 @@ def _preparar_extension_content(root: etree._Element) -> None:
 
 
 def _firma_de_root(root: etree._Element) -> etree._Element | None:
-    """El `ds:Signature` que signxml dejó en la raíz (aún sin recolocar)."""
+    """El `ds:Signature` que signxml dejó en la raíz (aún sin recolocar).
+
+    Se filtra por namespace: el comprobante generado lleva además un `cac:Signature`
+    (datos del firmante) que también cuelga de la raíz y no debe confundirse.
+    """
     for hijo in root:
-        if isinstance(hijo.tag, str) and _localname(hijo) == "Signature":
+        if isinstance(hijo.tag, str) and hijo.tag == f"{{{DS_NS}}}Signature":
             return hijo
     return None
 
@@ -150,6 +155,10 @@ class SunatXmlSigner:
         destino = _extension_content(firmado)
         if destino is None:  # pragma: no cover - defensivo
             raise ConfigError("El XML firmado perdió las extensiones UBL")
+        # `cac:Signature/.../URI` del XML generado apunta a «#SignatureSP». El atributo
+        # Id no entra en el SignedInfo, así que ponerlo después no invalida la firma.
+        if firma.get("Id") is None:
+            firma.set("Id", ID_FIRMA)
         destino.append(firma)
 
         return etree.tostring(firmado, xml_declaration=True, encoding="UTF-8")

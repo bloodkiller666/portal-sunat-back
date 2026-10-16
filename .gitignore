@@ -72,3 +72,4 @@ env.txt
 *.env.txt
 
 !.env.prod.example
+pnpm-win32-x64/

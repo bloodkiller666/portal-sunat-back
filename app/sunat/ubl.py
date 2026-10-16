@@ -404,7 +404,19 @@ def _parse_item(n: int, linea: etree._Element) -> ItemUbl | None:
 
 
 def _precio_unitario(linea: etree._Element) -> Decimal | None:
-    """Precio unitario con IGV: `Price/PriceAmount` repartido en `BaseQuantity`."""
+    """Precio unitario con IGV.
+
+    En los XML de SUNAT sale de `PricingReference/AlternativeConditionPrice` (tipo 01);
+    `Price/PriceAmount` es el valor sin IGV. Si el emisor no incluye la referencia se
+    usa `Price/PriceAmount` repartido en `BaseQuantity`, como antes.
+    """
+    referencia = _hijo(linea, "PricingReference")
+    alternativos = _hijos(referencia, "AlternativeConditionPrice") if referencia is not None else []
+    for alternativo in alternativos:
+        tipo = _texto_en(alternativo, "PriceTypeCode")
+        monto_alt = _decimal(_texto_en(alternativo, "PriceAmount"))
+        if monto_alt is not None and tipo in (None, "01"):
+            return monto_alt
     precio = _hijo(linea, "Price")
     monto = _decimal(_texto(_hijo(precio, "PriceAmount")))
     if monto is None:
@@ -447,7 +459,13 @@ def _impuestos_linea(linea: etree._Element) -> tuple[Decimal, Decimal, str | Non
             esquema = _texto(_hijo(subtotal, "TaxCategory", "TaxScheme", "ID"))
             if esquema == _ESQUEMA_IGV:
                 igv += monto
-                tip_afectacion = _texto(_hijo(subtotal, "TaxCategory", "ID")) or tip_afectacion
+                # En los XML reales de SUNAT el catálogo 07 va en TaxExemptionReasonCode
+                # (TaxCategory/ID es la letra S/E/O); algunos emisores lo ponen en el ID.
+                tip_afectacion = (
+                    _texto(_hijo(subtotal, "TaxCategory", "TaxExemptionReasonCode"))
+                    or _texto(_hijo(subtotal, "TaxCategory", "ID"))
+                    or tip_afectacion
+                )
             elif esquema == _ESQUEMA_ISC:
                 isc += monto
     return igv, isc, tip_afectacion
