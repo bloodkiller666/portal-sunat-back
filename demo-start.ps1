@@ -21,7 +21,9 @@ if ($Ngrok -and (-not $Dominio -or -not $Token)) { throw "Con -Ngrok indique -Do
 # .env.prod = tu .env + ajustes de produccion (queda ignorado por git y por la imagen).
 $ajustes = @(
     "", "ENVIRONMENT=prod", "SUNAT_ENV=prod", "CONFIRM_PROD_EMISSION=false", "DEBUG=false",
-    "DOCS_ENABLED=false", "LOG_JSON=true", "SUNAT_VERIFY_SSL=true", "CORS_ORIGINS=$Frontend"
+    "DOCS_ENABLED=false", "LOG_JSON=true", "SUNAT_VERIFY_SSL=true", "CORS_ORIGINS=$Frontend",
+    # Conexiones a la base ya abiertas al arrancar: con la base remota cada una tarda 1-2 s.
+    "DATABASE_POOL_MIN_SIZE=4"
 )
 (Get-Content .env) + $ajustes | Set-Content .env.prod -Encoding utf8
 

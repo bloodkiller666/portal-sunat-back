@@ -6,11 +6,21 @@ implementaciones en memoria (ver `tests/fakes.py`).
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 from typing import Protocol, runtime_checkable
 from uuid import UUID
 
-from app.core.enums import EstadoComprobante, OrigenComprobante, SunatAmbiente, TipoArchivo
+from app.core.enums import (
+    CampoOrden,
+    DireccionOrden,
+    EstadoComprobante,
+    OrigenComprobante,
+    RespaldoFiltro,
+    SunatAmbiente,
+    TipoArchivo,
+)
 from app.db.models import (
     Archivo,
     ArchivoRegistro,
@@ -26,6 +36,50 @@ from app.db.models import (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class FiltrosListado:
+    """Criterios del listado de comprobantes (los comparten la página y el resumen)."""
+
+    estado: EstadoComprobante | None = None
+    origen: OrigenComprobante | None = None
+    fecha_desde: date | None = None
+    fecha_hasta: date | None = None
+    tipo_documento: str | None = None
+    serie: str | None = None
+    q: str | None = None
+    n_sap: str | None = None
+    check_sap: bool | None = None
+    moneda: str | None = None
+    respaldo: RespaldoFiltro | None = None
+    orden: CampoOrden = CampoOrden.fecha
+    direccion: DireccionOrden = DireccionOrden.desc
+
+
+@dataclass(frozen=True, slots=True)
+class PaginaComprobantes:
+    """Una página del listado. `total` es `None` si no se pidió contar."""
+
+    items: list[Comprobante]
+    total: int | None = None
+    # Respaldos subidos (xml, cdr, pdf) de cada fila, resueltos junto con la página.
+    tipos: dict[UUID, set[TipoArchivo]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ResumenComprobantes:
+    """Agregados del conjunto filtrado, calculados en la base (no página a página)."""
+
+    total: int = 0
+    por_estado: dict[EstadoComprobante, int] = field(default_factory=dict)
+    # Neto por moneda: las notas de crédito restan; sin anulados ni rechazados.
+    facturado: dict[str, Decimal] = field(default_factory=dict)
+    # Cobertura de respaldo sobre lo exigible (todo menos anulados).
+    exigibles: int = 0
+    con_xml: int = 0
+    con_cdr: int = 0
+    con_pdf: int = 0
+
+
 @runtime_checkable
 class CompaniesRepository(Protocol):
     async def list_for_user(self, user_id: UUID) -> list[CompanyMember]: ...
@@ -36,6 +90,12 @@ class CompaniesRepository(Protocol):
 
     async def get_membership(self, user_id: UUID, company_id: UUID) -> Membership | None: ...
 
+    async def get_access(
+        self, ruc: str, user_id: UUID
+    ) -> tuple[Company, Membership | None] | None:
+        """Empresa por RUC y la membresía del usuario en una sola consulta (`None` si no existe)."""
+        ...
+
 
 @runtime_checkable
 class ComprobantesRepository(Protocol):
@@ -44,17 +104,18 @@ class ComprobantesRepository(Protocol):
     async def list_for_company(
         self,
         company_id: UUID,
+        filtros: FiltrosListado | None = None,
         *,
-        estado: EstadoComprobante | None = None,
-        origen: OrigenComprobante | None = None,
-        fecha_desde: date | None = None,
-        fecha_hasta: date | None = None,
-        tipo_documento: str | None = None,
-        serie: str | None = None,
-        q: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[Comprobante]: ...
+        contar: bool = False,
+    ) -> PaginaComprobantes:
+        """Página ordenada. Con `contar` devuelve además el total del conjunto filtrado."""
+        ...
+
+    async def resumen(
+        self, company_id: UUID, filtros: FiltrosListado | None = None
+    ) -> ResumenComprobantes: ...
 
     async def create(self, registro: ComprobanteRegistro) -> Comprobante: ...
 

@@ -19,7 +19,14 @@ from app.api.deps import (
     UowDep,
 )
 from app.api.uploads import leer_con_limite
-from app.core.enums import EstadoComprobante, OrigenComprobante
+from app.core.enums import (
+    CampoOrden,
+    DireccionOrden,
+    EstadoComprobante,
+    OrigenComprobante,
+    RespaldoFiltro,
+)
+from app.db.repositories.base import FiltrosListado
 from app.services.cdr_paquete import TAMANO_MAXIMO_PAQUETE as TAMANO_MAXIMO_CDR
 from app.services.cdr_paquete import importar_cdrs
 from app.services.comprobantes import (
@@ -35,6 +42,7 @@ from app.services.comprobantes import (
     obtener_detalle,
     refresh_cdr,
     refresh_pendientes,
+    resumen_comprobantes,
 )
 from app.services.paquetes import TAMANO_MAXIMO_PAQUETE, importar_paquete
 from app.services.results import (
@@ -46,6 +54,7 @@ from app.services.results import (
     PaqueteOut,
     RefreshCdrOut,
     RefreshLoteOut,
+    ResumenOut,
 )
 
 router = APIRouter(tags=["comprobantes"])
@@ -70,16 +79,49 @@ class FiltrosComprobantes(BaseModel):
         default=None,
         min_length=2,
         max_length=50,
-        description="Búsqueda parcial por nombre de archivo",
+        description=(
+            "Búsqueda parcial por N° de documento, cliente, RUC, orden de compra o archivo"
+        ),
     )
+    n_sap: str | None = Field(
+        default=None, min_length=1, max_length=50, description="N° SAP (contiene)"
+    )
+    check_sap: bool | None = Field(default=None, description="Solo con/sin Check SAP")
+    moneda: str | None = Field(default=None, pattern=r"^[A-Z]{3}$", description="PEN, USD…")
+    respaldo: RespaldoFiltro | None = Field(
+        default=None, description="Cobertura de respaldo: sin_xml, sin_cdr o completo"
+    )
+    orden: CampoOrden = Field(default=CampoOrden.fecha, description="Columna de orden")
+    direccion: DireccionOrden = Field(default=DireccionOrden.desc)
     limit: int = Field(default=50, ge=1, le=MAX_COMPROBANTES_PAGINA)
     offset: int = Field(default=0, ge=0)
+    contar: bool = Field(
+        default=True,
+        description="Incluye `total`; pídelo solo en la 1.ª página o al cambiar de filtro",
+    )
 
     @model_validator(mode="after")
     def _rango_de_fechas(self) -> FiltrosComprobantes:
         if self.fecha_desde and self.fecha_hasta and self.fecha_desde > self.fecha_hasta:
             raise ValueError("fecha_desde no puede ser posterior a fecha_hasta")
         return self
+
+    def a_filtros(self) -> FiltrosListado:
+        return FiltrosListado(
+            estado=self.estado,
+            origen=self.origen,
+            fecha_desde=self.fecha_desde,
+            fecha_hasta=self.fecha_hasta,
+            tipo_documento=self.tipo_documento,
+            serie=self.serie,
+            q=self.q,
+            n_sap=self.n_sap,
+            check_sap=self.check_sap,
+            moneda=self.moneda,
+            respaldo=self.respaldo,
+            orden=self.orden,
+            direccion=self.direccion,
+        )
 
 
 @router.get(
@@ -96,16 +138,25 @@ async def get_comprobantes(
     return await list_comprobantes(
         uow=uow,
         access=access,
-        estado=filtros.estado,
-        origen=filtros.origen,
-        fecha_desde=filtros.fecha_desde,
-        fecha_hasta=filtros.fecha_hasta,
-        tipo_documento=filtros.tipo_documento,
-        serie=filtros.serie,
-        q=filtros.q,
+        filtros=filtros.a_filtros(),
         limit=filtros.limit,
         offset=filtros.offset,
+        contar=filtros.contar,
     )
+
+
+@router.get(
+    "/companies/{ruc}/comprobantes/resumen",
+    response_model=ResumenOut,
+    summary="Indicadores del conjunto filtrado (estados, facturado neto, respaldo)",
+)
+async def get_resumen_comprobantes(
+    access: CompanyAccessDep,
+    uow: UowDep,
+    filtros: Annotated[FiltrosComprobantes, Query()],
+) -> ResumenOut:
+    """Agregados calculados en la base: no dependen de cuántas páginas cargó el cliente."""
+    return await resumen_comprobantes(uow=uow, access=access, filtros=filtros.a_filtros())
 
 
 @router.post(

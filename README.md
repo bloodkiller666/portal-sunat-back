@@ -256,19 +256,64 @@ curl -s "http://127.0.0.1:8000/api/v1/companies/20123456789/comprobantes?estado=
   }],
   "limit": 50,
   "offset": 0,
-  "has_more": false
+  "has_more": false,
+  "total": 1
 }
 ```
 
-Parámetros: `estado`, `fecha_desde`, `fecha_hasta`, `tipo_documento` (`01`, `03`, `07`, `08`),
-`serie`, `q` (búsqueda parcial por nombre de archivo, mínimo 2 caracteres), `limit`
-(1–100, por defecto 50) y `offset`. `fecha_desde` posterior a `fecha_hasta` responde `422`.
+Todo lo hace el servidor (filtrar, ordenar, paginar y contar): el cliente pide una página y
+nunca descarga el conjunto completo.
+
+| Parámetro | Qué hace |
+| --- | --- |
+| `estado` | `pendiente`, `aprobado`, `rechazado` o `anulado` |
+| `fecha_desde`, `fecha_hasta` | Rango de fecha de emisión (invertido → `422`) |
+| `tipo_documento` | `01`, `03`, `07`, `08` |
+| `serie`, `moneda` | Serie exacta; `PEN`, `USD`… |
+| `q` | Búsqueda parcial (mín. 2 caracteres) por N° de documento, cliente, RUC u orden de compra |
+| `n_sap`, `check_sap` | N° SAP (contiene); `true`/`false` |
+| `respaldo` | `sin_xml`, `sin_cdr` o `completo` (XML y CDR archivados) |
+| `orden`, `direccion` | `fecha` (por defecto), `numero`, `cliente` o `importe`; `asc` o `desc`. Las notas de crédito ordenan como negativas |
+| `limit`, `offset` | Página (1–100, por defecto 50) |
+| `contar` | `true` (por defecto) incluye `total`; pídelo solo en la 1.ª página o al cambiar de filtro, no en cada página |
 
 ```bash
 curl -s "http://127.0.0.1:8000/api/v1/companies/20123456789/comprobantes\
-?estado=pendiente&fecha_desde=2026-10-01&fecha_hasta=2026-10-31&tipo_documento=01&serie=F001" \
+?estado=pendiente&fecha_desde=2026-10-01&fecha_hasta=2026-10-31&tipo_documento=01&orden=importe&direccion=desc" \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+### `GET /api/v1/companies/{ruc}/comprobantes/resumen`
+
+Indicadores del conjunto filtrado, calculados en la base (acepta los mismos filtros que el
+listado; el portal solo envía el rango de fechas). Cualquier miembro puede consultarlo.
+
+```json
+{
+  "total": 720,
+  "por_estado": {"pendiente": 1, "aprobado": 686, "rechazado": 0, "anulado": 33},
+  "facturado_neto": {"PEN": "44224155.32", "USD": "2971065.88"},
+  "cobertura": {"exigibles": 687, "con_xml": 0, "con_cdr": 0, "con_pdf": 3}
+}
+```
+
+`facturado_neto` resta las notas de crédito y excluye anulados y rechazados; `cobertura` se
+mide sobre lo exigible (todo menos los anulados). `monto_total` de cada comprobante es el
+**importe total con IGV** (en SIRE, `Total CP`: se verificó que cuadra con la suma de sus
+componentes en los 494 registros de prueba).
+
+#### Rendimiento a gran escala
+
+Medido con 150 000 comprobantes sintéticos en una transacción revertida (migración
+`0008_rendimiento_listado.sql`): una página pasó de ~3,7 s a ~2 ms, el total (`count`) de
+~3 s a ~60 ms y el resumen tarda ~110 ms. Lo que lo logra: una política RLS que resuelve las
+empresas del usuario una vez por consulta (no una vez por fila), un índice que cubre el orden
+por defecto y las columnas `tiene_xml/tiene_cdr/tiene_pdf` que mantiene un trigger de
+`archivos`. Cada petición además gasta menos viajes a la base (claims en una sola consulta,
+empresa y membresía en una, respaldos junto con la página): con la base remota cada viaje
+cuesta ~300 ms. Límite conocido: la búsqueda parcial (`q`) recorre las filas de la empresa
+(~1 s con 150 000); bajo RLS Postgres no puede usar índices trigram con `ilike`.
+Para deshacer la migración: `supabase/rollback/0008_rendimiento_listado.down.sql`.
 
 ### `POST /api/v1/companies/{ruc}/comprobantes/refresh`
 

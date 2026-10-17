@@ -20,10 +20,14 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-_SET_CLAIMS = "select set_config('request.jwt.claims', $1, true)"
-_SET_CLAIM_SUB = "select set_config('request.jwt.claim.sub', $1, true)"
-_SET_CLAIM_ROLE = "select set_config('request.jwt.claim.role', $1, true)"
-_SET_ROLE = "set local role authenticated"
+# Una sola consulta fija claims y rol: cada ida y vuelta a la base cuesta latencia y, con la
+# base remota, eran 4 por petición. `set_config('role', ..., true)` equivale a `set local role`.
+_SET_SESION_RLS = """
+select set_config('request.jwt.claims', $1, true),
+       set_config('request.jwt.claim.sub', $2, true),
+       set_config('request.jwt.claim.role', $3, true),
+       set_config('role', 'authenticated', true)
+"""
 
 
 async def _init_connection(connection: asyncpg.Connection) -> None:
@@ -103,8 +107,10 @@ class Database:
         async with self._pool.acquire() as connection, connection.transaction():
             if self._settings.database_apply_rls:
                 payload = json.dumps(dict(claims), default=str)
-                await connection.execute(_SET_CLAIMS, payload)
-                await connection.execute(_SET_CLAIM_SUB, str(claims["sub"]))
-                await connection.execute(_SET_CLAIM_ROLE, str(claims.get("role", "authenticated")))
-                await connection.execute(_SET_ROLE)
+                await connection.execute(
+                    _SET_SESION_RLS,
+                    payload,
+                    str(claims["sub"]),
+                    str(claims.get("role", "authenticated")),
+                )
             yield connection

@@ -27,7 +27,7 @@ referencia de la API.
 
 ## 2. Estado actual (lo que YA funciona — no lo rehagas)
 
-Backend (`uv run pytest -q` → 455 passed; `uv run ruff check` → limpio):
+Backend (`uv run pytest -q` → 527 passed; `uv run ruff check` → limpio):
 
 - **SUNAT real (SOAP)**: `GET /companies/{ruc}/sunat/status` (valida SOL +
   certificado), `POST /comprobantes/{id}/refresh-cdr` (estado + CDR real),
@@ -94,7 +94,7 @@ Compose»). Falta:
    `CORS_ORIGINS` (dominio exacto de Vercel, sin `*`), `LOG_JSON=true`,
    `DOCS_ENABLED=false`, `SUNAT_VERIFY_SSL=true`, credenciales
    `SUNAT_CRED_20514831620_*` y las de R2.
-4. Migraciones `0001`–`0007` (las 0006 y 0007 ya están en el Supabase actual).
+4. Migraciones `0001`–`0008` (las 0006, 0007 y 0008 ya están en el Supabase actual).
    `scripts.aplicar_migraciones` solo sirve para una base **vacía** (reaplica
    todo); en una base existente aplique únicamente las nuevas.
 5. Rotar cualquier credencial que haya circulado por chat/correo antes del
@@ -180,13 +180,32 @@ Decisiones de diseño (no las revierta sin motivo):
   del frontend (GET); si no, el navegador bloquea la descarga del XML con URL
   firmada.
 
-### P7 — Filtros server-side y paginación real (solo si la empresa crece)
+### P7 — Filtros server-side y paginación real ✅ HECHO (2026-10-17)
 
-Hoy el frontend carga hasta 1000 comprobantes y filtra en memoria. Si hace
-falta más: ampliar `q` en el backend (razones sociales + orden de compra, hoy
-solo `nombre_archivo` en `app/db/repositories/postgres.py`), añadir filtros
-`n_sap`/`check_sap` a `FiltrosComprobantes` + repos + fakes + tests, y
-paginación con contador en el frontend.
+El servidor filtra, ordena, pagina y cuenta (`GET /companies/{ruc}/comprobantes`: `q`
+sobre documento/cliente/RUC/OC, `n_sap`, `check_sap`, `moneda`, `respaldo`, `orden`,
+`direccion`, `contar`) y calcula los indicadores (`GET …/comprobantes/resumen`). El frontend
+pide una página (50 por defecto) más el resumen, en paralelo; ya no descarga todo.
+
+Decisiones de diseño (no las revierta sin motivo):
+
+- Migración `0008_rendimiento_listado.sql` (deshacer: `supabase/rollback/`): política RLS de
+  lectura con `company_id in (select app.mis_company_ids())` (resuelve la pertenencia una vez
+  por consulta; antes `is_company_member()` corría por fila y una página tardaba ~4 s con
+  150 000 filas), índices que cubren los órdenes `fecha` y `numero`, y columnas
+  `tiene_xml/tiene_cdr/tiene_pdf` en `comprobantes` que mantiene un trigger sobre `archivos`.
+- El desempate del `order by` es `c.id` en el MISMO sentido que la columna y los nulos siguen
+  al sentido: así Postgres recorre el índice al revés para `asc` sin ordenar todo.
+- `count(*) over()` solo cuando `contar=true` (1.ª página o al cambiar de filtro); no se
+  recuenta al paginar, ordenar ni cambiar el tamaño de página.
+- Cada petición gasta pocos viajes a la base (cuenta, con la base remota ~300 ms cada uno):
+  claims y rol en una sola consulta (`set_config('role', …)` equivale a `set local role`),
+  empresa + membresía en una (`CompaniesRepository.get_access`), respaldos junto con la página.
+- Límite conocido: `q` (`ilike '%x%'`) recorre las filas de la empresa (~1 s con 150 000).
+  Bajo RLS Postgres no usa índices trigram con `ilike` (no es "leakproof"); la salida, si
+  hiciera falta, es una función `SECURITY DEFINER` que compruebe la pertenencia a mano.
+- `monto_total` es el importe total CON IGV (SIRE `Total CP` cuadra con la suma de sus
+  componentes: verificado en 494 registros; el XML usa `PayableAmount`).
 
 ### P8 — Opcional / posterior
 
@@ -202,7 +221,7 @@ paginación con contador en el frontend.
 
 ```bash
 cd factura-sunat-main-back
-uv run pytest -q      # debe terminar sin fallos (455+ passed)
+uv run pytest -q      # debe terminar sin fallos (527+ passed)
 uv run ruff check     # All checks passed
 
 cd ../factura-sunat-main
@@ -216,7 +235,7 @@ de Node (`node.exe`, `pnpm.exe`, etc. — ya ignorados).
 
 ## 6. Datos útiles
 
-- Migraciones aplicadas en el Supabase actual: `0001`–`0007`. La conexión vive
+- Migraciones aplicadas en el Supabase actual: `0001`–`0008`. La conexión vive
   en `DATABASE_URL` del `.env` local.
 - El CDR de una compra (`origen=recibido`) no se sincroniza: lo informa el
   proveedor (decisión de diseño ya implementada).

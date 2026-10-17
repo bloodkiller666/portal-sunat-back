@@ -156,6 +156,27 @@ class ComprobantesPage(BaseModel):
     limit: int
     offset: int
     has_more: bool
+    # Total del conjunto filtrado; `None` si el cliente pidió `contar=false`.
+    total: int | None = None
+
+
+class CoberturaOut(BaseModel):
+    """Respaldo archivado sobre lo exigible (todo comprobante menos los anulados)."""
+
+    exigibles: int
+    con_xml: int
+    con_cdr: int
+    con_pdf: int
+
+
+class ResumenOut(BaseModel):
+    """Indicadores del conjunto filtrado, calculados en la base de datos."""
+
+    total: int
+    por_estado: dict[str, int]
+    # Neto por moneda (`PEN`, `USD`): las notas de crédito restan; sin anulados ni rechazados.
+    facturado_neto: dict[str, Decimal]
+    cobertura: CoberturaOut
 
 
 class ItemOut(BaseModel):

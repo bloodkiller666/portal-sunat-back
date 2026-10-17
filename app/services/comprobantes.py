@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from app.core.concurrency import run_blocking
@@ -36,12 +36,13 @@ from app.db.models import (
     SunatEnvio,
     SunatEnvioRegistro,
 )
-from app.db.repositories.base import UnitOfWork
+from app.db.repositories.base import FiltrosListado, UnitOfWork
 from app.integrations.pdf import SunatPdfRenderer
 from app.secrets.base import SecretsProvider
 from app.services.companies import require_membership
 from app.services.results import (
     CdrOut,
+    CoberturaOut,
     ComprobanteDetalleOut,
     ComprobanteOut,
     ComprobantesPage,
@@ -51,6 +52,7 @@ from app.services.results import (
     RefreshCdrOut,
     RefreshLoteItemOut,
     RefreshLoteOut,
+    ResumenOut,
 )
 from app.services.store import guardar_archivo_sin_fallar
 from app.services.sunat_status import SunatClientFactory, registrar_intento_seguro
@@ -378,44 +380,52 @@ async def list_comprobantes(
     *,
     uow: UnitOfWork,
     access: CompanyMember,
-    estado: EstadoComprobante | None = None,
-    origen: OrigenComprobante | None = None,
-    fecha_desde: date | None = None,
-    fecha_hasta: date | None = None,
-    tipo_documento: str | None = None,
-    serie: str | None = None,
-    q: str | None = None,
+    filtros: FiltrosListado | None = None,
     limit: int = 50,
     offset: int = 0,
+    contar: bool = True,
 ) -> ComprobantesPage:
-    """Lista paginada y filtrable de los comprobantes de la empresa (RLS ya filtra)."""
+    """Lista paginada y filtrable de los comprobantes de la empresa (RLS ya filtra).
+
+    Con `contar` devuelve el total del conjunto filtrado (el cliente lo pide solo en la
+    primera página o al cambiar de filtro, para no recontar en cada cambio de página).
+    """
     limite = max(1, min(limit, MAX_COMPROBANTES_PAGINA))
     desplazamiento = max(0, offset)
-    # Se pide una fila extra para saber si hay más sin un count aparte.
-    filas = await uow.comprobantes.list_for_company(
+    # Se pide una fila extra para saber si hay más sin depender del conteo.
+    resultado = await uow.comprobantes.list_for_company(
         access.company_id,
-        estado=estado,
-        origen=origen,
-        fecha_desde=fecha_desde,
-        fecha_hasta=fecha_hasta,
-        tipo_documento=tipo_documento,
-        serie=serie,
-        q=q,
+        filtros,
         limit=limite + 1,
         offset=desplazamiento,
+        contar=contar,
     )
-    hay_mas = len(filas) > limite
-    pagina = filas[:limite]
-    # Una sola consulta para saber qué respaldos (XML/CDR/PDF) tiene cada fila.
-    tipos = await uow.archivos.tipos_por_comprobante([fila.id for fila in pagina])
+    hay_mas = len(resultado.items) > limite
+    pagina = resultado.items[:limite]
+    tipos = resultado.tipos  # qué respaldos (XML/CDR/PDF) tiene cada fila
     return ComprobantesPage(
         items=[
-            _con_respaldos(to_comprobante_out(fila), tipos.get(fila.id, set()))
-            for fila in pagina
+            _con_respaldos(to_comprobante_out(fila), tipos.get(fila.id, set())) for fila in pagina
         ],
         limit=limite,
         offset=desplazamiento,
         has_more=hay_mas,
+        total=resultado.total,
+    )
+
+
+async def resumen_comprobantes(
+    *, uow: UnitOfWork, access: CompanyMember, filtros: FiltrosListado | None = None
+) -> ResumenOut:
+    """Totales, estados, facturado neto y cobertura de respaldo, calculados en la base."""
+    r = await uow.comprobantes.resumen(access.company_id, filtros)
+    return ResumenOut(
+        total=r.total,
+        por_estado={estado.value: r.por_estado.get(estado, 0) for estado in EstadoComprobante},
+        facturado_neto=dict(r.facturado),
+        cobertura=CoberturaOut(
+            exigibles=r.exigibles, con_xml=r.con_xml, con_cdr=r.con_cdr, con_pdf=r.con_pdf
+        ),
     )
 
 
@@ -463,12 +473,12 @@ async def refresh_pendientes(
     """
     limite = max(1, min(limit, MAX_LOTE_REFRESCO))
     # Solo emitidas: las compras no tienen CDR nuestro que sincronizar.
-    pendientes = await uow.comprobantes.list_for_company(
+    pagina_pendientes = await uow.comprobantes.list_for_company(
         access.company_id,
-        estado=EstadoComprobante.pendiente,
-        origen=OrigenComprobante.emitido,
+        FiltrosListado(estado=EstadoComprobante.pendiente, origen=OrigenComprobante.emitido),
         limit=limite,
     )
+    pendientes = pagina_pendientes.items
 
     items: list[RefreshLoteItemOut] = []
     fallidos = 0

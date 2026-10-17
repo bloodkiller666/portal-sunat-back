@@ -91,3 +91,25 @@ class EstadoArchivo(StrEnum):
     subido = "subido"
     error = "error"
     eliminado = "eliminado"
+
+
+class RespaldoFiltro(StrEnum):
+    """Filtro por cobertura de respaldo (archivos subidos a R2) para preparar auditorías."""
+
+    sin_xml = "sin_xml"
+    sin_cdr = "sin_cdr"
+    completo = "completo"
+
+
+class CampoOrden(StrEnum):
+    """Columnas por las que se puede ordenar el listado (lista blanca contra SQL injection)."""
+
+    fecha = "fecha"
+    numero = "numero"
+    cliente = "cliente"
+    importe = "importe"
+
+
+class DireccionOrden(StrEnum):
+    asc = "asc"
+    desc = "desc"
