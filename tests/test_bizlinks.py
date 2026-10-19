@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import date
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
@@ -394,6 +395,27 @@ def test_recupera_xml_y_cdr_y_actualiza_el_estado(
     assert _tipos(uow, comprobante) == {TipoArchivo.xml, TipoArchivo.cdr}
     assert uow.comprobantes.comprobantes[comprobante.id].estado is EstadoComprobante.aprobado
     assert len(uow.items.items) == 2
+
+
+def test_el_xml_recuperado_completa_vencimiento_y_forma_de_pago(
+    cliente_biz: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+    biz: FakeBizlinksClient,
+) -> None:
+    # El registro de SIRE no trae vencimiento ni forma de pago: los aporta el XML.
+    comprobante = _sembrar(uow, empresa_principal, correlativo=1)
+    assert comprobante.fecha_vencimiento is None
+    assert comprobante.forma_pago is None
+    biz.documentos[("01", "F001", 1)] = _documento()
+    biz.archivos[URL_XML] = (UBL / "factura_con_pago.xml").read_bytes()
+
+    cliente_biz.post(RUTA, headers=auth)
+
+    actualizado = uow.comprobantes.comprobantes[comprobante.id]
+    assert actualizado.fecha_vencimiento == date(2026, 11, 4)
+    assert actualizado.forma_pago == "Crédito 30 días"
 
 
 def test_es_idempotente(

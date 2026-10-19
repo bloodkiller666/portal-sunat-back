@@ -433,6 +433,14 @@ async def _guardar_xml(
     if archivo is None:
         return False, 0, "No se pudo archivar el XML en el almacenamiento"
 
+    # El XML es la fuente del vencimiento y la forma de pago (SIRE no los trae).
+    if dato.fecha_vencimiento or dato.forma_pago:
+        await uow.comprobantes.actualizar_pago(
+            comprobante.id,
+            fecha_vencimiento=dato.fecha_vencimiento,
+            forma_pago=dato.forma_pago,
+        )
+
     items_cargados = 0
     if dato.items and not await uow.items.list_for_comprobante(comprobante.id):
         creados = await uow.items.create_many(items_a_registros(comprobante.id, dato.items))

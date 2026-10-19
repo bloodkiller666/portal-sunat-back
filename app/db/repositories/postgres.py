@@ -6,7 +6,7 @@ claims del usuario y el rol `authenticated`.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -427,6 +427,33 @@ class PostgresComprobantesRepository:
             registro.forma_pago,
             registro.moneda,
             registro.monto_total,
+        )
+        data = _row(record)
+        if data is None:
+            from app.core.errors import NotFoundError
+
+            raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
+        return Comprobante.model_validate(data)
+
+    async def actualizar_pago(
+        self, comprobante_id: UUID, *, fecha_vencimiento: date | None, forma_pago: str | None
+    ) -> Comprobante:
+        """El XML de respaldo completa el vencimiento y la forma de pago que SIRE no trae.
+
+        Un valor `None` conserva el que ya tenía el comprobante (coalesce).
+        """
+        record = await self._connection.fetchrow(
+            f"""
+            update public.comprobantes
+               set fecha_vencimiento = coalesce($2, fecha_vencimiento),
+                   forma_pago = coalesce($3, forma_pago),
+                   updated_at = now()
+             where id = $1
+            returning {_COLUMNAS_COMPROBANTE}
+            """,
+            comprobante_id,
+            fecha_vencimiento,
+            forma_pago,
         )
         data = _row(record)
         if data is None:

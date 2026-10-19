@@ -144,6 +144,19 @@ class ComprobantesRepository(Protocol):
         self, comprobante_id: UUID, registro: ComprobanteRegistro
     ) -> Comprobante: ...
 
+    async def actualizar_pago(
+        self,
+        comprobante_id: UUID,
+        *,
+        fecha_vencimiento: date | None,
+        forma_pago: str | None,
+    ) -> Comprobante:
+        """El XML de respaldo completa el vencimiento y la forma de pago que SIRE no trae.
+
+        Un valor `None` conserva el que ya tenía el comprobante (coalesce).
+        """
+        ...
+
     async def update_sunat_state(
         self,
         comprobante_id: UUID,

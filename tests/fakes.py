@@ -439,6 +439,22 @@ class InMemoryComprobantesRepository:
         self.comprobantes[comprobante_id] = actualizado
         return actualizado
 
+    async def actualizar_pago(
+        self, comprobante_id: UUID, *, fecha_vencimiento: date | None, forma_pago: str | None
+    ) -> Comprobante:
+        comprobante = self.comprobantes.get(comprobante_id)
+        if comprobante is None:
+            raise NotFoundError("El comprobante no existe")
+        actualizado = comprobante.model_copy(
+            update={
+                # El SQL real usa coalesce: los valores None conservan lo anterior.
+                "fecha_vencimiento": fecha_vencimiento or comprobante.fecha_vencimiento,
+                "forma_pago": forma_pago or comprobante.forma_pago,
+            }
+        )
+        self.comprobantes[comprobante_id] = actualizado
+        return actualizado
+
     async def update_sunat_state(
         self,
         comprobante_id: UUID,
