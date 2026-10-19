@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api.routers import archivos, companies, comprobantes, health, sire
+from app.api.routers import archivos, bizlinks, companies, comprobantes, health, sire
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, get_logger, get_request_id
@@ -20,6 +20,8 @@ from app.core.security import JwtVerifier
 from app.db.pool import Database
 from app.db.uow import build_uow_factory
 from app.secrets.factory import build_secrets_provider
+from app.sunat.bizlinks import BizlinksClient
+from app.sunat.bizlinks_portal import BizlinksPortalClient
 from app.sunat.consult import SunatConsultClient
 from app.sunat.sire import SireClient
 
@@ -30,6 +32,10 @@ OPENAPI_TAGS = [
     {"name": "empresas", "description": "Empresas del usuario y prueba de credenciales SUNAT."},
     {"name": "comprobantes", "description": "Comprobantes y sincronización del estado con SUNAT."},
     {"name": "archivos", "description": "XML, PDF y CDR del comprobante en el bucket privado."},
+    {
+        "name": "bizlinks",
+        "description": "Respaldo del XML firmado y el CDR desde el OSE (Bizlinks).",
+    },
 ]
 
 API_DESCRIPTION = """
@@ -60,6 +66,26 @@ def crear_cliente_sire() -> Callable[..., SireClient]:
 
     def factory(credentials, settings: Settings) -> SireClient:
         return SireClient(credentials, settings)
+
+    return factory
+
+
+def crear_cliente_bizlinks(settings: Settings) -> Callable[..., object]:
+    """Fábrica del cliente del OSE. Se sustituye en pruebas para no tocar la red.
+
+    Por defecto se usa la API `invoker` (y sin configuración responde 409). El portal
+    público de consulta anónima es opt-in con `BIZLINKS_CANAL=portal`; `auto` usa la API
+    cuando hay URL y credenciales de empresa y, si no, el portal.
+    """
+
+    def factory(credentials: Any, _settings: Settings | None = None) -> object:
+        if settings.bizlinks_canal == "portal":
+            return BizlinksPortalClient(credentials, settings)
+        if settings.bizlinks_canal == "api" or (
+            settings.bizlinks_service_url and credentials.has_bizlinks
+        ):
+            return BizlinksClient(credentials, settings)
+        return BizlinksPortalClient(credentials, settings)
 
     return factory
 
@@ -169,6 +195,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.uow_factory = build_uow_factory(database)
     app.state.sunat_client_factory = crear_cliente_sunat(settings)
     app.state.sire_client_factory = crear_cliente_sire()
+    app.state.bizlinks_client_factory = crear_cliente_bizlinks(settings)
 
     register_cors(app, settings)
     register_request_context(app)
@@ -179,6 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(comprobantes.router, prefix=settings.api_v1_prefix)
     app.include_router(archivos.router, prefix=settings.api_v1_prefix)
     app.include_router(sire.router, prefix=settings.api_v1_prefix)
+    app.include_router(bizlinks.router, prefix=settings.api_v1_prefix)
 
     logger.info(
         "API lista (%s, SUNAT_ENV=%s, docs=%s)",

@@ -256,19 +256,64 @@ curl -s "http://127.0.0.1:8000/api/v1/companies/20123456789/comprobantes?estado=
   }],
   "limit": 50,
   "offset": 0,
-  "has_more": false
+  "has_more": false,
+  "total": 1
 }
 ```
 
-Parámetros: `estado`, `fecha_desde`, `fecha_hasta`, `tipo_documento` (`01`, `03`, `07`, `08`),
-`serie`, `q` (búsqueda parcial por nombre de archivo, mínimo 2 caracteres), `limit`
-(1–100, por defecto 50) y `offset`. `fecha_desde` posterior a `fecha_hasta` responde `422`.
+Todo lo hace el servidor (filtrar, ordenar, paginar y contar): el cliente pide una página y
+nunca descarga el conjunto completo.
+
+| Parámetro | Qué hace |
+| --- | --- |
+| `estado` | `pendiente`, `aprobado`, `rechazado` o `anulado` |
+| `fecha_desde`, `fecha_hasta` | Rango de fecha de emisión (invertido → `422`) |
+| `tipo_documento` | `01`, `03`, `07`, `08` |
+| `serie`, `moneda` | Serie exacta; `PEN`, `USD`… |
+| `q` | Búsqueda parcial (mín. 2 caracteres) por N° de documento, cliente, RUC u orden de compra |
+| `n_sap`, `check_sap` | N° SAP (contiene); `true`/`false` |
+| `respaldo` | `sin_xml`, `sin_cdr` o `completo` (XML y CDR archivados) |
+| `orden`, `direccion` | `fecha` (por defecto), `numero`, `cliente` o `importe`; `asc` o `desc`. Las notas de crédito ordenan como negativas |
+| `limit`, `offset` | Página (1–100, por defecto 50) |
+| `contar` | `true` (por defecto) incluye `total`; pídelo solo en la 1.ª página o al cambiar de filtro, no en cada página |
 
 ```bash
 curl -s "http://127.0.0.1:8000/api/v1/companies/20123456789/comprobantes\
-?estado=pendiente&fecha_desde=2026-10-01&fecha_hasta=2026-10-31&tipo_documento=01&serie=F001" \
+?estado=pendiente&fecha_desde=2026-10-01&fecha_hasta=2026-10-31&tipo_documento=01&orden=importe&direccion=desc" \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+### `GET /api/v1/companies/{ruc}/comprobantes/resumen`
+
+Indicadores del conjunto filtrado, calculados en la base (acepta los mismos filtros que el
+listado; el portal solo envía el rango de fechas). Cualquier miembro puede consultarlo.
+
+```json
+{
+  "total": 720,
+  "por_estado": {"pendiente": 1, "aprobado": 686, "rechazado": 0, "anulado": 33},
+  "facturado_neto": {"PEN": "44224155.32", "USD": "2971065.88"},
+  "cobertura": {"exigibles": 687, "con_xml": 0, "con_cdr": 0, "con_pdf": 3}
+}
+```
+
+`facturado_neto` resta las notas de crédito y excluye anulados y rechazados; `cobertura` se
+mide sobre lo exigible (todo menos los anulados). `monto_total` de cada comprobante es el
+**importe total con IGV** (en SIRE, `Total CP`: se verificó que cuadra con la suma de sus
+componentes en los 494 registros de prueba).
+
+#### Rendimiento a gran escala
+
+Medido con 150 000 comprobantes sintéticos en una transacción revertida (migración
+`0008_rendimiento_listado.sql`): una página pasó de ~3,7 s a ~2 ms, el total (`count`) de
+~3 s a ~60 ms y el resumen tarda ~110 ms. Lo que lo logra: una política RLS que resuelve las
+empresas del usuario una vez por consulta (no una vez por fila), un índice que cubre el orden
+por defecto y las columnas `tiene_xml/tiene_cdr/tiene_pdf` que mantiene un trigger de
+`archivos`. Cada petición además gasta menos viajes a la base (claims en una sola consulta,
+empresa y membresía en una, respaldos junto con la página): con la base remota cada viaje
+cuesta ~300 ms. Límite conocido: la búsqueda parcial (`q`) recorre las filas de la empresa
+(~1 s con 150 000); bajo RLS Postgres no puede usar índices trigram con `ilike`.
+Para deshacer la migración: `supabase/rollback/0008_rendimiento_listado.down.sql`.
 
 ### `POST /api/v1/companies/{ruc}/comprobantes/refresh`
 
@@ -416,6 +461,45 @@ curl -s -X POST "http://127.0.0.1:8000/api/v1/companies/$RUC/comprobantes/import
 
 El listado y el detalle de comprobantes traen además `tiene_xml`, `tiene_cdr` y
 `tiene_pdf`: qué respaldos hay archivados para cada uno.
+
+### `POST /api/v1/companies/{ruc}/bizlinks/respaldos/sync`
+
+Recupera desde **Bizlinks** (el OSE que firma y declara los comprobantes de la empresa)
+el XML firmado y el CDR que falten de los comprobantes emitidos, y los archiva en R2. Es
+idempotente: lo ya archivado no se vuelve a pedir, y lo que no se encontró no se reintenta
+en 24 h. El XML se valida contra el comprobante (RUC, tipo, serie y correlativo) y, si el
+comprobante vino de SIRE, carga sus ítems. Solo `admin`/`emisor`.
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/v1/companies/$RUC/bizlinks/respaldos/sync?limit=5" \
+  -H "Authorization: Bearer $TOKEN"
+# {"canal":"portal","revisados":1,"completos":1,"xml_guardados":1,"cdr_guardados":1,
+#  "cuota_restante":49,"items":[{"numero":"20514831620-01-FF04-00000600",...}]}
+```
+
+Hay dos canales (`BIZLINKS_CANAL`):
+
+| Canal | Qué es | Requiere |
+| --- | --- | --- |
+| `api` (por defecto) | Web service `invoker` del OSE | `BIZLINKS_SERVICE_URL` y `SUNAT_CRED_<RUC>_BIZLINKS_USER/_PASSWORD` |
+| `portal` | Consulta anónima del portal público `loginAnonimo.jsf` | Nada (los datos del comprobante ya están en la base) |
+
+El canal `portal` automatiza la misma consulta que haría una persona en
+<https://sfe.bizlinks.com.pe/sfeperu/public/loginAnonimo.jsf> y es **opt-in**. Se aplican
+límites para que la empresa no parezca un scraping masivo: pausa aleatoria entre
+peticiones, tope por día y por llamada, cortacircuito de 24 h si el portal responde
+403/429/CAPTCHA o cambia de forma (nunca se intenta saltar un bloqueo). Cada intento queda
+en `bizlinks_consultas` (migración `0009`).
+
+Diagnóstico de un solo comprobante, sin escribir nada:
+
+```bash
+uv run python -m scripts.bizlinks_probe --serie FF04 --numero 600 --guardar
+```
+
+La sincronización de SIRE puede pedirlo en la misma llamada con `"traer_respaldos": true`:
+registra las ventas y luego completa las que acaban de entrar; un fallo de Bizlinks no
+invalida la sincronización (se informa en `respaldos_error`).
 
 ### `GET /api/v1/companies/{ruc}/sire/evidencias`
 

@@ -41,6 +41,8 @@ def test_existen_las_migraciones_en_orden() -> None:
         "0005_comprobantes_recibidos.sql",
         "0006_comprobante_pago.sql",
         "0007_comprobante_fuente.sql",
+        "0008_rendimiento_listado.sql",
+        "0009_bizlinks_consultas.sql",
     ]
 
 

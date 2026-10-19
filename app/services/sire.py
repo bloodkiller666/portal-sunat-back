@@ -38,7 +38,9 @@ from app.db.models import CompanyMember, ComprobanteRegistro
 from app.db.repositories.base import UnitOfWork
 from app.secrets.base import CompanyCredentials, SecretsProvider
 from app.services.archivos import to_archivo_out
-from app.services.results import ArchivoOut, EvidenciasPage, SireSyncOut
+from app.services.bizlinks import LIMITE_MAXIMO as LIMITE_RESPALDOS
+from app.services.bizlinks import sincronizar_respaldos
+from app.services.results import ArchivoOut, BizlinksSyncOut, EvidenciasPage, SireSyncOut
 from app.services.store import guardar_archivo_de_empresa_sin_fallar
 from app.sunat.sire import (
     SireClient,
@@ -84,8 +86,15 @@ async def sincronizar_ventas(
     access: CompanyMember,
     periodo: str,
     ticket: str | None = None,
+    traer_respaldos: bool = False,
+    bizlinks_client_factory: Callable[..., object] | None = None,
 ) -> SireSyncOut:
-    """Sincroniza el RVIE del periodo (AAAAMM) con los comprobantes de la empresa."""
+    """Sincroniza el RVIE del periodo (AAAAMM) con los comprobantes de la empresa.
+
+    Con `traer_respaldos` y una fábrica de Bizlinks, después de registrar las ventas se
+    recupera el XML firmado y el CDR que falten de esos comprobantes. Un fallo de
+    Bizlinks no invalida la sincronización: se informa en `respaldos_error`.
+    """
     periodo = validar_periodo(periodo)
     if ticket is not None and not _TICKET_RE.match(ticket):
         raise PeriodoInvalidoError("El número de ticket no es válido", details={"ticket": ticket})
@@ -177,6 +186,23 @@ async def sincronizar_ventas(
         existentes,
         propuesta.total_omitidos,
     )
+
+    respaldos: BizlinksSyncOut | None = None
+    respaldos_error: str | None = None
+    if traer_respaldos and nuevos and bizlinks_client_factory is not None:
+        try:
+            respaldos = await sincronizar_respaldos(
+                uow=uow,
+                settings=settings,
+                secrets_provider=secrets_provider,
+                client_factory=bizlinks_client_factory,
+                access=access,
+                limit=min(nuevos, LIMITE_RESPALDOS),
+            )
+        except AppError as exc:
+            # Los comprobantes ya quedaron registrados: el respaldo es un extra.
+            respaldos_error = exc.message
+
     return SireSyncOut(
         periodo=periodo,
         ticket=ticket,
@@ -187,6 +213,8 @@ async def sincronizar_ventas(
         anulados=anulados,
         omitidos=propuesta.omitidos,
         evidencias=evidencias,
+        respaldos=respaldos,
+        respaldos_error=respaldos_error,
         mensaje=f"{nuevos} comprobantes nuevos, {existentes} ya estaban registrados",
     )
 

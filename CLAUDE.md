@@ -27,7 +27,7 @@ referencia de la API.
 
 ## 2. Estado actual (lo que YA funciona — no lo rehagas)
 
-Backend (`uv run pytest -q` → 455 passed; `uv run ruff check` → limpio):
+Backend (`uv run pytest -q` → 577 passed; `uv run ruff check` → limpio):
 
 - **SUNAT real (SOAP)**: `GET /companies/{ruc}/sunat/status` (valida SOL +
   certificado), `POST /comprobantes/{id}/refresh-cdr` (estado + CDR real),
@@ -44,6 +44,8 @@ Backend (`uv run pytest -q` → 455 passed; `uv run ruff check` → limpio):
   R2 ni de SUNAT.
 - **Archivos en R2**: XML importado y CDR recibido se archivan (bucket
   privado) y se descargan con URL firmada (`POST /archivos/{id}/download-url`).
+- **Respaldo desde Bizlinks (OSE)**: completa el XML firmado y el CDR que falten,
+  por la API `invoker` o (opt-in) por el portal anónimo. Ver P9 abajo.
 - **Firma XML** (`SunatXmlSigner`, XMLDSig) implementada y probada.
 - **Auth**: JWT de Supabase (HS256 o ES256/RS256 vía JWKS) + RLS por empresa +
   roles `admin/emisor/lector`.
@@ -94,7 +96,7 @@ Compose»). Falta:
    `CORS_ORIGINS` (dominio exacto de Vercel, sin `*`), `LOG_JSON=true`,
    `DOCS_ENABLED=false`, `SUNAT_VERIFY_SSL=true`, credenciales
    `SUNAT_CRED_20514831620_*` y las de R2.
-4. Migraciones `0001`–`0007` (las 0006 y 0007 ya están en el Supabase actual).
+4. Migraciones `0001`–`0009` (las 0006, 0007, 0008 y 0009 ya están en el Supabase actual).
    `scripts.aplicar_migraciones` solo sirve para una base **vacía** (reaplica
    todo); en una base existente aplique únicamente las nuevas.
 5. Rotar cualquier credencial que haya circulado por chat/correo antes del
@@ -169,6 +171,41 @@ Decisiones de diseño (no las revierta sin motivo):
 - No se implementa aceptar/reemplazar/registrar preliminar: el portal NO escribe
   en SIRE.
 
+### Respaldo de XML y CDR desde Bizlinks (OSE) ✅ HECHO (2026-10-19)
+
+TDM emite a través de Bizlinks, que conserva el XML firmado y el CDR; SUNAT no los entrega
+por API (`getStatusCdr` → `0013`). `POST /companies/{ruc}/bizlinks/respaldos/sync`
+completa lo que falte y lo archiva en R2 (idempotente; lo no encontrado no se reintenta en
+24 h). Dos canales con `BIZLINKS_CANAL`:
+
+- `api` (por defecto): web service `invoker` del OSE. Requiere `BIZLINKS_SERVICE_URL` y
+  `SUNAT_CRED_<RUC>_BIZLINKS_USER/_PASSWORD`. Sin eso responde 409.
+- `portal` (opt-in): automatiza la consulta anónima de
+  `https://sfe.bizlinks.com.pe/sfeperu/public/loginAnonimo.jsf` (JSF/PrimeFaces con
+  `ViewState`): formulario → POST ajax del `loginForm` → `btnDescargarXML` / `btnDescargarCDR`
+  → `descargarZip`. No necesita credenciales: usa los datos del comprobante que ya están
+  en la base. **Verificado en vivo** con FF01-15979 y FF04-600 de Supabase: XML firmado (11
+  KB) y CDR con código `0` idénticos a los del navegador.
+
+Decisiones (no las revierta sin motivo):
+
+- El portal es opt-in a propósito. Límites: pausa aleatoria entre peticiones, tope por día
+  (`BIZLINKS_PORTAL_MAX_POR_DIA`, 50) y por llamada (5), cortacircuito de 24 h tras 403/429/
+  CAPTCHA o cambio de página (`BizlinksBlockedError` / `BizlinksPortalChangedError`). Nunca se
+  intenta saltar un bloqueo.
+- Su servidor solo negocia TLS 1.2 con `AES256-SHA`; `BIZLINKS_PORTAL_TLS_COMPAT=true` baja el
+  nivel de seguridad **solo en ese cliente** (el certificado se sigue verificando).
+- Bitácora `bizlinks_consultas` (migración `0009`, ya aplicada): topes, cortacircuito y
+  auditoría. No guarda credenciales ni contenido.
+- Un fallo de R2 tras una consulta exitosa se registra como `error`/`storage_error`, **no**
+  como `sin_resultado`: así se reintenta en la siguiente llamada.
+- `POST /companies/{ruc}/sire/ventas/sync` acepta `"traer_respaldos": true`: registra las
+  ventas y luego completa las nuevas. Un fallo de Bizlinks no invalida la sincronización
+  (`respaldos_error`).
+- Diagnóstico de un solo comprobante, sin escribir nada:
+  `uv run python -m scripts.bizlinks_probe --serie FF04 --numero 600 --guardar`
+  (los archivos van a `var/`, ignorado por git).
+
 ### Notas de la verificación end-to-end (2026-10-15)
 
 - Las `SUNAT_CRED_*` del `.env` ahora llegan al entorno al arrancar
@@ -180,13 +217,32 @@ Decisiones de diseño (no las revierta sin motivo):
   del frontend (GET); si no, el navegador bloquea la descarga del XML con URL
   firmada.
 
-### P7 — Filtros server-side y paginación real (solo si la empresa crece)
+### P7 — Filtros server-side y paginación real ✅ HECHO (2026-10-17)
 
-Hoy el frontend carga hasta 1000 comprobantes y filtra en memoria. Si hace
-falta más: ampliar `q` en el backend (razones sociales + orden de compra, hoy
-solo `nombre_archivo` en `app/db/repositories/postgres.py`), añadir filtros
-`n_sap`/`check_sap` a `FiltrosComprobantes` + repos + fakes + tests, y
-paginación con contador en el frontend.
+El servidor filtra, ordena, pagina y cuenta (`GET /companies/{ruc}/comprobantes`: `q`
+sobre documento/cliente/RUC/OC, `n_sap`, `check_sap`, `moneda`, `respaldo`, `orden`,
+`direccion`, `contar`) y calcula los indicadores (`GET …/comprobantes/resumen`). El frontend
+pide una página (50 por defecto) más el resumen, en paralelo; ya no descarga todo.
+
+Decisiones de diseño (no las revierta sin motivo):
+
+- Migración `0008_rendimiento_listado.sql` (deshacer: `supabase/rollback/`): política RLS de
+  lectura con `company_id in (select app.mis_company_ids())` (resuelve la pertenencia una vez
+  por consulta; antes `is_company_member()` corría por fila y una página tardaba ~4 s con
+  150 000 filas), índices que cubren los órdenes `fecha` y `numero`, y columnas
+  `tiene_xml/tiene_cdr/tiene_pdf` en `comprobantes` que mantiene un trigger sobre `archivos`.
+- El desempate del `order by` es `c.id` en el MISMO sentido que la columna y los nulos siguen
+  al sentido: así Postgres recorre el índice al revés para `asc` sin ordenar todo.
+- `count(*) over()` solo cuando `contar=true` (1.ª página o al cambiar de filtro); no se
+  recuenta al paginar, ordenar ni cambiar el tamaño de página.
+- Cada petición gasta pocos viajes a la base (cuenta, con la base remota ~300 ms cada uno):
+  claims y rol en una sola consulta (`set_config('role', …)` equivale a `set local role`),
+  empresa + membresía en una (`CompaniesRepository.get_access`), respaldos junto con la página.
+- Límite conocido: `q` (`ilike '%x%'`) recorre las filas de la empresa (~1 s con 150 000).
+  Bajo RLS Postgres no usa índices trigram con `ilike` (no es "leakproof"); la salida, si
+  hiciera falta, es una función `SECURITY DEFINER` que compruebe la pertenencia a mano.
+- `monto_total` es el importe total CON IGV (SIRE `Total CP` cuadra con la suma de sus
+  componentes: verificado en 494 registros; el XML usa `PayableAmount`).
 
 ### P8 — Opcional / posterior
 
@@ -198,11 +254,19 @@ paginación con contador en el frontend.
 - Correo SMTP del backend: hoy el frontend usa Resend directo; el stub
   `SmtpMailSender` puede quedarse así.
 
+### P9 — Respaldo de XML y CDR desde Bizlinks ✅ HECHO (2026-10-19)
+
+Detalle en «Respaldo de XML y CDR desde Bizlinks» más abajo. Pendiente único: las
+credenciales `R2_*` del `.env` local son de prueba (el access key no tiene 32 caracteres y R2
+responde `InvalidArgument`), así que la prueba en vivo confirmó la descarga y la validación
+del XML/CDR pero el archivado en R2 requiere claves reales; el servicio ya registra ese caso
+como `storage_error` reintentable.
+
 ## 5. Verificación (Definition of Done de cualquier cambio)
 
 ```bash
 cd factura-sunat-main-back
-uv run pytest -q      # debe terminar sin fallos (455+ passed)
+uv run pytest -q      # debe terminar sin fallos (577+ passed)
 uv run ruff check     # All checks passed
 
 cd ../factura-sunat-main
@@ -216,7 +280,7 @@ de Node (`node.exe`, `pnpm.exe`, etc. — ya ignorados).
 
 ## 6. Datos útiles
 
-- Migraciones aplicadas en el Supabase actual: `0001`–`0007`. La conexión vive
+- Migraciones aplicadas en el Supabase actual: `0001`–`0009`. La conexión vive
   en `DATABASE_URL` del `.env` local.
 - El CDR de una compra (`origen=recibido`) no se sincroniza: lo informa el
   proveedor (decisión de diseño ya implementada).

@@ -164,6 +164,51 @@ class CdrParseError(SunatError):
     default_message = "No se pudo interpretar el CDR devuelto por SUNAT"
 
 
+class BizlinksError(AppError):
+    """Falla al comunicarse con Bizlinks (OSE) o una respuesta inesperada."""
+
+    status_code = 502
+    code = "bizlinks_error"
+    default_message = "Error al comunicarse con Bizlinks"
+
+
+class BizlinksNotConfiguredError(BizlinksError):
+    status_code = 409
+    code = "bizlinks_not_configured"
+    default_message = (
+        "Bizlinks no está configurado: defina BIZLINKS_SERVICE_URL y las credenciales "
+        "SUNAT_CRED_<RUC>_BIZLINKS_USER / _BIZLINKS_PASSWORD (o use BIZLINKS_CANAL=portal)"
+    )
+
+
+class BizlinksAuthError(BizlinksError):
+    status_code = 502
+    code = "bizlinks_auth_error"
+    default_message = "Bizlinks rechazó las credenciales de la empresa"
+
+
+class BizlinksUnavailableError(BizlinksError):
+    status_code = 503
+    code = "bizlinks_unavailable"
+    default_message = "El servicio de Bizlinks no está disponible en este momento"
+
+
+class BizlinksBlockedError(BizlinksError):
+    """El portal anónimo bloqueó la consulta (403, 429 o CAPTCHA). No se intenta saltar."""
+
+    status_code = 503
+    code = "bizlinks_blocked"
+    default_message = "Bizlinks bloqueó las consultas: se pausan por un tiempo"
+
+
+class BizlinksPortalChangedError(BizlinksError):
+    """La página del portal ya no tiene la forma esperada: no se adivina ni se sigue."""
+
+    status_code = 502
+    code = "bizlinks_portal_changed"
+    default_message = "El portal de Bizlinks cambió y la consulta automática ya no es válida"
+
+
 class CdrNotAvailableError(AppError):
     status_code = 404
     code = "cdr_not_available"

@@ -63,15 +63,15 @@ def test_filtra_por_tipo_y_serie(
     assert por_serie["items"][0]["correlativo"] == 7
 
 
-def test_filtra_por_nombre_de_archivo(
+def test_busca_por_numero_de_documento(
     client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
 ) -> None:
     _poblar(uow, empresa_principal)
 
-    cuerpo = client.get(LISTA, headers=auth, params={"q": "-01-F001-"}).json()
+    cuerpo = client.get(LISTA, headers=auth, params={"q": "F001-0000"}).json()
 
     assert len(cuerpo["items"]) == 2
-    assert all("-01-F001-" in item["nombre_archivo"] for item in cuerpo["items"])
+    assert all(item["serie"] == "F001" for item in cuerpo["items"])
 
 
 def test_combina_filtros(

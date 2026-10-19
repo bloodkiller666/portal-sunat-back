@@ -73,14 +73,15 @@ async def test_aplica_claims_y_rol_authenticated() -> None:
     async with database.authenticated({"sub": SUB, "role": "authenticated"}) as prestada:
         assert prestada is conexion
 
-    consultas = [sql for sql, _ in conexion.ejecutados]
-    assert any("set local role authenticated" in sql for sql in consultas)
-    assert any("request.jwt.claims" in sql for sql in consultas)
-    assert any("request.jwt.claim.sub" in sql for sql in consultas)
-
-    claims = next(args[0] for sql, args in conexion.ejecutados if "request.jwt.claims" in sql)
+    # Una sola ida y vuelta a la base fija claims y rol (antes eran cuatro).
+    assert len(conexion.ejecutados) == 1
+    sql, (claims, sub, rol) = conexion.ejecutados[0]
+    assert "set_config('role', 'authenticated', true)" in sql
+    assert "request.jwt.claims" in sql
+    assert "request.jwt.claim.sub" in sql
     assert json.loads(claims)["sub"] == SUB
-    assert next(args[0] for sql, args in conexion.ejecutados if "claim.sub" in sql) == SUB
+    assert sub == SUB
+    assert rol == "authenticated"
 
 
 async def test_sin_rls_no_cambia_el_rol() -> None:
@@ -91,9 +92,7 @@ async def test_sin_rls_no_cambia_el_rol() -> None:
     async with database.authenticated({"sub": SUB}):
         pass
 
-    consultas = [sql for sql, _ in conexion.ejecutados]
-    assert not any("set local role" in sql for sql in consultas)
-    assert not any("request.jwt.claims" in sql for sql in consultas)
+    assert conexion.ejecutados == []
 
 
 async def test_sin_sub_no_abre_sesion() -> None:

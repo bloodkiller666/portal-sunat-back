@@ -36,11 +36,11 @@ async def resolve_company_access(
     uow: UnitOfWork, user: AuthenticatedUser, ruc: str
 ) -> CompanyMember:
     """Devuelve la empresa + rol del usuario o falla con 404/403."""
-    company = await uow.companies.get_by_ruc(ruc)
-    if company is None:
+    acceso = await uow.companies.get_access(ruc, user.id)
+    if acceso is None:
         raise NotFoundError("La empresa no existe")
 
-    membership = await uow.companies.get_membership(user.id, company.id)
+    company, membership = acceso
     if membership is None or not membership.activo:
         raise AuthorizationError("No pertenece a esta empresa")
 

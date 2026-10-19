@@ -8,6 +8,8 @@ Convención (una por empresa):
     SUNAT_CRED_{RUC}_CERT_PASSWORD   clave del .pfx
     SUNAT_CRED_{RUC}_CLIENT_ID       credenciales de la API REST (fase posterior)
     SUNAT_CRED_{RUC}_CLIENT_SECRET
+    SUNAT_CRED_{RUC}_BIZLINKS_USER      usuario de la API del OSE (Bizlinks `invoker`)
+    SUNAT_CRED_{RUC}_BIZLINKS_PASSWORD  clave de la API del OSE
 """
 
 from __future__ import annotations
@@ -66,6 +68,8 @@ class EnvSecretsProvider:
             certificate_base64=certificate_base64 or None,
             client_id=self._get(ruc, "CLIENT_ID") or None,
             client_secret=self._get(ruc, "CLIENT_SECRET") or None,
+            bizlinks_user=self._get(ruc, "BIZLINKS_USER") or None,
+            bizlinks_password=self._get(ruc, "BIZLINKS_PASSWORD") or None,
         )
         credentials.register_for_redaction()
         logger.debug(

@@ -32,6 +32,7 @@ _CAMPOS_VACIOS_A_NONE = frozenset(
         "sunat_bill_service_url",
         "sunat_consult_service_url",
         "sunat_wsdl_dir",
+        "bizlinks_service_url",
         "supabase_url",
         "supabase_jwt_secret",
         "supabase_jwt_jwks_url",
@@ -80,6 +81,28 @@ class Settings(BaseSettings):
     sunat_probe_serie: str = "F001"
     sunat_probe_numero: str = "1"
 
+    # ---------------- Bizlinks (OSE: XML firmado y CDR) ----------------
+    # `api`: web service `invoker` (requiere URL y credenciales). `portal`: consulta
+    # anónima del portal público (opt-in, con topes y cortacircuito). `auto`: API si hay
+    # URL y credenciales; si no, portal.
+    bizlinks_canal: Literal["auto", "api", "portal"] = "api"
+    bizlinks_service_url: str | None = None
+    # Dominios desde los que se aceptan URLs de archivos en las respuestas del OSE.
+    bizlinks_download_hosts: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["bizlinks.com.pe"]
+    )
+    bizlinks_portal_url: str = "https://sfe.bizlinks.com.pe/sfeperu/public/loginAnonimo.jsf"
+    bizlinks_portal_user_agent: str = "PortalFacturacionElectronica/0.1 (respaldo de comprobantes)"
+    # El servidor del portal solo negocia TLS 1.2 con AES256-SHA (OpenSSL 3 lo bloquea).
+    # Se baja el nivel de seguridad SOLO en este cliente; el certificado se sigue validando.
+    bizlinks_portal_tls_compat: bool = True
+    # Ritmo y topes del portal: protegen a la empresa de que Bizlinks vea un scraping masivo.
+    bizlinks_portal_min_interval_seconds: float = Field(default=2.0, ge=0, le=30)
+    bizlinks_portal_max_interval_seconds: float = Field(default=5.0, ge=0, le=60)
+    bizlinks_portal_max_por_dia: int = Field(default=50, ge=1, le=1000)
+    bizlinks_portal_max_por_llamada: int = Field(default=5, ge=1, le=100)
+    bizlinks_portal_cooldown_horas: int = Field(default=24, ge=1, le=168)
+
     # ---------------- Supabase ----------------
     supabase_url: str | None = None
     supabase_jwt_alg: Literal["HS256", "HS384", "HS512", "ES256", "ES384", "RS256"] = "HS256"
@@ -120,7 +143,13 @@ class Settings(BaseSettings):
                 data[clave] = None
         return data
 
-    @field_validator("cors_origins", "cors_allow_methods", "cors_allow_headers", mode="before")
+    @field_validator(
+        "cors_origins",
+        "cors_allow_methods",
+        "cors_allow_headers",
+        "bizlinks_download_hosts",
+        mode="before",
+    )
     @classmethod
     def _parse_list_field(cls, value: Any) -> Any:
         """Acepta CSV (`a,b`) o JSON (`["a","b"]`) en las variables de entorno."""

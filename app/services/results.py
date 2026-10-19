@@ -156,6 +156,27 @@ class ComprobantesPage(BaseModel):
     limit: int
     offset: int
     has_more: bool
+    # Total del conjunto filtrado; `None` si el cliente pidió `contar=false`.
+    total: int | None = None
+
+
+class CoberturaOut(BaseModel):
+    """Respaldo archivado sobre lo exigible (todo comprobante menos los anulados)."""
+
+    exigibles: int
+    con_xml: int
+    con_cdr: int
+    con_pdf: int
+
+
+class ResumenOut(BaseModel):
+    """Indicadores del conjunto filtrado, calculados en la base de datos."""
+
+    total: int
+    por_estado: dict[str, int]
+    # Neto por moneda (`PEN`, `USD`): las notas de crédito restan; sin anulados ni rechazados.
+    facturado_neto: dict[str, Decimal]
+    cobertura: CoberturaOut
 
 
 class ItemOut(BaseModel):
@@ -313,6 +334,39 @@ class RefreshCdrOut(BaseModel):
     consultado_at: datetime
 
 
+class BizlinksItemOut(BaseModel):
+    """Resultado del respaldo de un comprobante consultado en Bizlinks."""
+
+    comprobante_id: UUID
+    numero: str | None = None
+    resultado: Literal["completo", "parcial", "sin_resultado", "error"]
+    xml_guardado: bool = False
+    cdr_guardado: bool = False
+    items_cargados: int = 0
+    mensaje: str | None = None
+    error_code: str | None = None
+
+
+class BizlinksSyncOut(BaseModel):
+    """Resumen de la recuperación de XML y CDR desde Bizlinks."""
+
+    ruc: str
+    canal: Literal["api", "portal"]
+    revisados: int = 0
+    completos: int = 0
+    parciales: int = 0
+    sin_resultado: int = 0
+    fallidos: int = 0
+    xml_guardados: int = 0
+    cdr_guardados: int = 0
+    detenido_por: str | None = None
+    mensaje: str | None = None
+    cuota_restante: int | None = None
+    reanuda_at: datetime | None = None
+    items: list[BizlinksItemOut] = Field(default_factory=list)
+    consultado_at: datetime
+
+
 class SireSyncOut(BaseModel):
     """Resultado de sincronizar las ventas de un periodo desde SIRE."""
 
@@ -325,6 +379,9 @@ class SireSyncOut(BaseModel):
     anulados: int = 0
     omitidos: dict[str, int] = Field(default_factory=dict)
     evidencias: list[ArchivoOut] = Field(default_factory=list)
+    # Respaldo XML/CDR pedido con `traer_respaldos` (después de registrar las ventas).
+    respaldos: BizlinksSyncOut | None = None
+    respaldos_error: str | None = None
     mensaje: str
 
 

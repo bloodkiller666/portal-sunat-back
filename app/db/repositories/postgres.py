@@ -6,17 +6,27 @@ claims del usuario y el rol `authenticated`.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 import asyncpg
 
-from app.core.enums import EstadoComprobante, OrigenComprobante, SunatAmbiente, TipoArchivo
+from app.core.enums import (
+    CampoOrden,
+    EstadoComprobante,
+    OrigenComprobante,
+    RespaldoFiltro,
+    SunatAmbiente,
+    TipoArchivo,
+)
 from app.core.errors import ConflictError
 from app.db.models import (
     Archivo,
     ArchivoRegistro,
+    BizlinksConsulta,
+    BizlinksConsultaRegistro,
     Company,
     CompanyMember,
     Comprobante,
@@ -27,6 +37,7 @@ from app.db.models import (
     SunatEnvio,
     SunatEnvioRegistro,
 )
+from app.db.repositories.base import FiltrosListado, PaginaComprobantes, ResumenComprobantes
 
 _COLUMNAS_COMPROBANTE = """
     id, company_id, origen, ruc_emisor, ruc_receptor, receptor_doc, razon_social_emisor,
@@ -36,6 +47,94 @@ _COLUMNAS_COMPROBANTE = """
     cdr_codigo, cdr_descripcion, cdr_notas, cdr_fecha, ultimo_envio_at, anulado_at,
     motivo_anulacion, created_at, updated_at, created_by, fuente
 """
+
+_COLUMNAS_COMPROBANTE_C = ", ".join(
+    f"c.{columna.strip()}" for columna in _COLUMNAS_COMPROBANTE.split(",") if columna.strip()
+)
+
+
+def _donde(company_id: UUID, filtros: FiltrosListado) -> tuple[str, list[object]]:
+    """Cláusula `where` (alias `c`) y sus parámetros; compartida por página y resumen."""
+    parametros: list[object] = [company_id]
+    condiciones = ["c.company_id = $1"]
+
+    def agregar(plantilla: str, valor: object) -> None:
+        parametros.append(valor)
+        condiciones.append(plantilla.format(n=len(parametros)))
+
+    if filtros.estado is not None:
+        agregar("c.estado = ${n}", filtros.estado.value)
+    if filtros.origen is not None:
+        agregar("c.origen = ${n}", filtros.origen.value)
+    if filtros.fecha_desde is not None:
+        agregar("c.fecha_emision >= ${n}", filtros.fecha_desde)
+    if filtros.fecha_hasta is not None:
+        agregar("c.fecha_emision <= ${n}", filtros.fecha_hasta)
+    if filtros.tipo_documento is not None:
+        agregar("c.tipo_documento = ${n}", filtros.tipo_documento)
+    if filtros.serie is not None:
+        agregar("c.serie = ${n}", filtros.serie)
+    if filtros.moneda is not None:
+        agregar("c.moneda = ${n}", filtros.moneda)
+    if filtros.check_sap is not None:
+        agregar("c.check_sap = ${n}", filtros.check_sap)
+    if filtros.n_sap is not None:
+        agregar("c.n_sap ilike ${n} escape '\\'", _patron_like(filtros.n_sap))
+    if filtros.q is not None:
+        parametros.append(_patron_like(filtros.q))
+        n = len(parametros)
+        # N° de documento, cliente, RUC y orden de compra. En compras (`origen=recibido`) la
+        # contraparte es el proveedor, así que solo entonces se busca también por emisor.
+        brazos = [
+            f"(c.serie || '-' || c.numero) ilike ${n} escape '\\'",
+            f"c.razon_social_receptor ilike ${n} escape '\\'",
+            f"c.ruc_receptor ilike ${n} escape '\\'",
+            f"c.orden_compra ilike ${n} escape '\\'",
+        ]
+        if filtros.origen is OrigenComprobante.recibido:
+            brazos += [
+                f"c.razon_social_emisor ilike ${n} escape '\\'",
+                f"c.ruc_emisor ilike ${n} escape '\\'",
+            ]
+        condiciones.append("(" + " or ".join(brazos) + ")")
+    # Cobertura de respaldo: columnas que mantiene el trigger de `archivos` (migración 0008).
+    if filtros.respaldo is RespaldoFiltro.sin_xml:
+        condiciones.append("not c.tiene_xml")
+    elif filtros.respaldo is RespaldoFiltro.sin_cdr:
+        condiciones.append("not c.tiene_cdr")
+    elif filtros.respaldo is RespaldoFiltro.completo:
+        condiciones.append("c.tiene_xml and c.tiene_cdr")
+    return " and ".join(condiciones), parametros
+
+
+def _orden(filtros: FiltrosListado) -> str:
+    """`order by` desde una lista blanca (nunca texto del usuario).
+
+    El desempate por `id` va en el mismo sentido y los nulos se ordenan como Postgres los
+    pondría al recorrer el índice al revés: así `fecha` y `numero` salen directo de los
+    índices de la migración 0008, sin ordenar todo el conjunto.
+    """
+    sentido = filtros.direccion.value
+    nulos = "last" if sentido == "desc" else "first"
+    if filtros.orden is CampoOrden.numero:
+        principal = f"c.serie {sentido}, c.correlativo {sentido}"
+    elif filtros.orden is CampoOrden.cliente:
+        # Los comprobantes sin nombre (boletas a consumidor final) van siempre al final.
+        principal = (
+            "nullif(lower(case when c.origen = 'recibido' then coalesce(c.razon_social_emisor, '') "
+            f"else coalesce(c.razon_social_receptor, '') end), '') {sentido} nulls last, "
+            "c.fecha_emision desc nulls last"
+        )
+    elif filtros.orden is CampoOrden.importe:
+        # Las notas de crédito restan, así que ordenan como negativas.
+        principal = (
+            "(case when c.tipo_documento = '07' then -c.monto_total else c.monto_total end) "
+            f"{sentido} nulls {nulos}, c.fecha_emision desc nulls last"
+        )
+    else:
+        principal = f"c.fecha_emision {sentido} nulls {nulos}, c.correlativo {sentido}"
+    return f"{principal}, c.id {sentido}"
+
 
 _COLUMNAS_ITEM = """
     id, comprobante_id, item_nro, codigo, descripcion, unidad_medida, cantidad,
@@ -90,6 +189,33 @@ class PostgresCompaniesRepository:
         data = _row(record)
         return Company.model_validate(data) if data else None
 
+    async def get_access(
+        self, ruc: str, user_id: UUID
+    ) -> tuple[Company, Membership | None] | None:
+        # Un solo viaje a la base en vez de dos: es lo que más pesa con la base remota.
+        record = await self._connection.fetchrow(
+            """
+            select c.*, uc.rol as _rol, uc.activo as _activo
+            from public.companies c
+            left join public.user_companies uc
+                   on uc.company_id = c.id and uc.user_id = $2
+            where c.ruc = $1
+            """,
+            ruc,
+            user_id,
+        )
+        if record is None:
+            return None
+        data = dict(record)
+        rol, activo = data.pop("_rol"), data.pop("_activo")
+        company = Company.model_validate(data)
+        if rol is None:
+            return company, None
+        membership = Membership(
+            user_id=user_id, company_id=company.id, rol=rol, activo=bool(activo)
+        )
+        return company, membership
+
     async def get_membership(self, user_id: UUID, company_id: UUID) -> Membership | None:
         record = await self._connection.fetchrow(
             """
@@ -119,54 +245,108 @@ class PostgresComprobantesRepository:
     async def list_for_company(
         self,
         company_id: UUID,
+        filtros: FiltrosListado | None = None,
         *,
-        estado: EstadoComprobante | None = None,
-        origen: OrigenComprobante | None = None,
-        fecha_desde: date | None = None,
-        fecha_hasta: date | None = None,
-        tipo_documento: str | None = None,
-        serie: str | None = None,
-        q: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[Comprobante]:
-        condiciones = ["company_id = $1"]
-        parametros: list[object] = [company_id]
-        if estado is not None:
-            parametros.append(estado.value)
-            condiciones.append(f"estado = ${len(parametros)}")
-        if origen is not None:
-            parametros.append(origen.value)
-            condiciones.append(f"origen = ${len(parametros)}")
-        if fecha_desde is not None:
-            parametros.append(fecha_desde)
-            condiciones.append(f"fecha_emision >= ${len(parametros)}")
-        if fecha_hasta is not None:
-            parametros.append(fecha_hasta)
-            condiciones.append(f"fecha_emision <= ${len(parametros)}")
-        if tipo_documento is not None:
-            parametros.append(tipo_documento)
-            condiciones.append(f"tipo_documento = ${len(parametros)}")
-        if serie is not None:
-            parametros.append(serie)
-            condiciones.append(f"serie = ${len(parametros)}")
-        if q is not None:
-            parametros.append(_patron_like(q))
-            condiciones.append(f"nombre_archivo ilike ${len(parametros)} escape '\\'")
+        contar: bool = False,
+    ) -> PaginaComprobantes:
+        filtros = filtros or FiltrosListado()
+        donde, parametros = _donde(company_id, filtros)
         parametros.extend([limit, offset])
-        limite_idx = len(parametros) - 1
-        offset_idx = len(parametros)
+        limite_idx, offset_idx = len(parametros) - 1, len(parametros)
+        # `count(*) over()` evita una segunda consulta (cada ida y vuelta a la base cuesta).
+        total_sql = ", count(*) over() as _total" if contar else ""
         records = await self._connection.fetch(
             f"""
-            select {_COLUMNAS_COMPROBANTE}
-            from public.comprobantes
-            where {" and ".join(condiciones)}
-            order by fecha_emision desc nulls last, correlativo desc
+            select {_COLUMNAS_COMPROBANTE_C}, c.tiene_xml, c.tiene_cdr, c.tiene_pdf{total_sql}
+            from public.comprobantes c
+            where {donde}
+            order by {_orden(filtros)}
             limit ${limite_idx} offset ${offset_idx}
             """,
             *parametros,
         )
-        return [Comprobante.model_validate(_row(record)) for record in records]
+        total: int | None = None
+        if contar:
+            if records:
+                total = records[0]["_total"]
+            elif offset == 0:
+                total = 0
+            else:  # página más allá del final: se cuenta aparte para no mentir con 0
+                total = await self._contar(company_id, filtros)
+        items: list[Comprobante] = []
+        tipos: dict[UUID, set[TipoArchivo]] = {}
+        for record in records:
+            fila = dict(record)
+            fila.pop("_total", None)
+            subidos = {
+                tipo
+                for tipo, columna in (
+                    (TipoArchivo.xml, "tiene_xml"),
+                    (TipoArchivo.cdr, "tiene_cdr"),
+                    (TipoArchivo.pdf, "tiene_pdf"),
+                )
+                if fila.pop(columna)
+            }
+            comprobante = Comprobante.model_validate(fila)
+            items.append(comprobante)
+            tipos[comprobante.id] = subidos
+        return PaginaComprobantes(items=items, total=total, tipos=tipos)
+
+    async def _contar(self, company_id: UUID, filtros: FiltrosListado) -> int:
+        donde, parametros = _donde(company_id, filtros)
+        total = await self._connection.fetchval(
+            f"select count(*) from public.comprobantes c where {donde}", *parametros
+        )
+        return int(total)
+
+    async def resumen(
+        self, company_id: UUID, filtros: FiltrosListado | None = None
+    ) -> ResumenComprobantes:
+        filtros = filtros or FiltrosListado()
+        donde, parametros = _donde(company_id, filtros)
+        fila = await self._connection.fetchrow(
+            f"""
+            select
+                count(*) as total,
+                count(*) filter (where c.estado = 'pendiente') as pendiente,
+                count(*) filter (where c.estado = 'aprobado') as aprobado,
+                count(*) filter (where c.estado = 'rechazado') as rechazado,
+                count(*) filter (where c.estado = 'anulado') as anulado,
+                count(*) filter (where c.estado <> 'anulado') as exigibles,
+                count(*) filter (where c.estado <> 'anulado' and c.tiene_xml) as con_xml,
+                count(*) filter (where c.estado <> 'anulado' and c.tiene_cdr) as con_cdr,
+                count(*) filter (where c.estado <> 'anulado' and c.tiene_pdf) as con_pdf
+            from public.comprobantes c
+            where {donde}
+            """,
+            *parametros,
+        )
+        netos = await self._connection.fetch(
+            f"""
+            select c.moneda,
+                   sum(case when c.tipo_documento = '07' then -c.monto_total
+                            else c.monto_total end) as neto
+            from public.comprobantes c
+            where {donde} and c.estado not in ('anulado', 'rechazado')
+            group by c.moneda
+            """,
+            *parametros,
+        )
+        assert fila is not None
+        return ResumenComprobantes(
+            total=fila["total"],
+            por_estado={
+                EstadoComprobante(nombre): fila[nombre]
+                for nombre in ("pendiente", "aprobado", "rechazado", "anulado")
+            },
+            facturado={r["moneda"]: r["neto"] or Decimal("0") for r in netos},
+            exigibles=fila["exigibles"],
+            con_xml=fila["con_xml"],
+            con_cdr=fila["con_cdr"],
+            con_pdf=fila["con_pdf"],
+        )
 
     async def create(self, registro: ComprobanteRegistro) -> Comprobante:
         creado = await self._insertar(registro, ignorar_duplicado=False)
@@ -572,3 +752,78 @@ class PostgresArchivosRepository:
         data = _row(record)
         assert data is not None
         return Archivo.model_validate(data)
+
+
+class PostgresBizlinksConsultasRepository:
+    """Bitácora de consultas al OSE (topes, cortacircuito y auditoría)."""
+
+    def __init__(self, connection: asyncpg.Connection) -> None:
+        self._connection = connection
+
+    async def registrar(self, registro: BizlinksConsultaRegistro) -> BizlinksConsulta:
+        record = await self._connection.fetchrow(
+            """
+            insert into public.bizlinks_consultas (
+                company_id, comprobante_id, canal, resultado, http_status, detalle
+            )
+            values ($1, $2, $3, $4, $5, $6)
+            returning id, company_id, comprobante_id, canal, resultado, http_status, detalle,
+                      created_at
+            """,
+            registro.company_id,
+            registro.comprobante_id,
+            registro.canal,
+            registro.resultado,
+            registro.http_status,
+            registro.detalle,
+        )
+        data = _row(record)
+        assert data is not None
+        return BizlinksConsulta.model_validate(data)
+
+    async def ultimo_bloqueo_desde(
+        self, company_id: UUID, canal: str, desde: datetime
+    ) -> datetime | None:
+        return await self._connection.fetchval(
+            """
+            select max(created_at) from public.bizlinks_consultas
+            where company_id = $1 and canal = $2 and resultado = 'bloqueado'
+              and created_at >= $3
+            """,
+            company_id,
+            canal,
+            desde,
+        )
+
+    async def comprobantes_consultados_desde(
+        self, company_id: UUID, canal: str, desde: datetime
+    ) -> int:
+        total = await self._connection.fetchval(
+            """
+            select count(distinct comprobante_id) from public.bizlinks_consultas
+            where company_id = $1 and canal = $2 and created_at >= $3
+              and comprobante_id is not null
+            """,
+            company_id,
+            canal,
+            desde,
+        )
+        return int(total or 0)
+
+    async def sin_exito_desde(
+        self, company_id: UUID, comprobante_ids: list[UUID], canal: str, desde: datetime
+    ) -> set[UUID]:
+        if not comprobante_ids:
+            return set()
+        records = await self._connection.fetch(
+            """
+            select distinct comprobante_id from public.bizlinks_consultas
+            where company_id = $1 and comprobante_id = any($2::uuid[]) and canal = $3
+              and created_at >= $4 and resultado = 'sin_resultado'
+            """,
+            company_id,
+            comprobante_ids,
+            canal,
+            desde,
+        )
+        return {record["comprobante_id"] for record in records}

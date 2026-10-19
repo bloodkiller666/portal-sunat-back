@@ -16,8 +16,11 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from app.core.enums import (
+    CampoOrden,
+    DireccionOrden,
     EstadoComprobante,
     OrigenComprobante,
+    RespaldoFiltro,
     RolEmpresa,
     SunatAmbiente,
     TipoArchivo,
@@ -26,6 +29,8 @@ from app.core.errors import ConflictError, NotFoundError
 from app.db.models import (
     Archivo,
     ArchivoRegistro,
+    BizlinksConsulta,
+    BizlinksConsultaRegistro,
     Company,
     CompanyMember,
     Comprobante,
@@ -36,6 +41,7 @@ from app.db.models import (
     SunatEnvio,
     SunatEnvioRegistro,
 )
+from app.db.repositories.base import FiltrosListado, PaginaComprobantes, ResumenComprobantes
 from app.storage.base import FileUploadResult
 from app.sunat.models import (
     CdrInfo,
@@ -152,6 +158,14 @@ class InMemoryCompaniesRepository:
     async def get_by_id(self, company_id: UUID) -> Company | None:
         return next((e for e in self.empresas if e.id == company_id), None)
 
+    async def get_access(
+        self, ruc: str, user_id: UUID
+    ) -> tuple[Company, Membership | None] | None:
+        empresa = await self.get_by_ruc(ruc)
+        if empresa is None:
+            return None
+        return empresa, await self.get_membership(user_id, empresa.id)
+
     async def get_membership(self, user_id: UUID, company_id: UUID) -> Membership | None:
         return next(
             (
@@ -170,6 +184,8 @@ class InMemoryComprobantesRepository:
     comprobantes: dict[UUID, Comprobante] = field(default_factory=dict)
     company_ids_visibles: set[UUID] = field(default_factory=set)
     actualizaciones: list[Comprobante] = field(default_factory=list)
+    # Para los filtros por respaldo: se enlaza con el repo de archivos del mismo UoW.
+    archivos_repo: InMemoryArchivosRepository | None = None
 
     async def get(self, comprobante_id: UUID) -> Comprobante | None:
         comprobante = self.comprobantes.get(comprobante_id)
@@ -180,39 +196,132 @@ class InMemoryComprobantesRepository:
     async def list_for_company(
         self,
         company_id: UUID,
+        filtros: FiltrosListado | None = None,
         *,
-        estado: EstadoComprobante | None = None,
-        origen: OrigenComprobante | None = None,
-        fecha_desde: date | None = None,
-        fecha_hasta: date | None = None,
-        tipo_documento: str | None = None,
-        serie: str | None = None,
-        q: str | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> list[Comprobante]:
+        contar: bool = False,
+    ) -> PaginaComprobantes:
+        filtros = filtros or FiltrosListado()
+        visibles = self._filtrar(company_id, filtros)
+        total = len(visibles)
+        visibles = self._ordenar(visibles, filtros)
+        pagina = visibles[offset : offset + limit]
+        return PaginaComprobantes(
+            items=pagina,
+            total=total if contar else None,
+            tipos={c.id: self._tipos(c) for c in pagina},
+        )
+
+    def _tipos(self, comprobante: Comprobante) -> set[TipoArchivo]:
+        if self.archivos_repo is None:
+            return set()
+        return {
+            a.tipo
+            for a in self.archivos_repo.archivos
+            if a.comprobante_id == comprobante.id and a.estado.value == "subido"
+        }
+
+    def _filtrar(self, company_id: UUID, filtros: FiltrosListado) -> list[Comprobante]:
         if company_id not in self.company_ids_visibles:
             return []
-        visibles = [c for c in self.comprobantes.values() if c.company_id == company_id]
-        if estado is not None:
-            visibles = [c for c in visibles if c.estado is estado]
-        if origen is not None:
-            visibles = [c for c in visibles if c.origen is origen]
-        if fecha_desde is not None:
-            visibles = [c for c in visibles if (c.fecha_emision or date.min) >= fecha_desde]
-        if fecha_hasta is not None:
-            visibles = [c for c in visibles if (c.fecha_emision or date.min) <= fecha_hasta]
-        if tipo_documento is not None:
-            visibles = [c for c in visibles if c.tipo_documento == tipo_documento]
-        if serie is not None:
-            visibles = [c for c in visibles if c.serie == serie]
-        if q is not None:
-            # Equivale al `ilike %q%` de Postgres sobre `nombre_archivo`.
-            visibles = [c for c in visibles if q.lower() in (c.nombre_archivo or "").lower()]
-        visibles.sort(
-            key=lambda c: (c.fecha_emision or date.min, c.correlativo), reverse=True
+        f = filtros
+        resultado = []
+        for c in self.comprobantes.values():
+            if c.company_id != company_id:
+                continue
+            if f.estado is not None and c.estado is not f.estado:
+                continue
+            if f.origen is not None and c.origen is not f.origen:
+                continue
+            fecha = c.fecha_emision or date.min
+            if f.fecha_desde is not None and fecha < f.fecha_desde:
+                continue
+            if f.fecha_hasta is not None and fecha > f.fecha_hasta:
+                continue
+            if f.tipo_documento is not None and c.tipo_documento != f.tipo_documento:
+                continue
+            if f.serie is not None and c.serie != f.serie:
+                continue
+            if f.moneda is not None and c.moneda != f.moneda:
+                continue
+            if f.check_sap is not None and c.check_sap is not f.check_sap:
+                continue
+            if f.n_sap is not None and f.n_sap.lower() not in (c.n_sap or "").lower():
+                continue
+            if f.q is not None:
+                # Equivale al `ilike %q%` de Postgres sobre los mismos campos.
+                campos = [
+                    f"{c.serie}-{c.numero}",
+                    c.razon_social_receptor or "",
+                    c.ruc_receptor or "",
+                    c.orden_compra or "",
+                ]
+                if f.origen is OrigenComprobante.recibido:
+                    campos += [c.razon_social_emisor or "", c.ruc_emisor]
+                if not any(f.q.lower() in campo.lower() for campo in campos):
+                    continue
+            tipos = self._tipos(c)
+            if f.respaldo is RespaldoFiltro.sin_xml and TipoArchivo.xml in tipos:
+                continue
+            if f.respaldo is RespaldoFiltro.sin_cdr and TipoArchivo.cdr in tipos:
+                continue
+            if f.respaldo is RespaldoFiltro.completo and not (
+                TipoArchivo.xml in tipos and TipoArchivo.cdr in tipos
+            ):
+                continue
+            resultado.append(c)
+        return resultado
+
+    @staticmethod
+    def _ordenar(filas: list[Comprobante], f: FiltrosListado) -> list[Comprobante]:
+        inverso = f.direccion is DireccionOrden.desc
+
+        def importe(c: Comprobante) -> Decimal:
+            monto = c.monto_total or Decimal(0)
+            return -monto if c.tipo_documento == "07" else monto
+
+        if f.orden is CampoOrden.numero:
+
+            def clave(c: Comprobante):
+                return (c.serie, c.correlativo)
+        elif f.orden is CampoOrden.cliente:
+
+            def clave(c: Comprobante):
+                return ((c.razon_social_receptor or "").lower(), c.correlativo)
+        elif f.orden is CampoOrden.importe:
+
+            def clave(c: Comprobante):
+                return (importe(c), c.correlativo)
+        else:
+
+            def clave(c: Comprobante):
+                return (c.fecha_emision or date.min, c.correlativo)
+
+        return sorted(filas, key=clave, reverse=inverso)
+
+    async def resumen(
+        self, company_id: UUID, filtros: FiltrosListado | None = None
+    ) -> ResumenComprobantes:
+        filas = self._filtrar(company_id, filtros or FiltrosListado())
+        exigibles = [c for c in filas if c.estado is not EstadoComprobante.anulado]
+        facturado: dict[str, Decimal] = {}
+        for c in filas:
+            if c.estado in (EstadoComprobante.anulado, EstadoComprobante.rechazado):
+                continue
+            monto = c.monto_total or Decimal(0)
+            facturado[c.moneda] = facturado.get(c.moneda, Decimal(0)) + (
+                -monto if c.tipo_documento == "07" else monto
+            )
+        return ResumenComprobantes(
+            total=len(filas),
+            por_estado={e: sum(1 for c in filas if c.estado is e) for e in EstadoComprobante},
+            facturado=facturado,
+            exigibles=len(exigibles),
+            con_xml=sum(1 for c in exigibles if TipoArchivo.xml in self._tipos(c)),
+            con_cdr=sum(1 for c in exigibles if TipoArchivo.cdr in self._tipos(c)),
+            con_pdf=sum(1 for c in exigibles if TipoArchivo.pdf in self._tipos(c)),
         )
-        return visibles[offset : offset + limit]
 
     async def create(self, registro: ComprobanteRegistro) -> Comprobante:
         duplicado = next(
@@ -426,6 +535,64 @@ class InMemorySunatEnviosRepository:
 
 
 @dataclass
+class InMemoryBizlinksConsultasRepository:
+    """Bitácora en memoria con la misma semántica que las consultas SQL."""
+
+    consultas: list[BizlinksConsulta] = field(default_factory=list)
+
+    async def registrar(self, registro: BizlinksConsultaRegistro) -> BizlinksConsulta:
+        consulta = BizlinksConsulta(
+            id=uuid4(),
+            created_at=datetime.now(tz=UTC),
+            **registro.model_dump(),
+        )
+        self.consultas.append(consulta)
+        return consulta
+
+    async def ultimo_bloqueo_desde(
+        self, company_id: UUID, canal: str, desde: datetime
+    ) -> datetime | None:
+        fechas = [
+            c.created_at
+            for c in self.consultas
+            if c.company_id == company_id
+            and c.canal == canal
+            and c.resultado == "bloqueado"
+            and c.created_at is not None
+            and c.created_at >= desde
+        ]
+        return max(fechas) if fechas else None
+
+    async def comprobantes_consultados_desde(
+        self, company_id: UUID, canal: str, desde: datetime
+    ) -> int:
+        ids = {
+            c.comprobante_id
+            for c in self.consultas
+            if c.company_id == company_id
+            and c.canal == canal
+            and c.comprobante_id is not None
+            and c.created_at is not None
+            and c.created_at >= desde
+        }
+        return len(ids)
+
+    async def sin_exito_desde(
+        self, company_id: UUID, comprobante_ids: list[UUID], canal: str, desde: datetime
+    ) -> set[UUID]:
+        return {
+            c.comprobante_id
+            for c in self.consultas
+            if c.company_id == company_id
+            and c.comprobante_id in comprobante_ids
+            and c.canal == canal
+            and c.resultado == "sin_resultado"
+            and c.created_at is not None
+            and c.created_at >= desde
+        }
+
+
+@dataclass
 class InMemoryArchivosRepository:
     """`company_ids_visibles` emula lo que haría RLS en Postgres."""
 
@@ -488,7 +655,13 @@ class FakeUnitOfWork:
         default_factory=InMemorySunatEnviosRepository
     )
     archivos: InMemoryArchivosRepository = field(default_factory=InMemoryArchivosRepository)
+    bizlinks_consultas: InMemoryBizlinksConsultasRepository = field(
+        default_factory=InMemoryBizlinksConsultasRepository
+    )
     claims: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.comprobantes.archivos_repo = self.archivos
 
 
 def uow_factory(uow: FakeUnitOfWork):

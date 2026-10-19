@@ -27,6 +27,9 @@ class CompanyCredentials(BaseModel):
     certificate_base64: SecretStr | None = None
     client_id: str | None = None
     client_secret: SecretStr | None = None
+    # Credenciales de la API del OSE (Bizlinks `invoker`). El portal anónimo no las usa.
+    bizlinks_user: str | None = None
+    bizlinks_password: SecretStr | None = None
 
     @field_validator("ruc")
     @classmethod
@@ -58,12 +61,18 @@ class CompanyCredentials(BaseModel):
         """Credenciales para la API REST con OAuth2 (fase posterior)."""
         return bool(self.client_id and self.client_secret)
 
+    @property
+    def has_bizlinks(self) -> bool:
+        """Credenciales de la API del OSE (no hacen falta para el portal anónimo)."""
+        return bool(self.bizlinks_user and self.bizlinks_password)
+
     def register_for_redaction(self) -> None:
         """Registra los valores sensibles para que queden fuera de los logs (regla 2)."""
         register_secret_values(
             self.sol_password,
             self.certificate_password,
             self.client_secret,
+            self.bizlinks_password,
         )
 
 

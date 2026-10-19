@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import (
     AcessoOperativo,
+    BizlinksClientFactoryDep,
     CompanyAccessDep,
     CurrentUserDep,
     SecretsProviderDep,
@@ -26,6 +27,10 @@ class SireSyncIn(BaseModel):
         default=None,
         description="Ticket devuelto por una llamada anterior que quedó `en_proceso`",
     )
+    traer_respaldos: bool = Field(
+        default=False,
+        description="Recuperar también el XML y el CDR de los comprobantes nuevos (Bizlinks)",
+    )
 
 
 @router.post(
@@ -40,6 +45,7 @@ async def post_sincronizar_ventas(
     settings: SettingsDep,
     secrets_provider: SecretsProviderDep,
     client_factory: SireClientFactoryDep,
+    bizlinks_client_factory: BizlinksClientFactoryDep,
     cuerpo: SireSyncIn,
 ) -> SireSyncOut:
     """Descarga la propuesta RVIE del periodo y registra los comprobantes (admin/emisor).
@@ -56,6 +62,8 @@ async def post_sincronizar_ventas(
         access=access,
         periodo=cuerpo.periodo,
         ticket=cuerpo.ticket,
+        traer_respaldos=cuerpo.traer_respaldos,
+        bizlinks_client_factory=bizlinks_client_factory,
     )
 
 

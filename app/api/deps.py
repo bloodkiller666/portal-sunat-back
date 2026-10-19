@@ -52,6 +52,10 @@ def get_sunat_client_factory(request: Request) -> Callable:
     return request.app.state.sunat_client_factory
 
 
+def get_bizlinks_client_factory(request: Request) -> Callable:
+    return request.app.state.bizlinks_client_factory
+
+
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     verifier: Annotated[JwtVerifier, Depends(get_jwt_verifier)],
@@ -116,6 +120,7 @@ UowDep = Annotated[UnitOfWork, Depends(get_uow)]
 SecretsProviderDep = Annotated[SecretsProvider, Depends(get_secrets_provider)]
 SunatClientFactoryDep = Annotated[Callable, Depends(get_sunat_client_factory)]
 SireClientFactoryDep = Annotated[Callable, Depends(get_sire_client_factory)]
+BizlinksClientFactoryDep = Annotated[Callable, Depends(get_bizlinks_client_factory)]
 
 # Acceso a la empresa del RUC de la ruta (404 si no existe; 403 si no es miembro).
 CompanyAccessDep = Annotated[CompanyMember, Depends(get_company_access)]

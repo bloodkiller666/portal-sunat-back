@@ -73,3 +73,6 @@ env.txt
 
 !.env.prod.example
 pnpm-win32-x64/
+
+# Salida de los scripts de diagnóstico (archivos descargados de prueba)
+var/

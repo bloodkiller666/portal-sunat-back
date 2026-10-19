@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -184,6 +185,25 @@ class SunatEnvioRegistro(RowModel):
 
 class SunatEnvio(SunatEnvioRegistro):
     id: int
+    created_at: datetime | None = None
+
+
+class BizlinksConsultaRegistro(RowModel):
+    """Un intento de consulta a Bizlinks, para topes, cortacircuito y auditoría.
+
+    No guarda credenciales ni el contenido de los archivos: solo el resultado.
+    """
+
+    company_id: UUID
+    comprobante_id: UUID | None = None
+    canal: Literal["api", "portal"]
+    resultado: Literal["ok", "sin_resultado", "error", "bloqueado"]
+    http_status: int | None = None
+    detalle: str | None = None
+
+
+class BizlinksConsulta(BizlinksConsultaRegistro):
+    id: UUID
     created_at: datetime | None = None
 
 
