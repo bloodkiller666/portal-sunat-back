@@ -71,6 +71,8 @@ def _donde(company_id: UUID, filtros: FiltrosListado) -> tuple[str, list[object]
         agregar("c.estado = ${n}", filtros.estado.value)
     if filtros.origen is not None:
         agregar("c.origen = ${n}", filtros.origen.value)
+    if filtros.fuente is not None:
+        agregar("c.fuente = ${n}", filtros.fuente)
     if filtros.fecha_desde is not None:
         agregar("c.fecha_emision >= ${n}", filtros.fecha_desde)
     if filtros.fecha_hasta is not None:

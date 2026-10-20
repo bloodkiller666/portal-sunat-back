@@ -21,7 +21,7 @@ import asyncio
 import re
 import time
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from app.core.concurrency import run_blocking
 from app.core.config import Settings
@@ -31,11 +31,11 @@ from app.core.enums import (
     SunatAmbiente,
     TipoArchivo,
 )
-from app.core.errors import AppError, SunatFaultError
+from app.core.errors import AppError, ConflictError, SunatFaultError
 from app.core.logging import get_logger
 from app.core.security import AuthenticatedUser
 from app.db.models import CompanyMember, ComprobanteRegistro
-from app.db.repositories.base import UnitOfWork
+from app.db.repositories.base import FiltrosListado, UnitOfWork
 from app.secrets.base import CompanyCredentials, SecretsProvider
 from app.services.archivos import to_archivo_out
 from app.services.bizlinks import LIMITE_MAXIMO as LIMITE_RESPALDOS
@@ -66,6 +66,10 @@ class PeriodoInvalidoError(AppError):
     default_message = "El periodo debe tener el formato AAAAMM y no ser futuro"
 
 
+class PeriodoYaCargadoError(ConflictError):
+    code = "periodo_ya_cargado"
+
+
 def validar_periodo(periodo: str, hoy: date | None = None) -> str:
     coincidencia = _PERIODO_RE.match(periodo)
     if coincidencia is None:
@@ -87,6 +91,7 @@ async def sincronizar_ventas(
     periodo: str,
     ticket: str | None = None,
     traer_respaldos: bool = False,
+    forzar: bool = False,
     bizlinks_client_factory: Callable[..., object] | None = None,
 ) -> SireSyncOut:
     """Sincroniza el RVIE del periodo (AAAAMM) con los comprobantes de la empresa.
@@ -100,6 +105,8 @@ async def sincronizar_ventas(
         raise PeriodoInvalidoError("El número de ticket no es válido", details={"ticket": ticket})
 
     ruc = access.company.ruc
+    if ticket is None and not forzar:
+        await _rechazar_si_ya_cargado(uow, access, periodo)
     credenciales = secrets_provider.get_company_credentials(ruc)
     cliente = client_factory(credenciales, settings)
 
@@ -217,6 +224,32 @@ async def sincronizar_ventas(
         respaldos_error=respaldos_error,
         mensaje=f"{nuevos} comprobantes nuevos, {existentes} ya estaban registrados",
     )
+
+
+async def _rechazar_si_ya_cargado(uow: UnitOfWork, access: CompanyMember, periodo: str) -> None:
+    """Rechaza la sincronización si el periodo ya tiene ventas traídas de SIRE.
+
+    Se valida antes de llamar a SUNAT (ahorra el ticket). Retomar un ticket `en_proceso` no
+    pasa por aquí: sus filas aún no se registraron. `forzar` permite volver a sincronizar
+    (sigue siendo idempotente: solo agrega lo que falte).
+    """
+    anio, mes = int(periodo[:4]), int(periodo[4:])
+    desde = date(anio, mes, 1)
+    hasta = date(anio + (mes == 12), mes % 12 + 1, 1) - timedelta(days=1)
+    pagina = await uow.comprobantes.list_for_company(
+        access.company_id,
+        FiltrosListado(
+            origen=OrigenComprobante.emitido, fuente="sire", fecha_desde=desde, fecha_hasta=hasta
+        ),
+        limit=1,
+        contar=True,
+    )
+    if pagina.total:
+        raise PeriodoYaCargadoError(
+            f"El periodo {periodo} ya está cargado ({pagina.total} comprobantes de SIRE). "
+            "No se volvió a sincronizar.",
+            details={"periodo": periodo, "cargados": pagina.total},
+        )
 
 
 def _a_registro(

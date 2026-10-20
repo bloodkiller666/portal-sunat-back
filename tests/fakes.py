@@ -239,6 +239,8 @@ class InMemoryComprobantesRepository:
                 continue
             if f.origen is not None and c.origen is not f.origen:
                 continue
+            if f.fuente is not None and c.fuente != f.fuente:
+                continue
             fecha = c.fecha_emision or date.min
             if f.fecha_desde is not None and fecha < f.fecha_desde:
                 continue

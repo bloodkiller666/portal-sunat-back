@@ -309,3 +309,10 @@ de Node (`node.exe`, `pnpm.exe`, etc. — ya ignorados).
   `globals.css`). Se eliminaron el XML fabricado en el navegador, el envío por correo (ruta
   pública a direcciones inventadas) y la ficha SUNAT con datos fijos. El lote ZIP incluye
   solo archivos reales + manifiesto.
+
+### P11 — Periodo SIRE ya cargado se rechaza (2026-10-20)
+
+`POST /companies/{ruc}/sire/ventas/sync` responde 409 `periodo_ya_cargado` (antes de llamar a
+SUNAT) si la empresa ya tiene comprobantes `fuente=sire` emitidos en ese mes. `"forzar": true`
+lo permite (sigue siendo idempotente: solo agrega lo nuevo). Retomar un `ticket` no se valida.
+Bizlinks ya omitía lo que tiene XML y CDR (las boletas no exigen CDR).

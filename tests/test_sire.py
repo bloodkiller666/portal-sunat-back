@@ -240,11 +240,37 @@ def test_sincronizar_dos_veces_no_duplica(
     sire.zips = [construir_zip_propuesta([_fila(), _fila(**{NRO: "2"})])]
 
     primera = _sincronizar(client, auth).json()
-    segunda = _sincronizar(client, auth).json()
+    segunda = _sincronizar(client, auth, forzar=True).json()
 
     assert (primera["nuevos"], primera["ya_existian"]) == (2, 0)
     assert (segunda["nuevos"], segunda["ya_existian"]) == (0, 2)
     assert len(uow.comprobantes.comprobantes) == 2
+
+
+def test_un_periodo_ya_cargado_se_rechaza_sin_llamar_a_sunat(
+    client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, sire: FakeSireClient
+) -> None:
+    sire.zips = [construir_zip_propuesta([_fila(), _fila(**{NRO: "2"})])]
+    assert _sincronizar(client, auth).status_code == 200
+    sire.solicitudes.clear()
+
+    r = _sincronizar(client, auth)
+
+    assert r.status_code == 409
+    error = r.json()["error"]
+    assert error["code"] == "periodo_ya_cargado"
+    assert error["details"] == {"periodo": "202609", "cargados": 2}
+    assert sire.solicitudes == []
+    assert len(uow.comprobantes.comprobantes) == 2
+
+
+def test_otro_periodo_no_se_ve_afectado_por_uno_cargado(
+    client: TestClient, auth: dict[str, str], sire: FakeSireClient
+) -> None:
+    sire.zips = [construir_zip_propuesta([_fila()])]
+    assert _sincronizar(client, auth).status_code == 200
+
+    assert _sincronizar(client, auth, periodo="202608").status_code == 200
 
 
 def test_lo_ya_registrado_no_se_pisa(

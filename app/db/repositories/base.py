@@ -44,6 +44,7 @@ class FiltrosListado:
 
     estado: EstadoComprobante | None = None
     origen: OrigenComprobante | None = None
+    fuente: str | None = None
     fecha_desde: date | None = None
     fecha_hasta: date | None = None
     tipo_documento: str | None = None

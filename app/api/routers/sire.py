@@ -31,6 +31,10 @@ class SireSyncIn(BaseModel):
         default=False,
         description="Recuperar también el XML y el CDR de los comprobantes nuevos (Bizlinks)",
     )
+    forzar: bool = Field(
+        default=False,
+        description="Volver a sincronizar un periodo que ya está cargado (solo agrega lo nuevo)",
+    )
 
 
 @router.post(
@@ -63,6 +67,7 @@ async def post_sincronizar_ventas(
         periodo=cuerpo.periodo,
         ticket=cuerpo.ticket,
         traer_respaldos=cuerpo.traer_respaldos,
+        forzar=cuerpo.forzar,
         bizlinks_client_factory=bizlinks_client_factory,
     )
 
