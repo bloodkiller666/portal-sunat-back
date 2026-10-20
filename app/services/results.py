@@ -354,6 +354,9 @@ class BizlinksItemOut(BaseModel):
     items_cargados: int = 0
     mensaje: str | None = None
     error_code: str | None = None
+    # Contraparte del comprobante, para mostrar a quién corresponde cada fila.
+    cliente_ruc: str | None = None
+    cliente: str | None = None
 
 
 class BizlinksSyncOut(BaseModel):

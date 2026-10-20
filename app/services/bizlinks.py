@@ -185,6 +185,13 @@ async def sincronizar_respaldos(
             continue
         items.append(item)
 
+    por_id = {c.id: c for c, _, _ in candidatos}
+    for item in items:
+        origen = por_id.get(item.comprobante_id)
+        if origen is not None:
+            item.cliente_ruc = origen.ruc_receptor
+            item.cliente = origen.razon_social_receptor
+
     if cuota_restante is not None:
         cuota_restante = max(0, cuota_restante - len(items))
     return BizlinksSyncOut(
