@@ -6,7 +6,7 @@ from datetime import date
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, Path, Query, Response, UploadFile, status
+from fastapi import APIRouter, File, Form, Path, Query, UploadFile, status
 from pydantic import BaseModel, Field, model_validator
 
 from app.api.deps import (
@@ -35,7 +35,6 @@ from app.services.comprobantes import (
     MAX_LOTE_REFRESCO,
     TAMANO_MAXIMO_XML,
     actualizar_sap,
-    generar_pdf_comprobante,
     import_comprobante_xml,
     list_comprobantes,
     list_intentos,
@@ -55,7 +54,9 @@ from app.services.results import (
     RefreshCdrOut,
     RefreshLoteOut,
     ResumenOut,
+    SapImportOut,
 )
+from app.services.sap import MAX_FILAS_SAP, importar_sap
 
 router = APIRouter(tags=["comprobantes"])
 
@@ -86,7 +87,8 @@ class FiltrosComprobantes(BaseModel):
     n_sap: str | None = Field(
         default=None, min_length=1, max_length=50, description="N° SAP (contiene)"
     )
-    check_sap: bool | None = Field(default=None, description="Solo con/sin Check SAP")
+    vencimiento_desde: date | None = Field(default=None, description="Vencimiento mínimo")
+    vencimiento_hasta: date | None = Field(default=None, description="Vencimiento máximo")
     moneda: str | None = Field(default=None, pattern=r"^[A-Z]{3}$", description="PEN, USD…")
     respaldo: RespaldoFiltro | None = Field(
         default=None, description="Cobertura de respaldo: sin_xml, sin_cdr o completo"
@@ -104,6 +106,12 @@ class FiltrosComprobantes(BaseModel):
     def _rango_de_fechas(self) -> FiltrosComprobantes:
         if self.fecha_desde and self.fecha_hasta and self.fecha_desde > self.fecha_hasta:
             raise ValueError("fecha_desde no puede ser posterior a fecha_hasta")
+        if (
+            self.vencimiento_desde
+            and self.vencimiento_hasta
+            and self.vencimiento_desde > self.vencimiento_hasta
+        ):
+            raise ValueError("vencimiento_desde no puede ser posterior a vencimiento_hasta")
         return self
 
     def a_filtros(self) -> FiltrosListado:
@@ -116,7 +124,8 @@ class FiltrosComprobantes(BaseModel):
             serie=self.serie,
             q=self.q,
             n_sap=self.n_sap,
-            check_sap=self.check_sap,
+            vencimiento_desde=self.vencimiento_desde,
+            vencimiento_hasta=self.vencimiento_hasta,
             moneda=self.moneda,
             respaldo=self.respaldo,
             orden=self.orden,
@@ -297,26 +306,37 @@ async def get_comprobante(
 
 
 class ActualizarSapIn(BaseModel):
-    """Campos de gestión SAP editables; lo que no se envía no se modifica."""
+    """N° SAP de un comprobante."""
 
-    check_sap: bool | None = Field(default=None, description="Marca de conciliación con SAP")
     n_sap: str | None = Field(
         default=None, max_length=50, description="N° SAP; null o vacío lo limpia"
     )
 
     @model_validator(mode="after")
-    def _al_menos_un_campo(self) -> ActualizarSapIn:
-        if not self.model_fields_set & {"check_sap", "n_sap"}:
-            raise ValueError("Envíe check_sap y/o n_sap")
-        if "check_sap" in self.model_fields_set and self.check_sap is None:
-            raise ValueError("check_sap debe ser true o false")
+    def _exige_n_sap(self) -> ActualizarSapIn:
+        if "n_sap" not in self.model_fields_set:
+            raise ValueError("Envíe n_sap")
         return self
+
+
+class FilaSapIn(BaseModel):
+    """Una fila del Excel de N° SAP, tal como viene (el servidor la normaliza)."""
+
+    documento: str | None = Field(
+        default=None, max_length=40, description="Serie-número, p. ej. F001-123"
+    )
+    ruc: str | None = Field(default=None, max_length=20, description="RUC (opcional)")
+    n_sap: str | None = Field(default=None, max_length=100, description="N° SAP")
+
+
+class ImportarSapIn(BaseModel):
+    filas: list[FilaSapIn] = Field(max_length=MAX_FILAS_SAP)
 
 
 @router.patch(
     "/comprobantes/{comprobante_id}",
     response_model=ComprobanteOut,
-    summary="Actualiza el Check SAP / N° SAP del comprobante",
+    summary="Actualiza el N° SAP del comprobante",
 )
 async def patch_comprobante(
     user: CurrentUserDep,
@@ -324,41 +344,28 @@ async def patch_comprobante(
     cuerpo: ActualizarSapIn,
     comprobante_id: UUID = Path(description="Identificador del comprobante"),
 ) -> ComprobanteOut:
-    """Persiste la marca SAP (admin/emisor); el `lector` recibe 403."""
+    """Persiste el N° SAP (admin/emisor); el `lector` recibe 403."""
     n_sap = (cuerpo.n_sap or "").strip() or None
-    return await actualizar_sap(
-        uow=uow,
-        user=user,
-        comprobante_id=comprobante_id,
-        check_sap=cuerpo.check_sap,
-        n_sap=n_sap,
-        cambiar_n_sap="n_sap" in cuerpo.model_fields_set,
-    )
+    return await actualizar_sap(uow=uow, user=user, comprobante_id=comprobante_id, n_sap=n_sap)
 
 
-@router.get(
-    "/comprobantes/{comprobante_id}/pdf",
-    summary="Descarga la representación impresa del comprobante en PDF",
+@router.post(
+    "/companies/{ruc}/comprobantes/import-sap",
+    response_model=SapImportOut,
+    summary="Importa N° SAP en lote (documento y N° SAP por fila)",
 )
-async def get_comprobante_pdf(
-    user: CurrentUserDep,
-    uow: UowDep,
-    settings: SettingsDep,
-    comprobante_id: UUID = Path(description="Identificador del comprobante"),
-) -> Response:
-    """Genera el PDF bajo demanda desde los datos registrados; cualquier miembro.
+async def post_importar_sap(
+    access: AcessoOperativo, uow: UowDep, cuerpo: ImportarSapIn
+) -> SapImportOut:
+    """Asigna el N° SAP a los comprobantes ya registrados (admin/emisor).
 
-    No depende de SUNAT: el PDF se construye con la cabecera y las líneas ya
-    guardadas en la base. La primera vez se archiva en R2 como copia informativa.
+    Cada fila trae el documento (serie-número) y, opcional, el RUC. Lo que no está en el
+    portal o no se puede leer se omite y se cuenta: nunca detiene la importación.
     """
-    contenido, nombre = await generar_pdf_comprobante(
-        uow=uow, user=user, comprobante_id=comprobante_id, settings=settings
-    )
-    seguro = nombre.replace('"', "").replace("\\", "")
-    return Response(
-        content=contenido,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{seguro}"'},
+    return await importar_sap(
+        uow=uow,
+        access=access,
+        filas=[(fila.documento, fila.ruc, fila.n_sap) for fila in cuerpo.filas],
     )
 
 

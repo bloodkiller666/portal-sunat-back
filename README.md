@@ -23,8 +23,8 @@ Backend del portal multiempresa de comprobantes electrónicos del grupo. Se cone
 
 **Fuera de alcance (interfaces preparadas, sin implementar):** emisión real,
 SAP, SIRE, guías de remisión y envío por correo. Ver `app/integrations/`.
-La **firma XML** (`SunatXmlSigner`) y la **representación impresa en PDF**
-(`SunatPdfRenderer`, vía `GET /comprobantes/{id}/pdf`) ya están implementadas.
+La **firma XML** (`SunatXmlSigner`) ya está implementada. El portal **no genera PDF**
+(se retiró el endpoint `GET /comprobantes/{id}/pdf` y `fpdf2`).
 
 ## Estructura
 
@@ -38,7 +38,7 @@ app/
   db/                     # pool asyncpg con RLS, modelos y repositorios
   secrets/                # SecretsProvider (env) + stub de Azure Key Vault + certificado
   storage/                # Cloudflare R2 (bucket privado) con URLs firmadas
-  integrations/           # firma XML (implementada), PDF (implementado), SAP y correo (stubs)
+  integrations/           # firma XML (implementada), SAP y correo (stubs)
 supabase/migrations/      # 0001 esquema, 0002 funciones/triggers, 0003 RLS, 0004 archivos
 Dockerfile                # imagen de producción
 .github/workflows/ci.yml  # lint + pruebas + build de la imagen
@@ -271,7 +271,8 @@ nunca descarga el conjunto completo.
 | `tipo_documento` | `01`, `03`, `07`, `08` |
 | `serie`, `moneda` | Serie exacta; `PEN`, `USD`… |
 | `q` | Búsqueda parcial (mín. 2 caracteres) por N° de documento, cliente, RUC u orden de compra |
-| `n_sap`, `check_sap` | N° SAP (contiene); `true`/`false` |
+| `n_sap` | N° SAP (contiene) |
+| `vencimiento_desde`, `vencimiento_hasta` | Rango de fecha de vencimiento (invertido → `422`); un comprobante sin vencimiento no entra en ningún rango |
 | `respaldo` | `sin_xml`, `sin_cdr` o `completo` (XML y CDR archivados) |
 | `orden`, `direccion` | `fecha` (por defecto), `numero`, `cliente` o `importe`; `asc` o `desc`. Las notas de crédito ordenan como negativas |
 | `limit`, `offset` | Página (1–100, por defecto 50) |
@@ -381,26 +382,9 @@ curl -s "http://127.0.0.1:8000/api/v1/comprobantes/$ID" -H "Authorization: Beare
 }
 ```
 
-### `GET /api/v1/comprobantes/{id}/pdf`
-
-Representación impresa del comprobante en PDF, generada bajo demanda con los
-datos ya registrados (no depende del bucket ni de SUNAT). Cualquier miembro.
-
-```bash
-curl -s "http://127.0.0.1:8000/api/v1/comprobantes/$ID/pdf" \
-  -H "Authorization: Bearer $TOKEN" -o factura.pdf
-# Content-Disposition: attachment; filename="20123456789-01-F001-00000001.pdf"
-```
-
-El PDF incluye la cabecera del emisor, el cuadro del tipo de documento y número,
-el adquirente, la tabla de ítems (cantidad, unidad, descripción, precio unitario
-con IGV y valor de venta), los totales (base imponible, IGV y total a pagar) y
-el estado ante SUNAT con el mensaje del CDR, si ya se consultó.
-
 ### `GET /api/v1/comprobantes/{id}/archivos`
 
-Lista los archivos almacenados del comprobante (XML importado, CDR recibido,
-PDF cuando exista). Cualquier miembro, incluido `lector`.
+Lista los archivos almacenados del comprobante (XML importado, CDR recibido). Cualquier miembro, incluido `lector`.
 
 ```bash
 curl -s "http://127.0.0.1:8000/api/v1/comprobantes/$ID/archivos" \
@@ -518,14 +502,32 @@ tareas de Windows o cron) como copia de seguridad de la evidencia.
 
 ### `PATCH /api/v1/comprobantes/{id}`
 
-Persiste el Check SAP (y opcionalmente el N° SAP). Solo `admin`/`emisor`; el
-`lector` recibe 403. Lo que no se envía no se modifica; `"n_sap": ""` lo limpia.
+Persiste el N° SAP de un comprobante. Solo `admin`/`emisor`; el `lector` recibe 403.
+`"n_sap": ""` lo limpia. (El Check SAP se retiró: el N° SAP lo dice todo.)
 
 ```bash
 curl -s -X PATCH "http://127.0.0.1:8000/api/v1/comprobantes/$ID" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"check_sap": true, "n_sap": "4500926001"}'
+  -d '{"n_sap": "4500926001"}'
 ```
+
+### `POST /api/v1/companies/{ruc}/comprobantes/import-sap`
+
+Importación masiva de N° SAP desde el Excel de Contabilidad (el frontend lee el `.xlsx` y
+envía las filas). Cada fila trae el **documento** (`F001-123`, `f001-00000123` y similares) y
+el **N° SAP**; el **RUC** es opcional y afina el emparejamiento (debe ser el del cliente o el
+emisor del comprobante). Solo `admin`/`emisor`; hasta 20 000 filas por llamada.
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/v1/companies/20514831620/comprobantes/import-sap" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"filas": [{"documento": "F001-123", "ruc": "20100000001", "n_sap": "4500000001"},
+                 {"documento": "B001-45", "n_sap": "4500000002"}]}'
+# {"ruc": "...", "recibidas": 2, "actualizadas": 1, "no_encontradas": 1, "invalidas": 0}
+```
+
+Lo que **no está en el portal** o no se puede leer (sin documento o sin N° SAP) se omite y se
+cuenta: nunca da error ni detiene la importación. Una sola sentencia SQL actualiza todo el lote.
 
 ### `POST /api/v1/companies/{ruc}/sire/ventas/sync`
 
@@ -601,10 +603,10 @@ async function api(ruta: string, token: string, init: RequestInit = {}) {
 | Botón "Actualizar estado/CDR" (admin/emisor) | `POST /api/v1/comprobantes/{id}/refresh-cdr` |
 | Listado de comprobantes (cualquier rol) | `GET /api/v1/companies/{ruc}/comprobantes` |
 | Modal de detalle con ítems (cualquier rol) | `GET /api/v1/comprobantes/{id}` |
-| Botón "Descargar PDF" (cualquier rol) | `GET /api/v1/comprobantes/{id}/pdf` |
 | Botón "Actualizar pendientes" (admin/emisor) | `POST /api/v1/companies/{ruc}/comprobantes/refresh` |
 | Importar XML UBL (admin/emisor) | `POST /api/v1/companies/{ruc}/comprobantes/import` |
-| Importar lote ZIP de XML+PDF (admin/emisor) | `POST /api/v1/companies/{ruc}/comprobantes/import-paquete` |
+| Importar N° SAP desde Excel (admin/emisor) | `POST /api/v1/companies/{ruc}/comprobantes/import-sap` |
+| Importar lote ZIP de XML (admin/emisor) | `POST /api/v1/companies/{ruc}/comprobantes/import-paquete` |
 | Archivos del comprobante (cualquier rol) | `GET /api/v1/comprobantes/{id}/archivos` |
 | Botón "Descargar XML/CDR" (cualquier rol) | `POST /api/v1/archivos/{id}/download-url` |
 | Historial de intentos SUNAT (cualquier rol) | `GET /api/v1/comprobantes/{id}/envios` |

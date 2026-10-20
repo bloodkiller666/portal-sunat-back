@@ -37,13 +37,18 @@ from app.db.models import (
     SunatEnvio,
     SunatEnvioRegistro,
 )
-from app.db.repositories.base import FiltrosListado, PaginaComprobantes, ResumenComprobantes
+from app.db.repositories.base import (
+    FilaSap,
+    FiltrosListado,
+    PaginaComprobantes,
+    ResumenComprobantes,
+)
 
 _COLUMNAS_COMPROBANTE = """
     id, company_id, origen, ruc_emisor, ruc_receptor, receptor_doc, razon_social_emisor,
     razon_social_receptor, tipo_documento, serie, correlativo, numero, nombre_archivo,
     fecha_emision, fecha_vencimiento, forma_pago, moneda, monto_total, estado, sunat_ambiente,
-    n_sap, orden_compra, check_sap,
+    n_sap, orden_compra,
     cdr_codigo, cdr_descripcion, cdr_notas, cdr_fecha, ultimo_envio_at, anulado_at,
     motivo_anulacion, created_at, updated_at, created_by, fuente
 """
@@ -76,8 +81,10 @@ def _donde(company_id: UUID, filtros: FiltrosListado) -> tuple[str, list[object]
         agregar("c.serie = ${n}", filtros.serie)
     if filtros.moneda is not None:
         agregar("c.moneda = ${n}", filtros.moneda)
-    if filtros.check_sap is not None:
-        agregar("c.check_sap = ${n}", filtros.check_sap)
+    if filtros.vencimiento_desde is not None:
+        agregar("c.fecha_vencimiento >= ${n}", filtros.vencimiento_desde)
+    if filtros.vencimiento_hasta is not None:
+        agregar("c.fecha_vencimiento <= ${n}", filtros.vencimiento_hasta)
     if filtros.n_sap is not None:
         agregar("c.n_sap ilike ${n} escape '\\'", _patron_like(filtros.n_sap))
     if filtros.q is not None:
@@ -563,23 +570,16 @@ class PostgresComprobantesRepository:
         self,
         comprobante_id: UUID,
         *,
-        check_sap: bool | None = None,
         n_sap: str | None = None,
-        cambiar_n_sap: bool = False,
     ) -> Comprobante:
-        # `cambiar_n_sap` distingue "no tocar" de "limpiar" (n_sap=None).
         record = await self._connection.fetchrow(
             f"""
             update public.comprobantes
-               set check_sap = coalesce($2, check_sap),
-                   n_sap = case when $3 then $4 else n_sap end,
-                   updated_at = now()
+               set n_sap = $2, updated_at = now()
              where id = $1
             returning {_COLUMNAS_COMPROBANTE}
             """,
             comprobante_id,
-            check_sap,
-            cambiar_n_sap,
             n_sap,
         )
         data = _row(record)
@@ -588,6 +588,35 @@ class PostgresComprobantesRepository:
 
             raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
         return Comprobante.model_validate(data)
+
+    async def asignar_n_sap_lote(self, company_id: UUID, filas: list[FilaSap]) -> set[int]:
+        if not filas:
+            return set()
+        # Una sola sentencia para todo el Excel. `pos` devuelve qué filas encontraron
+        # comprobante; sin RUC se empareja solo por serie + correlativo.
+        encontradas = await self._connection.fetch(
+            """
+            with entrada as (
+                select * from unnest($2::int[], $3::text[], $4::int[], $5::text[], $6::text[])
+                    as e(pos, serie, correlativo, n_sap, ruc)
+            )
+            update public.comprobantes c
+               set n_sap = e.n_sap, updated_at = now()
+              from entrada e
+             where c.company_id = $1
+               and c.serie = e.serie
+               and c.correlativo = e.correlativo
+               and (e.ruc is null or e.ruc in (c.ruc_receptor, c.ruc_emisor))
+            returning e.pos
+            """,
+            company_id,
+            list(range(len(filas))),
+            [f.serie for f in filas],
+            [f.correlativo for f in filas],
+            [f.n_sap for f in filas],
+            [f.ruc for f in filas],
+        )
+        return {fila["pos"] for fila in encontradas}
 
 
 class PostgresComprobanteItemsRepository:

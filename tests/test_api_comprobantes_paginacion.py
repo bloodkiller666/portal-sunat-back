@@ -103,21 +103,44 @@ def test_orden_invalido_se_rechaza(client: TestClient, auth: dict[str, str]) -> 
     assert respuesta.status_code == 422
 
 
-def test_filtra_por_check_sap_y_n_sap(
+def test_filtra_por_n_sap(
     client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
 ) -> None:
-    marcado = _agregar(uow, empresa_principal, correlativo=1)
-    marcado.check_sap = True
-    marcado.n_sap = "4500926001"
+    con_sap = _agregar(uow, empresa_principal, correlativo=1)
+    con_sap.n_sap = "4500926001"
     _agregar(uow, empresa_principal, correlativo=2)
 
-    con = client.get(LISTA, headers=auth, params={"check_sap": "true"}).json()
-    sin = client.get(LISTA, headers=auth, params={"check_sap": "false"}).json()
     por_sap = client.get(LISTA, headers=auth, params={"n_sap": "926"}).json()
 
-    assert [i["correlativo"] for i in con["items"]] == [1]
-    assert [i["correlativo"] for i in sin["items"]] == [2]
     assert [i["correlativo"] for i in por_sap["items"]] == [1]
+
+
+def test_filtra_por_fecha_de_vencimiento(
+    client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
+) -> None:
+    for correlativo, vence in ((1, date(2026, 10, 5)), (2, date(2026, 10, 20)), (3, None)):
+        _agregar(uow, empresa_principal, correlativo=correlativo).fecha_vencimiento = vence
+
+    def numeros(**params: str) -> list[int]:
+        cuerpo = client.get(LISTA, headers=auth, params=params).json()
+        return sorted(i["correlativo"] for i in cuerpo["items"])
+
+    assert numeros(vencimiento_desde="2026-10-10") == [2]
+    assert numeros(vencimiento_hasta="2026-10-10") == [1]
+    assert numeros(vencimiento_desde="2026-10-01", vencimiento_hasta="2026-10-31") == [1, 2]
+    # Sin vencimiento informado no entra en ningún rango.
+    assert 3 not in numeros(vencimiento_desde="2000-01-01")
+
+
+def test_rechaza_un_rango_de_vencimiento_invertido(
+    client: TestClient, auth: dict[str, str]
+) -> None:
+    respuesta = client.get(
+        LISTA,
+        headers=auth,
+        params={"vencimiento_desde": "2026-10-10", "vencimiento_hasta": "2026-10-01"},
+    )
+    assert respuesta.status_code == 422
 
 
 def test_busqueda_por_documento_cliente_y_ruc(

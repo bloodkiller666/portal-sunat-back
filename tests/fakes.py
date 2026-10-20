@@ -41,7 +41,12 @@ from app.db.models import (
     SunatEnvio,
     SunatEnvioRegistro,
 )
-from app.db.repositories.base import FiltrosListado, PaginaComprobantes, ResumenComprobantes
+from app.db.repositories.base import (
+    FilaSap,
+    FiltrosListado,
+    PaginaComprobantes,
+    ResumenComprobantes,
+)
 from app.storage.base import FileUploadResult
 from app.sunat.models import (
     CdrInfo,
@@ -245,7 +250,13 @@ class InMemoryComprobantesRepository:
                 continue
             if f.moneda is not None and c.moneda != f.moneda:
                 continue
-            if f.check_sap is not None and c.check_sap is not f.check_sap:
+            if f.vencimiento_desde is not None and (
+                c.fecha_vencimiento is None or c.fecha_vencimiento < f.vencimiento_desde
+            ):
+                continue
+            if f.vencimiento_hasta is not None and (
+                c.fecha_vencimiento is None or c.fecha_vencimiento > f.vencimiento_hasta
+            ):
                 continue
             if f.n_sap is not None and f.n_sap.lower() not in (c.n_sap or "").lower():
                 continue
@@ -485,21 +496,28 @@ class InMemoryComprobantesRepository:
         self,
         comprobante_id: UUID,
         *,
-        check_sap: bool | None = None,
         n_sap: str | None = None,
-        cambiar_n_sap: bool = False,
     ) -> Comprobante:
         comprobante = self.comprobantes.get(comprobante_id)
         if comprobante is None:
             raise NotFoundError("El comprobante no existe")
-        cambios: dict[str, object] = {}
-        if check_sap is not None:
-            cambios["check_sap"] = check_sap
-        if cambiar_n_sap:
-            cambios["n_sap"] = n_sap
-        actualizado = comprobante.model_copy(update=cambios)
+        actualizado = comprobante.model_copy(update={"n_sap": n_sap})
         self.comprobantes[comprobante_id] = actualizado
         return actualizado
+
+    async def asignar_n_sap_lote(self, company_id: UUID, filas: list[FilaSap]) -> set[int]:
+        encontradas: set[int] = set()
+        for posicion, fila in enumerate(filas):
+            for id_, c in list(self.comprobantes.items()):
+                if c.company_id != company_id or c.serie != fila.serie:
+                    continue
+                if c.correlativo != fila.correlativo:
+                    continue
+                if fila.ruc is not None and fila.ruc not in (c.ruc_receptor, c.ruc_emisor):
+                    continue
+                self.comprobantes[id_] = c.model_copy(update={"n_sap": fila.n_sap})
+                encontradas.add(posicion)
+        return encontradas
 
 
 @dataclass

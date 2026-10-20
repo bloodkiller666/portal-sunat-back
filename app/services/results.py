@@ -144,7 +144,6 @@ class ComprobanteOut(BaseModel):
     sunat_ambiente: SunatAmbiente
     n_sap: str | None = None
     orden_compra: str | None = None
-    check_sap: bool = False
     cdr_codigo: str | None = None
     cdr_descripcion: str | None = None
     created_at: datetime | None = None
@@ -279,6 +278,16 @@ class PaqueteOut(BaseModel):
     sin_xml: int
     items: list[PaqueteItemOut]
     procesado_at: datetime
+
+
+class SapImportOut(BaseModel):
+    """Resultado de importar N° SAP: lo que no está en el portal se omite, no es error."""
+
+    ruc: str
+    recibidas: int
+    actualizadas: int
+    no_encontradas: int
+    invalidas: int
 
 
 class EnviosResponse(BaseModel):

@@ -35,7 +35,8 @@ def test_los_valores_van_como_parametros_nunca_en_el_texto() -> None:
         tipo_documento="01",
         serie="FF01",
         moneda="PEN",
-        check_sap=True,
+        vencimiento_desde=date(2026, 10, 1),
+        vencimiento_hasta=date(2026, 10, 31),
         n_sap="4500",
         q="x'; drop table comprobantes; --",
     )
@@ -47,6 +48,8 @@ def test_los_valores_van_como_parametros_nunca_en_el_texto() -> None:
     assert parametros[0] == empresa
     assert parametros[1] == "aprobado"
     assert date(2026, 9, 1) in parametros and date(2026, 9, 30) in parametros
+    assert date(2026, 10, 1) in parametros and date(2026, 10, 31) in parametros
+    assert "c.fecha_vencimiento >=" in donde
     numeros = {int(n) for n in re.findall(r"\$(\d+)", donde)}
     assert numeros == set(range(1, len(parametros) + 1))
 

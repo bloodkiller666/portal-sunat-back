@@ -37,7 +37,6 @@ from app.db.models import (
     SunatEnvioRegistro,
 )
 from app.db.repositories.base import FiltrosListado, UnitOfWork
-from app.integrations.pdf import SunatPdfRenderer
 from app.secrets.base import SecretsProvider
 from app.services.companies import require_membership
 from app.services.results import (
@@ -368,7 +367,6 @@ def to_comprobante_out(comprobante: Comprobante) -> ComprobanteOut:
         sunat_ambiente=comprobante.sunat_ambiente,
         n_sap=comprobante.n_sap,
         orden_compra=comprobante.orden_compra,
-        check_sap=comprobante.check_sap,
         cdr_codigo=comprobante.cdr_codigo,
         cdr_descripcion=comprobante.cdr_descripcion,
         created_at=comprobante.created_at,
@@ -721,11 +719,9 @@ async def actualizar_sap(
     uow: UnitOfWork,
     user: AuthenticatedUser,
     comprobante_id: UUID,
-    check_sap: bool | None,
     n_sap: str | None,
-    cambiar_n_sap: bool,
 ) -> ComprobanteOut:
-    """Persiste la marca de conciliación SAP (y opcionalmente el N° SAP).
+    """Persiste el N° SAP de un comprobante (vacío lo limpia).
 
     Solo admin/emisor: es un dato de gestión que el `lector` no debe alterar.
     Aplica tanto a ventas como a compras.
@@ -738,50 +734,6 @@ async def actualizar_sap(
 
     actualizado = await uow.comprobantes.update_sap(
         comprobante_id,
-        check_sap=check_sap,
         n_sap=n_sap,
-        cambiar_n_sap=cambiar_n_sap,
     )
     return to_comprobante_out(actualizado)
-
-
-async def generar_pdf_comprobante(
-    *,
-    uow: UnitOfWork,
-    user: AuthenticatedUser,
-    comprobante_id: UUID,
-    settings: Settings | None = None,
-) -> tuple[bytes, str]:
-    """Representación impresa del comprobante en PDF.
-
-    Genera el documento bajo demanda a partir de los datos registrados (no
-    depende de SUNAT). Devuelve `(contenido, nombre_archivo)`; cualquier miembro
-    (incluido `lector`) puede descargarlo.
-
-    La primera vez que un admin/emisor lo genera se archiva en R2 como **copia
-    informativa**: no se construye desde el XML firmado, así que no es la evidencia
-    ante SUNAT (esa es el XML con su CDR). El `lector` no archiva nada (no tiene
-    permiso de escritura) y un fallo de R2 no impide la descarga.
-    """
-    comprobante = await uow.comprobantes.get(comprobante_id)
-    if comprobante is None:
-        raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
-
-    miembro = await require_membership(uow, user, comprobante.company_id)
-
-    items = await uow.items.list_for_comprobante(comprobante_id)
-    contenido = await SunatPdfRenderer().render(comprobante, items)
-    nombre = f"{comprobante.nombre_archivo or comprobante.numero or 'comprobante'}.pdf"
-
-    if settings is not None and miembro.rol in ROLES_OPERATIVOS:
-        archivados = await uow.archivos.list_for_comprobante(comprobante_id)
-        if not any(archivo.tipo is TipoArchivo.pdf for archivo in archivados):
-            await guardar_archivo_sin_fallar(
-                uow=uow,
-                settings=settings,
-                comprobante_id=comprobante_id,
-                tipo=TipoArchivo.pdf,
-                file_bytes=contenido,
-                filename=nombre,
-            )
-    return contenido, nombre

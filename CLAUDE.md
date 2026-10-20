@@ -14,8 +14,7 @@ dos repositorios:
 | **Frontend** | `C:\Users\majco\Desktop\factura-sunat-main` | Vercel (ya hosteado) |
 
 - **Stack backend**: Python 3.12 + uv, FastAPI, Pydantic v2, asyncpg (Supabase
-  Postgres con RLS), zeep (SOAP SUNAT), aioboto3 (Cloudflare R2), signxml,
-  fpdf2. Tests: pytest + respx (SUNAT siempre mockeado).
+  Postgres con RLS), zeep (SOAP SUNAT), aioboto3 (Cloudflare R2), signxml. Tests: pytest + respx (SUNAT siempre mockeado).
 - **Stack frontend**: Next.js 16 (App Router) + React 19 + Tailwind v4 + GSAP,
   `@supabase/supabase-js` para el login. Gestor: pnpm (nunca npm).
 - **Empresa principal**: TDM ASFALTOS S.A.C., RUC `20514831620`. Sus
@@ -27,7 +26,7 @@ referencia de la API.
 
 ## 2. Estado actual (lo que YA funciona — no lo rehagas)
 
-Backend (`uv run pytest -q` → 577 passed; `uv run ruff check` → limpio):
+Backend (`uv run pytest -q` → 586 passed; `uv run ruff check` → limpio):
 
 - **SUNAT real (SOAP)**: `GET /companies/{ruc}/sunat/status` (valida SOL +
   certificado), `POST /comprobantes/{id}/refresh-cdr` (estado + CDR real),
@@ -39,9 +38,8 @@ Backend (`uv run pytest -q` → 577 passed; `uv run ruff check` → limpio):
   (cantidad, unidad, precios con/sin IGV, IGV/ISC, catálogo 07) y se guardan en
   `comprobante_items` (migración 0001 ya existía).
 - **Detalle**: `GET /comprobantes/{id}` (cabecera + ítems).
-- **PDF**: `GET /comprobantes/{id}/pdf` genera la representación impresa con
-  fpdf2 desde los datos de la base (`app/integrations/pdf.py`). No depende de
-  R2 ni de SUNAT.
+- **Sin PDF**: el portal no genera ni sirve PDF (se retiró el endpoint, el visor y el botón;
+  `fpdf2` ya no es dependencia). Quien necesite el PDF lo pide al OSE.
 - **Archivos en R2**: XML importado y CDR recibido se archivan (bucket
   privado) y se descargan con URL firmada (`POST /archivos/{id}/download-url`).
 - **Respaldo desde Bizlinks (OSE)**: completa el XML firmado y el CDR que falten,
@@ -53,7 +51,7 @@ Backend (`uv run pytest -q` → 577 passed; `uv run ruff check` → limpio):
 Frontend (ya conectado al backend):
 
 - Login Supabase, selector multiempresa con rol, listado real con filtros y
-  KPIs, detalle con ítems reales, descargas reales (PDF del backend, XML/CDR
+  KPIs, detalle con ítems reales, descargas reales (XML/CDR
   del bucket con URL firmada), importación XML/ZIP, botón "Sincronizar SUNAT",
   exportación Excel/ZIP y correo real vía Resend (`/api/enviar-comprobantes`).
 - Verificación: `pnpm lint` y `pnpm build` deben pasar sin errores.
@@ -106,16 +104,14 @@ Compose»). Falta:
 
 Backend `uv run fastapi run --port 8000` con `CORS_ORIGINS=http://localhost:3000`;
 frontend `pnpm dev` con `.env.local`. Validado con Edge headless (Playwright) y
-por API: login → empresas → listado (249 comprobantes) → PDF → Check SAP
-persistente → detalle → importar XML (archivado en R2) → sincronizar SIRE.
+por API: login → empresas → listado (249 comprobantes) → detalle → importar XML (archivado en R2) → sincronizar SIRE.
 Falta repetirlo contra el dominio real tras desplegar (ver CORS de R2 abajo).
 
-### P3 — Check SAP persistente ✅ HECHO
+### P3 — N° SAP persistente ✅ HECHO (el Check SAP se retiró el 2026-10-19)
 
-`PATCH /api/v1/comprobantes/{id}` (`check_sap` y/o `n_sap`, admin/emisor; el
-`lector` recibe 403). El frontend lo llama con actualización optimista y revierte
-con aviso si falla (`alternarCheckSap` en `app/page.tsx`). Verificado en
-navegador: la marca sobrevive a recargar la página.
+`PATCH /api/v1/comprobantes/{id}` (solo `n_sap`, admin/emisor; el
+`lector` recibe 403). El N° SAP ya no se calcula ni se simula: entra por el Excel
+(`/import-sap`, ver P10).
 
 ### P4 — Vencimiento y forma de pago ✅ HECHO
 
@@ -163,8 +159,6 @@ Decisiones de diseño (no las revierta sin motivo):
 - Cada sincronización archiva en R2 el ZIP original de SUNAT (`sire/{ruc}/{periodo}/`,
   tipo `zip`, sin comprobante, con SHA-256): es la evidencia de auditoría. Se lista en
   `GET /companies/{ruc}/sire/evidencias`.
-- El PDF del portal se archiva en R2 la 1.ª vez que un admin/emisor lo descarga, como
-  **copia informativa** (no sale del XML firmado: no es evidencia ante SUNAT).
 - `getStatusCdr` devuelve `0013` («no pertenece a GEM») para facturas emitidas por otro
   sistema aunque SIRE las liste: no hay CDR por ese canal y NO es un rechazo. Un
   Aprobado nunca se degrada por una consulta (`_siguiente_estado`).
@@ -220,7 +214,7 @@ Decisiones (no las revierta sin motivo):
 ### P7 — Filtros server-side y paginación real ✅ HECHO (2026-10-17)
 
 El servidor filtra, ordena, pagina y cuenta (`GET /companies/{ruc}/comprobantes`: `q`
-sobre documento/cliente/RUC/OC, `n_sap`, `check_sap`, `moneda`, `respaldo`, `orden`,
+sobre documento/cliente/RUC/OC, `n_sap`, `vencimiento_desde/hasta`, `moneda`, `respaldo`, `orden`,
 `direccion`, `contar`) y calcula los indicadores (`GET …/comprobantes/resumen`). El frontend
 pide una página (50 por defecto) más el resumen, en paralelo; ya no descarga todo.
 
@@ -243,6 +237,21 @@ Decisiones de diseño (no las revierta sin motivo):
   hiciera falta, es una función `SECURITY DEFINER` que compruebe la pertenencia a mano.
 - `monto_total` es el importe total CON IGV (SIRE `Total CP` cuadra con la suma de sus
   componentes: verificado en 494 registros; el XML usa `PayableAmount`).
+
+### P10 — Cambios del 2026-10-19 (vencimiento, N° SAP por Excel, sin PDF)
+
+- Filtro por fecha de vencimiento (`vencimiento_desde/hasta`): un comprobante sin vencimiento no
+  entra en ningún rango. Los indicadores (`/resumen`) siguen dependiendo solo de la emisión.
+- `POST /companies/{ruc}/comprobantes/import-sap` (`app/services/sap.py`): el Excel de Contabilidad
+  trae documento (serie-número) + N° SAP (+ RUC opcional). Una sentencia SQL con `unnest` actualiza
+  el lote; lo que no está en el portal o es ilegible se cuenta (`no_encontradas`, `invalidas`) y
+  nunca da error. Un RUC solo no identifica un documento: no se admite como llave.
+- Check SAP retirado de la API y de la interfaz (la columna `check_sap` sigue en la base, sin uso).
+- PDF retirado (endpoint, generador, visor, botón y `fpdf2`). `tiene_pdf`/`con_pdf` siguen en la
+  API por compatibilidad (los PDF ya archivados no se borran), pero la interfaz no los muestra.
+- Respaldo desde Bizlinks por el portal anónimo re-verificado en vivo el 2026-10-19 con una
+  factura real de octubre (FF01-16077): XML firmado (13 KB) y CDR código 0. Se habilita con
+  `BIZLINKS_CANAL=portal` (sigue siendo opt-in, con tope diario y cortacircuito).
 
 ### P8 — Opcional / posterior
 

@@ -31,7 +31,7 @@ flowchart TD
     end
 
     SRV <-->|SQL con RLS por empresa| DB[(Supabase Postgres<br/>comprobantes · ítems · archivos)]
-    SRV <-->|XML · CDR · PDF · ZIP SIRE| R2[(Cloudflare R2<br/>bucket privado)]
+    SRV <-->|XML · CDR · ZIP SIRE| R2[(Cloudflare R2<br/>bucket privado)]
 
     SRV -->|Sincronizar SIRE<br/>solo lectura| SIRE[SUNAT · API SIRE<br/>propuesta de ventas por mes]
     SRV -->|Consultar CDR / estado| SOAP[SUNAT · SOAP<br/>billConsultService]
@@ -43,7 +43,7 @@ flowchart TD
     FE -->|Importar XML / ZIP / CDR| API
 
     FE -->|URL firmada temporal| R2
-    FE --> OUT[[Salidas: PDF · XML · CDR ·<br/>Excel · Lote ZIP con SHA-256]]
+    FE --> OUT[[Salidas: XML · CDR ·<br/>Excel · Lote ZIP con SHA-256]]
 ```
 
 ### Flujo de una sincronización SIRE (paso a paso)
@@ -78,10 +78,10 @@ sequenceDiagram
 | Importar XML / ZIP | Real | Se archivan en R2; completan registros SIRE |
 | Importar CDR (ZIP `R-RUC-tipo-serie-número`) | Real | Se archivan en R2 y actualizan el estado |
 | Consultar CDR en SUNAT | Real | SOAP; devuelve `0013` si otro sistema emitió la factura |
-| PDF | Copia informativa | Lo genera el backend con los datos; **no** es evidencia ante SUNAT |
-| Indicadores XML / CDR / PDF por fila | Real | Tabla `archivos` |
+| Indicadores XML / CDR por fila | Real | Tabla `archivos` |
 | Lote ZIP de auditoría | Real | XML y CDR originales + `LEEME` + `manifiesto.csv` (SHA-256) |
-| Check SAP / N° SAP | Real | Se guarda en la base |
+| N° SAP (importado desde un Excel) | Real | Se guarda en la base; lo que no esté en el portal se omite |
+| Filtro por fecha de vencimiento | Real | Calendario de rango en el servidor |
 | **Emisión y firma de XML** | **Aún no** | Diferido a otra fase |
 
 Lo que se eliminó a propósito: XML fabricados en el navegador, envío de correos a
@@ -241,8 +241,8 @@ copia local de datos.
 ## 5. Guion sugerido para la presentación del viernes
 
 1. Login con rol; mostrar KPIs (facturado neto en soles/dólares, anulados excluidos).
-2. Tabla: filtros, indicadores XML / CDR / PDF por fila, cobertura de respaldo.
-3. Detalle de un comprobante: Resumen / Ítems / Archivos / Vista PDF.
+2. Tabla: filtros (también por vencimiento), indicadores XML / CDR por fila, cobertura de respaldo.
+3. Detalle de un comprobante: Resumen / Ítems / Archivos.
 4. **Sincronizar SIRE** de un mes → "ya existían" (idempotente) y la evidencia con su hash.
 5. Importar un XML real y su CDR → el indicador pasa a verde.
 6. Lote ZIP de auditoría con `manifiesto.csv` y exportar a Excel.

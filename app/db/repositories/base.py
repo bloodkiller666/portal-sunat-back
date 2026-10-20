@@ -50,11 +50,22 @@ class FiltrosListado:
     serie: str | None = None
     q: str | None = None
     n_sap: str | None = None
-    check_sap: bool | None = None
+    vencimiento_desde: date | None = None
+    vencimiento_hasta: date | None = None
     moneda: str | None = None
     respaldo: RespaldoFiltro | None = None
     orden: CampoOrden = CampoOrden.fecha
     direccion: DireccionOrden = DireccionOrden.desc
+
+
+@dataclass(frozen=True, slots=True)
+class FilaSap:
+    """Una fila del Excel de N° SAP: documento (serie + correlativo), RUC opcional y N° SAP."""
+
+    serie: str
+    correlativo: int
+    n_sap: str
+    ruc: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,10 +182,16 @@ class ComprobantesRepository(Protocol):
         self,
         comprobante_id: UUID,
         *,
-        check_sap: bool | None = None,
         n_sap: str | None = None,
-        cambiar_n_sap: bool = False,
     ) -> Comprobante: ...
+
+    async def asignar_n_sap_lote(self, company_id: UUID, filas: list[FilaSap]) -> set[int]:
+        """Asigna el N° SAP a los comprobantes de la empresa que coincidan con cada fila.
+
+        Devuelve las posiciones de `filas` que encontraron comprobante; el resto no existe
+        en el portal y se omite sin error.
+        """
+        ...
 
 
 @runtime_checkable

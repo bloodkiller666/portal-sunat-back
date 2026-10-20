@@ -225,23 +225,6 @@ def _sembrar(uow: FakeUnitOfWork, empresa: Company):
     return comprobante
 
 
-def test_patch_check_sap_persiste_la_marca(
-    client: TestClient,
-    auth: dict[str, str],
-    uow: FakeUnitOfWork,
-    empresa_principal: Company,
-) -> None:
-    comprobante = _sembrar(uow, empresa_principal)
-
-    respuesta = client.patch(
-        f"/api/v1/comprobantes/{comprobante.id}", headers=auth, json={"check_sap": True}
-    )
-
-    assert respuesta.status_code == 200
-    assert respuesta.json()["check_sap"] is True
-    assert uow.comprobantes.comprobantes[comprobante.id].check_sap is True
-
-
 def test_patch_n_sap_se_guarda_y_se_limpia(
     client: TestClient,
     auth: dict[str, str],
@@ -251,16 +234,14 @@ def test_patch_n_sap_se_guarda_y_se_limpia(
     comprobante = _sembrar(uow, empresa_principal)
     url = f"/api/v1/comprobantes/{comprobante.id}"
 
-    guardado = client.patch(url, headers=auth, json={"check_sap": True, "n_sap": " 4500123 "})
+    guardado = client.patch(url, headers=auth, json={"n_sap": " 4500123 "})
+    assert guardado.status_code == 200
     assert guardado.json()["n_sap"] == "4500123"
-    assert guardado.json()["check_sap"] is True
+    assert "check_sap" not in guardado.json()
 
-    # Sin n_sap en el cuerpo no se toca; con null/vacío se limpia.
-    intacto = client.patch(url, headers=auth, json={"check_sap": False})
-    assert intacto.json()["n_sap"] == "4500123"
+    # null o vacío lo limpia.
     limpio = client.patch(url, headers=auth, json={"n_sap": ""})
     assert limpio.json()["n_sap"] is None
-    assert limpio.json()["check_sap"] is False
 
 
 def test_patch_como_lector_devuelve_403(
@@ -272,29 +253,27 @@ def test_patch_como_lector_devuelve_403(
     comprobante = _sembrar(uow, empresa_principal)
 
     respuesta = client.patch(
-        f"/api/v1/comprobantes/{comprobante.id}", headers=auth_lector, json={"check_sap": True}
+        f"/api/v1/comprobantes/{comprobante.id}", headers=auth_lector, json={"n_sap": "1"}
     )
 
     assert respuesta.status_code == 403
     assert respuesta.json()["error"]["details"]["rol"] == "lector"
-    assert uow.comprobantes.comprobantes[comprobante.id].check_sap is False
+    assert uow.comprobantes.comprobantes[comprobante.id].n_sap is None
 
 
 def test_patch_sin_token_devuelve_401(client: TestClient) -> None:
-    respuesta = client.patch(f"/api/v1/comprobantes/{uuid4()}", json={"check_sap": True})
+    respuesta = client.patch(f"/api/v1/comprobantes/{uuid4()}", json={"n_sap": "1"})
     assert respuesta.status_code == 401
 
 
 def test_patch_comprobante_inexistente_devuelve_404(
     client: TestClient, auth: dict[str, str]
 ) -> None:
-    respuesta = client.patch(
-        f"/api/v1/comprobantes/{uuid4()}", headers=auth, json={"check_sap": True}
-    )
+    respuesta = client.patch(f"/api/v1/comprobantes/{uuid4()}", headers=auth, json={"n_sap": "1"})
     assert respuesta.status_code == 404
 
 
-@pytest.mark.parametrize("cuerpo", [{}, {"check_sap": None}, {"n_sap": "x" * 51}])
+@pytest.mark.parametrize("cuerpo", [{}, {"check_sap": True}, {"n_sap": "x" * 51}])
 def test_patch_cuerpo_invalido_devuelve_422(
     client: TestClient,
     auth: dict[str, str],

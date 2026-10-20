@@ -91,7 +91,6 @@ class Comprobante(RowModel):
     sunat_ambiente: SunatAmbiente = SunatAmbiente.beta
     n_sap: str | None = None
     orden_compra: str | None = None
-    check_sap: bool = False
     cdr_codigo: str | None = None
     cdr_descripcion: str | None = None
     cdr_notas: list[str] = []
