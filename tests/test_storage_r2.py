@@ -6,6 +6,7 @@ No se toca la red: el cliente S3 se reemplaza por un doble en memoria.
 from __future__ import annotations
 
 import hashlib
+from datetime import date
 from uuid import uuid4
 
 import pytest
@@ -13,7 +14,7 @@ import pytest
 from app.core.config import Settings
 from app.core.enums import EstadoArchivo, RolEmpresa, TipoArchivo
 from app.core.errors import StorageNotConfiguredError
-from app.services.store import sube_archivo, url_descarga
+from app.services.store import carpeta_del_comprobante, sube_archivo, url_descarga
 from app.storage import construir_clave, get_storage_provider
 from app.storage.providers.r2 import CloudflareR2StorageProvider
 from tests.conftest import RUC_PRINCIPAL
@@ -184,6 +185,52 @@ async def test_sube_archivo_registra_hash_mime_y_clave(
     # El MIME es el real, no una URL; el hash es el sha256 del contenido.
     assert not archivo.mime_type.startswith("http")
     assert proveedor.upload["nombre"].endswith(".xml")
+
+
+def _uow_con(comprobante: object, empresa: object) -> FakeUnitOfWork:
+    unidad = FakeUnitOfWork()
+    unidad.companies.empresas = [empresa]
+    unidad.companies.membresias = [construir_membresia(uuid4(), empresa.id, RolEmpresa.emisor)]
+    unidad.comprobantes.comprobantes[comprobante.id] = comprobante
+    unidad.comprobantes.company_ids_visibles = {empresa.id}
+    return unidad
+
+
+async def test_xml_y_cdr_quedan_juntos_en_la_carpeta_del_documento() -> None:
+    """Ruta pedida: AÑO/MES/N° DOCUMENTO, con el XML y el CDR dentro de esa carpeta."""
+    empresa = construir_empresa(ruc=RUC_PRINCIPAL)
+    comprobante = construir_comprobante(
+        empresa.id, ruc=RUC_PRINCIPAL, correlativo=7, fecha_emision=date(2026, 10, 15)
+    )
+    uow = _uow_con(comprobante, empresa)
+    proveedor = FakeStorageProvider()
+
+    for tipo, contenido in ((TipoArchivo.xml, b"<xml/>"), (TipoArchivo.cdr, b"PK\x03\x04")):
+        await sube_archivo(
+            uow=uow,
+            settings=_settings_r2(),
+            comprobante_id=comprobante.id,
+            tipo=tipo,
+            file_bytes=contenido,
+            storage_provider=proveedor,
+        )
+
+    carpeta = f"comprobantes/{RUC_PRINCIPAL}/2026/10/F001-00000007"
+    assert [subida["carpeta"] for subida in proveedor.subidas] == [carpeta, carpeta]
+    assert [archivo.storage_key for archivo in uow.archivos.archivos] == [
+        f"{carpeta}/{comprobante.nombre_archivo}.xml",
+        f"{carpeta}/{comprobante.nombre_archivo}.zip",
+    ]
+
+
+def test_un_comprobante_sin_serie_ni_numero_no_deja_la_ruta_vacia() -> None:
+    """Los registros incompletos (o los de SIRE sin XML) no rompen la clave."""
+    empresa = construir_empresa(ruc=RUC_PRINCIPAL)
+    comprobante = construir_comprobante(empresa.id, fecha_emision=date(2026, 1, 5))
+    incompleto = comprobante.model_copy(update={"serie": "", "numero": "", "nombre_archivo": ""})
+
+    assert carpeta_del_comprobante(incompleto) == f"comprobantes/{RUC_PRINCIPAL}/2026/01/archivo"
+    assert construir_clave(carpeta_del_comprobante(incompleto), "a.xml").endswith("/archivo/a.xml")
 
 
 async def test_url_descarga_firma_con_el_proveedor(

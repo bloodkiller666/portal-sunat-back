@@ -240,7 +240,7 @@ Decisiones de diseño (no las revierta sin motivo):
 
 ### P10 — Cambios del 2026-10-19 (vencimiento, N° SAP por Excel, sin PDF)
 
-- Filtro por fecha de vencimiento (`vencimiento_desde/hasta`): un comprobante sin vencimiento no
+- Filtro por fecha de vencimiento (`vencimiento_desde/hasta`): un comprobante sin vencimiento usa su
   entra en ningún rango. Los indicadores (`/resumen`) siguen dependiendo solo de la emisión.
 - `POST /companies/{ruc}/comprobantes/import-sap` (`app/services/sap.py`): el Excel de Contabilidad
   trae documento (serie-número) + N° SAP (+ RUC opcional). Una sentencia SQL con `unnest` actualiza
@@ -317,11 +317,25 @@ SUNAT) si la empresa ya tiene comprobantes `fuente=sire` emitidos en ese mes. `"
 lo permite (sigue siendo idempotente: solo agrega lo nuevo). Retomar un `ticket` no se valida.
 Bizlinks ya omitía lo que tiene XML y CDR (las boletas no exigen CDR).
 
-### P12 — Carpeta local `Descargas/AAAA/MM/SERIE-NÚMERO/RUC` (2026-10-20)
+### P13 — Carpeta local `Descargas/AAAA/MM/SERIE-NÚMERO/RUC` (2026-10-20)
 
 El frontend guarda el XML y el CDR reales en la PC (File System Access API, Chrome/Edge; el
-usuario elige su Descargas una vez). `POST /comprobantes/{id}/abrir-carpeta` abre esa carpeta en
-el Explorador, pero SOLO si el backend corre en la misma PC (`LOCAL_ABRIR_CARPETA=true`; base
-`LOCAL_DESCARGAS_DIR`, por defecto `~/Downloads`). Nunca recibe rutas del cliente: la deriva del
-comprobante (RUC del cliente en ventas, del proveedor en compras). Desplegado en un servidor
-responde 409 y el portal copia la ruta al portapapeles.
+usuario elige su Descargas una vez). `POST /carpeta-local/abrir` (`{"partes": [año, mes,
+SERIE-NÚMERO, RUC]}`) abre esa carpeta en el Explorador, pero SOLO si el backend corre en la misma
+PC (`LOCAL_ABRIR_CARPETA=true`; base `LOCAL_DESCARGAS_DIR`, por defecto `~/Downloads`). No toca la
+base de datos (la apertura es inmediata): solo valida el JWT, limpia cada parte de separadores y
+caracteres reservados, la confina a la carpeta base y abre únicamente una carpeta que ya exista.
+Desplegado en un servidor responde 409 y el portal copia la ruta al portapapeles.
+
+### P12 — El bucket guarda un documento por carpeta (2026-10-20)
+
+`app/services/store.py` arma la clave como
+`comprobantes/{RUC}/{AÑO}/{MES}/{SERIE}-{NÚMERO}/{archivo}`, así que el XML y el CDR del mismo
+comprobante quedan juntos (`FF01-00016077/…xml` y `…-CDR.zip`). El RUC se conserva delante
+porque el bucket es compartido entre empresas. Las evidencias de SIRE siguen aparte
+(`sire/{RUC}/{PERIODO}/`). `archivos.storage_key` guarda la ruta de cada archivo, de modo que
+lo ya archivado se sigue descargando igual.
+
+`scripts/reorganizar_r2.py` lleva los objetos viejos (los que estaban en la carpeta del mes) al
+esquema nuevo: simula por defecto, con `--aplicar` copia y actualiza `archivos.storage_key`, y
+`--borrar-originales` elimina la ruta vieja solo después. Es idempotente.

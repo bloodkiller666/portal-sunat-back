@@ -252,13 +252,11 @@ class InMemoryComprobantesRepository:
                 continue
             if f.moneda is not None and c.moneda != f.moneda:
                 continue
-            if f.vencimiento_desde is not None and (
-                c.fecha_vencimiento is None or c.fecha_vencimiento < f.vencimiento_desde
-            ):
+            # Sin vencimiento informado (p. ej. contado) rige la fecha de emisión.
+            vence = c.fecha_vencimiento or c.fecha_emision
+            if f.vencimiento_desde is not None and (vence is None or vence < f.vencimiento_desde):
                 continue
-            if f.vencimiento_hasta is not None and (
-                c.fecha_vencimiento is None or c.fecha_vencimiento > f.vencimiento_hasta
-            ):
+            if f.vencimiento_hasta is not None and (vence is None or vence > f.vencimiento_hasta):
                 continue
             if f.n_sap is not None and f.n_sap.lower() not in (c.n_sap or "").lower():
                 continue

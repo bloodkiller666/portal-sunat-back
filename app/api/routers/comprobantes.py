@@ -306,26 +306,31 @@ async def get_comprobante(
     return await obtener_detalle(uow=uow, user=user, comprobante_id=comprobante_id)
 
 
+class CarpetaLocalIn(BaseModel):
+    partes: list[str] = Field(
+        min_length=4,
+        max_length=4,
+        description="Año, mes, SERIE-NÚMERO y RUC de la contraparte (la carpeta del comprobante)",
+    )
+
+
 class CarpetaLocalOut(BaseModel):
     ruta: str = Field(description="Ruta completa de la carpeta abierta en la PC")
 
 
 @router.post(
-    "/comprobantes/{comprobante_id}/abrir-carpeta",
+    "/carpeta-local/abrir",
     response_model=CarpetaLocalOut,
-    summary="Abre en el Explorador la carpeta local del comprobante (solo backend en tu PC)",
+    summary="Abre en el Explorador la carpeta local de un comprobante (solo backend en tu PC)",
 )
 async def post_abrir_carpeta(
-    user: CurrentUserDep,
-    uow: UowDep,
-    settings: SettingsDep,
-    comprobante_id: UUID = Path(description="Identificador del comprobante"),
+    _user: CurrentUserDep, settings: SettingsDep, datos: CarpetaLocalIn
 ) -> CarpetaLocalOut:
-    """`Descargas/AAAA/MM/SERIE-NÚMERO/RUC`. 409 si el backend no corre en la PC del usuario."""
-    ruta = await abrir_carpeta(
-        uow=uow, settings=settings, user=user, comprobante_id=comprobante_id
-    )
-    return CarpetaLocalOut(ruta=ruta)
+    """`Descargas/AAAA/MM/SERIE-NÚMERO/RUC`. 409 si el backend no corre en la PC del usuario.
+
+    No usa la base de datos: solo valida el token y abre una carpeta existente bajo la base.
+    """
+    return CarpetaLocalOut(ruta=abrir_carpeta(settings=settings, partes=datos.partes))
 
 
 class ActualizarSapIn(BaseModel):

@@ -49,7 +49,7 @@ def test_los_valores_van_como_parametros_nunca_en_el_texto() -> None:
     assert parametros[1] == "aprobado"
     assert date(2026, 9, 1) in parametros and date(2026, 9, 30) in parametros
     assert date(2026, 10, 1) in parametros and date(2026, 10, 31) in parametros
-    assert "c.fecha_vencimiento >=" in donde
+    assert "coalesce(c.fecha_vencimiento, c.fecha_emision) >=" in donde
     numeros = {int(n) for n in re.findall(r"\$(\d+)", donde)}
     assert numeros == set(range(1, len(parametros) + 1))
 

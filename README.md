@@ -272,7 +272,7 @@ nunca descarga el conjunto completo.
 | `serie`, `moneda` | Serie exacta; `PEN`, `USD`… |
 | `q` | Búsqueda parcial (mín. 2 caracteres) por N° de documento, cliente, RUC u orden de compra |
 | `n_sap` | N° SAP (contiene) |
-| `vencimiento_desde`, `vencimiento_hasta` | Rango de fecha de vencimiento (invertido → `422`); un comprobante sin vencimiento no entra en ningún rango |
+| `vencimiento_desde`, `vencimiento_hasta` | Rango de fecha de vencimiento (invertido → `422`); sin vencimiento informado (p. ej. al contado) rige la fecha de emisión |
 | `respaldo` | `sin_xml`, `sin_cdr` o `completo` (XML y CDR archivados) |
 | `orden`, `direccion` | `fecha` (por defecto), `numero`, `cliente` o `importe`; `asc` o `desc`. Las notas de crédito ordenan como negativas |
 | `limit`, `offset` | Página (1–100, por defecto 50) |
@@ -489,6 +489,33 @@ invalida la sincronización (se informa en `respaldos_error`).
 
 Lista los ZIP originales de SUNAT que cada sincronización de SIRE archivó (evidencia de
 auditoría, con su hash). Se descargan con `POST /archivos/{id}/download-url`.
+
+### Distribución del bucket
+
+Cada comprobante tiene su propia carpeta, con el XML y el CDR dentro:
+
+```
+comprobantes/{RUC}/{AÑO}/{MES}/{SERIE}-{NÚMERO}/
+    {RUC}-{TIPO}-{SERIE}-{NÚMERO}.xml      # XML firmado (importado o recuperado del OSE)
+    {RUC}-{TIPO}-{SERIE}-{NÚMERO}-CDR.zip  # CDR de SUNAT
+```
+
+Por ejemplo, la factura `FF01-16077` de septiembre de 2026 queda en
+`comprobantes/20514831620/2026/09/FF01-00016077/`. El RUC va delante porque el bucket es
+compartido entre empresas. Las evidencias de SIRE van aparte, `sire/{RUC}/{PERIODO}/`, y
+las claves se guardan en `archivos.storage_key`: cambiar la distribución no rompe lo ya
+archivado (cada fila conserva su ruta y su URL firmada).
+
+Los archivos que ya estaban en la carpeta del mes se llevan a la carpeta del documento con:
+
+```bash
+uv run python -m scripts.reorganizar_r2                        # solo muestra el plan
+uv run python -m scripts.reorganizar_r2 --aplicar              # copia y corrige la base
+uv run python -m scripts.reorganizar_r2 --aplicar --borrar-originales
+```
+
+Copia cada objeto y después actualiza `archivos.storage_key`; los originales no se borran
+salvo que se pida, y solo cuando la copia y la fila ya están en su sitio. Es idempotente.
 
 ### Respaldo del bucket
 

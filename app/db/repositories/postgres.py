@@ -84,9 +84,9 @@ def _donde(company_id: UUID, filtros: FiltrosListado) -> tuple[str, list[object]
     if filtros.moneda is not None:
         agregar("c.moneda = ${n}", filtros.moneda)
     if filtros.vencimiento_desde is not None:
-        agregar("c.fecha_vencimiento >= ${n}", filtros.vencimiento_desde)
+        agregar("coalesce(c.fecha_vencimiento, c.fecha_emision) >= ${n}", filtros.vencimiento_desde)
     if filtros.vencimiento_hasta is not None:
-        agregar("c.fecha_vencimiento <= ${n}", filtros.vencimiento_hasta)
+        agregar("coalesce(c.fecha_vencimiento, c.fecha_emision) <= ${n}", filtros.vencimiento_hasta)
     if filtros.n_sap is not None:
         agregar("c.n_sap ilike ${n} escape '\\'", _patron_like(filtros.n_sap))
     if filtros.q is not None:

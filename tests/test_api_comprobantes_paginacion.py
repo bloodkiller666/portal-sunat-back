@@ -119,17 +119,36 @@ def test_filtra_por_fecha_de_vencimiento(
     client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
 ) -> None:
     for correlativo, vence in ((1, date(2026, 10, 5)), (2, date(2026, 10, 20)), (3, None)):
-        _agregar(uow, empresa_principal, correlativo=correlativo).fecha_vencimiento = vence
+        c = _agregar(uow, empresa_principal, correlativo=correlativo)
+        c.fecha_vencimiento = vence
+        c.fecha_emision = date(2026, 10, 16)
 
     def numeros(**params: str) -> list[int]:
         cuerpo = client.get(LISTA, headers=auth, params=params).json()
         return sorted(i["correlativo"] for i in cuerpo["items"])
 
-    assert numeros(vencimiento_desde="2026-10-10") == [2]
+    assert numeros(vencimiento_desde="2026-10-10") == [2, 3]
     assert numeros(vencimiento_hasta="2026-10-10") == [1]
-    assert numeros(vencimiento_desde="2026-10-01", vencimiento_hasta="2026-10-31") == [1, 2]
-    # Sin vencimiento informado no entra en ningún rango.
-    assert 3 not in numeros(vencimiento_desde="2000-01-01")
+    assert numeros(vencimiento_desde="2026-10-01", vencimiento_hasta="2026-10-31") == [1, 2, 3]
+    # Sin vencimiento informado (contado) rige la fecha de emisión: 16/10/2026.
+    assert numeros(vencimiento_desde="2026-10-16", vencimiento_hasta="2026-10-16") == [3]
+    assert 3 not in numeros(vencimiento_desde="2026-10-17")
+    assert 3 not in numeros(vencimiento_hasta="2026-10-15")
+
+
+def test_filtra_por_moneda(
+    client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
+) -> None:
+    _agregar(uow, empresa_principal, correlativo=1).moneda = "PEN"
+    _agregar(uow, empresa_principal, correlativo=2).moneda = "USD"
+
+    def numeros(**params: str) -> list[int]:
+        cuerpo = client.get(LISTA, headers=auth, params=params).json()
+        return sorted(i["correlativo"] for i in cuerpo["items"])
+
+    assert numeros(moneda="PEN") == [1]
+    assert numeros(moneda="USD") == [2]
+    assert numeros() == [1, 2]
 
 
 def test_rechaza_un_rango_de_vencimiento_invertido(

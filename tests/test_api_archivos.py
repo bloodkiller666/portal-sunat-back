@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -37,7 +38,10 @@ def _archivo(comprobante: Comprobante, *, tipo: TipoArchivo = TipoArchivo.xml) -
         hash_sha256="a" * 64,
         storage_provider="r2",
         storage_bucket="bucket-privado",
-        storage_key=f"comprobantes/{RUC_PRINCIPAL}/2026/10/{comprobante.nombre_archivo}.xml",
+        storage_key=(
+            f"comprobantes/{RUC_PRINCIPAL}/2026/10/{comprobante.serie}-{comprobante.numero}"
+            f"/{comprobante.nombre_archivo}.xml"
+        ),
         estado=EstadoArchivo.subido,
         subido_at=datetime.now(tz=UTC),
     )
@@ -179,7 +183,12 @@ def test_la_importacion_archiva_el_xml(
     assert len(guardados) == 1
     assert guardados[0].tipo is TipoArchivo.xml
     assert guardados[0].nombre == f"{RUC_PRINCIPAL}-01-F001-00000001.xml"
-    assert guardados[0].storage_key.startswith(f"comprobantes/{RUC_PRINCIPAL}/")
+    # Ruta pedida: AÑO/MES/N° DOCUMENTO, con el XML dentro de la carpeta del documento.
+    assert re.fullmatch(
+        rf"comprobantes/{RUC_PRINCIPAL}/\d{{4}}/\d{{2}}/F001-00000001/"
+        rf"{RUC_PRINCIPAL}-01-F001-00000001\.xml",
+        guardados[0].storage_key,
+    ), guardados[0].storage_key
     assert guardados[0].mime_type == "application/xml"
 
 

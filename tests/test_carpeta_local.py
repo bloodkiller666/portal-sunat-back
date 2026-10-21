@@ -1,20 +1,16 @@
-"""Carpeta local de respaldo: ruta derivada del comprobante y apertura en el Explorador."""
+"""Carpeta local de respaldo: apertura inmediata (sin base de datos) de una carpeta existente."""
 
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import Settings
-from app.core.enums import OrigenComprobante
-from app.db.models import Company
-from app.services.carpeta_local import partes_de_carpeta
-from tests.conftest import RUC_PRINCIPAL
-from tests.fakes import FakeUnitOfWork, construir_comprobante
+
+PARTES = ["2026", "09", "FF01-00000123", "20100000001"]
+URL = "/api/v1/carpeta-local/abrir"
 
 
 @pytest.fixture
@@ -24,59 +20,33 @@ def abiertas(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     return rutas
 
 
-def _comprobante(uow: FakeUnitOfWork, empresa: Company, **campos):
-    c = construir_comprobante(
-        empresa.id,
-        ruc=RUC_PRINCIPAL,
-        serie="FF01",
-        correlativo=123,
-        fecha_emision=date(2026, 9, 5),
-        **campos,
-    )
-    c.ruc_receptor = "20100000001"
-    uow.comprobantes.comprobantes[c.id] = c
-    return c
-
-
-def test_la_estructura_es_anio_mes_documento_ruc(
-    uow: FakeUnitOfWork, empresa_principal: Company
-) -> None:
-    c = _comprobante(uow, empresa_principal)
-    assert partes_de_carpeta(c) == ["2026", "09", "FF01-00000123", "20100000001"]
-
-
-def test_una_compra_usa_el_ruc_del_proveedor(
-    uow: FakeUnitOfWork, empresa_principal: Company
-) -> None:
-    c = _comprobante(uow, empresa_principal, origen=OrigenComprobante.recibido)
-    assert partes_de_carpeta(c)[3] == RUC_PRINCIPAL
-
-
 def test_deshabilitado_por_defecto_devuelve_409(
-    client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
+    client: TestClient, auth: dict[str, str], abiertas: list[Path]
 ) -> None:
-    c = _comprobante(uow, empresa_principal)
-    r = client.post(f"/api/v1/comprobantes/{c.id}/abrir-carpeta", headers=auth)
+    r = client.post(URL, headers=auth, json={"partes": PARTES})
     assert r.status_code == 409
     assert r.json()["error"]["details"] == {"motivo": "deshabilitado"}
+    assert abiertas == []
+
+
+def test_exige_autenticacion(client: TestClient, settings: Settings) -> None:
+    settings.local_abrir_carpeta = True
+    assert client.post(URL, json={"partes": PARTES}).status_code == 401
 
 
 def test_abre_la_carpeta_si_existe(
     client: TestClient,
     auth: dict[str, str],
-    uow: FakeUnitOfWork,
-    empresa_principal: Company,
     settings: Settings,
     tmp_path: Path,
     abiertas: list[Path],
 ) -> None:
     settings.local_abrir_carpeta = True
     settings.local_descargas_dir = tmp_path
-    c = _comprobante(uow, empresa_principal)
-    destino = tmp_path / "2026" / "09" / "FF01-00000123" / "20100000001"
+    destino = tmp_path.joinpath(*PARTES)
     destino.mkdir(parents=True)
 
-    r = client.post(f"/api/v1/comprobantes/{c.id}/abrir-carpeta", headers=auth)
+    r = client.post(URL, headers=auth, json={"partes": PARTES})
 
     assert r.status_code == 200
     assert Path(r.json()["ruta"]) == destino.resolve()
@@ -86,25 +56,40 @@ def test_abre_la_carpeta_si_existe(
 def test_si_la_carpeta_no_existe_devuelve_404_y_no_abre_nada(
     client: TestClient,
     auth: dict[str, str],
-    uow: FakeUnitOfWork,
-    empresa_principal: Company,
     settings: Settings,
     tmp_path: Path,
     abiertas: list[Path],
 ) -> None:
     settings.local_abrir_carpeta = True
     settings.local_descargas_dir = tmp_path
-    c = _comprobante(uow, empresa_principal)
 
-    r = client.post(f"/api/v1/comprobantes/{c.id}/abrir-carpeta", headers=auth)
+    r = client.post(URL, headers=auth, json={"partes": PARTES})
 
     assert r.status_code == 404
     assert abiertas == []
 
 
-def test_comprobante_inexistente_devuelve_404(
+def test_no_puede_salir_de_la_carpeta_base(
+    client: TestClient,
+    auth: dict[str, str],
+    settings: Settings,
+    tmp_path: Path,
+    abiertas: list[Path],
+) -> None:
+    base = tmp_path / "base"
+    (tmp_path / "secreto").mkdir(parents=True)
+    base.mkdir()
+    settings.local_abrir_carpeta = True
+    settings.local_descargas_dir = base
+
+    r = client.post(URL, headers=auth, json={"partes": ["..", "..", "secreto", ".."]})
+
+    assert r.status_code == 404
+    assert abiertas == []
+
+
+def test_exige_exactamente_cuatro_partes(
     client: TestClient, auth: dict[str, str], settings: Settings
 ) -> None:
     settings.local_abrir_carpeta = True
-    r = client.post(f"/api/v1/comprobantes/{uuid4()}/abrir-carpeta", headers=auth)
-    assert r.status_code == 404
+    assert client.post(URL, headers=auth, json={"partes": ["2026"]}).status_code == 422

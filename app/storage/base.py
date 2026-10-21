@@ -71,7 +71,7 @@ def normalizar_clave(file_key: str) -> str:
 def construir_clave(folder_path: str, filename: str) -> str:
     """Une la carpeta y el nombre en una clave S3 sin barras duplicadas.
 
-    La ruta final es `comprobantes/{ruc}/{año}/{mes}/{filename}`; cada
+    La ruta final es `comprobantes/{ruc}/{año}/{mes}/{serie}-{número}/{filename}`; cada
     componente se sanea por separado para que nada raro llegue al bucket.
     """
     partes = [sanear_componente(parte) for parte in folder_path.strip("/").split("/") if parte]

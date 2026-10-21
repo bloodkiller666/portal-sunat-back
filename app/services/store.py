@@ -199,9 +199,32 @@ async def url_descarga(
 
 
 def carpeta_del_comprobante(comprobante: Comprobante) -> str:
-    """Carpeta base del comprobante: `comprobantes/{ruc}/{año}/{mes}`."""
+    """Carpeta del comprobante: `comprobantes/{ruc}/{año}/{mes}/{serie}-{número}`.
+
+    Cada documento tiene su propia carpeta para que el XML y el CDR viajen
+    juntos al revisar el bucket. El RUC emisor se conserva delante porque el
+    bucket es compartido entre empresas: sin él, dos empresas con el mismo
+    `FF01-00000001` se pisarían el archivo.
+    """
     fecha = comprobante.fecha_emision or datetime.now(tz=UTC).date()
-    return f"comprobantes/{comprobante.ruc_emisor}/{fecha.year}/{fecha.month:02d}"
+    return (
+        f"comprobantes/{comprobante.ruc_emisor}/{fecha.year}/{fecha.month:02d}"
+        f"/{documento_del_comprobante(comprobante)}"
+    )
+
+
+def documento_del_comprobante(comprobante: Comprobante) -> str:
+    """Número del documento para la ruta: `{serie}-{número}` (ej. `FF01-00016077`).
+
+    Si el registro no trae serie o número (comprobantes incompletos), se usa el
+    nombre SUNAT del archivo y, en último caso, un valor fijo: la ruta nunca se
+    queda vacía. Los caracteres raros los limpia `construir_clave`.
+    """
+    serie = comprobante.serie.strip()
+    numero = comprobante.numero.strip()
+    if serie and numero:
+        return f"{serie}-{numero}"
+    return comprobante.nombre_archivo.strip() or numero or "archivo"
 
 
 def _nombre_por_defecto(comprobante: Comprobante, tipo: TipoArchivo) -> str:
