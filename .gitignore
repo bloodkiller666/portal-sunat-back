@@ -80,3 +80,7 @@ var/
 # Salidas locales de build
 build-out.txt
 lint-out.txt
+
+# Temporales de Excel y pruebas locales
+~$*
+sap_import_test.xlsx
