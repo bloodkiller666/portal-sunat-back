@@ -16,7 +16,7 @@ from app.api.deps import (
     UowDep,
 )
 from app.services.results import EvidenciasPage, SireSyncOut
-from app.services.sire import listar_evidencias, sincronizar_ventas
+from app.services.sire import listar_evidencias, sincronizar_compras, sincronizar_ventas
 
 router = APIRouter(tags=["sire"])
 
@@ -30,6 +30,18 @@ class SireSyncIn(BaseModel):
     traer_respaldos: bool = Field(
         default=False,
         description="Recuperar también el XML y el CDR de los comprobantes nuevos (Bizlinks)",
+    )
+    forzar: bool = Field(
+        default=False,
+        description="Volver a sincronizar un periodo que ya está cargado (solo agrega lo nuevo)",
+    )
+
+
+class SireSyncComprasIn(BaseModel):
+    periodo: str = Field(description="Periodo tributario AAAAMM (p. ej. 202609)")
+    ticket: str | None = Field(
+        default=None,
+        description="Ticket devuelto por una llamada anterior que quedó `en_proceso`",
     )
     forzar: bool = Field(
         default=False,
@@ -69,6 +81,39 @@ async def post_sincronizar_ventas(
         traer_respaldos=cuerpo.traer_respaldos,
         forzar=cuerpo.forzar,
         bizlinks_client_factory=bizlinks_client_factory,
+    )
+
+
+@router.post(
+    "/companies/{ruc}/sire/compras/sync",
+    response_model=SireSyncOut,
+    summary="Sincroniza las compras del periodo desde SIRE (RCE)",
+)
+async def post_sincronizar_compras(
+    access: AcessoOperativo,
+    user: CurrentUserDep,
+    uow: UowDep,
+    settings: SettingsDep,
+    secrets_provider: SecretsProviderDep,
+    client_factory: SireClientFactoryDep,
+    cuerpo: SireSyncComprasIn,
+) -> SireSyncOut:
+    """Descarga la propuesta RCE del periodo y registra las compras a proveedores (admin/emisor).
+
+    Los comprobantes quedan con origen `recibido` y `fuente=sire`: el emisor es el proveedor.
+    Es idempotente: lo ya registrado no se duplica. Si SUNAT todavía genera el archivo responde
+    `estado=en_proceso` con el `ticket`; vuelva a llamar con él. Sin respaldo de Bizlinks.
+    """
+    return await sincronizar_compras(
+        uow=uow,
+        settings=settings,
+        secrets_provider=secrets_provider,
+        client_factory=client_factory,
+        user=user,
+        access=access,
+        periodo=cuerpo.periodo,
+        ticket=cuerpo.ticket,
+        forzar=cuerpo.forzar,
     )
 
 

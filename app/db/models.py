@@ -87,6 +87,10 @@ class Comprobante(RowModel):
     forma_pago: str | None = None
     moneda: str = "PEN"
     monto_total: Decimal | None = None
+    tipo_cambio: Decimal | None = None
+    monto_pen: Decimal | None = None
+    emisor_tipo_doc: str | None = None
+    receptor_tipo_doc: str | None = None
     estado: EstadoComprobante = EstadoComprobante.pendiente
     sunat_ambiente: SunatAmbiente = SunatAmbiente.beta
     n_sap: str | None = None
@@ -133,6 +137,11 @@ class ComprobanteRegistro(RowModel):
     forma_pago: str | None = None
     moneda: str = "PEN"
     monto_total: Decimal | None = None
+    # Solo SIRE: tipo de cambio y total en soles tal como los informó (monto_total va en `moneda`).
+    tipo_cambio: Decimal | None = None
+    monto_pen: Decimal | None = None
+    emisor_tipo_doc: str | None = None
+    receptor_tipo_doc: str | None = None
     estado: EstadoComprobante = EstadoComprobante.pendiente
     sunat_ambiente: SunatAmbiente = SunatAmbiente.beta
     created_by: UUID | None = None

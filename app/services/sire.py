@@ -1,8 +1,9 @@
-"""Sincronización de las ventas reales desde SIRE (propuesta RVIE).
+"""Sincronización de ventas (RVIE) y compras (RCE) reales desde SIRE.
 
-Pobla `comprobantes` (origen `emitido`) con lo que SUNAT tiene registrado de la
-empresa en un periodo. Es de SOLO LECTURA hacia SUNAT y **idempotente**: lo que
-ya existe (por la restricción única del comprobante) se respeta tal cual, así que
+Pobla `comprobantes` con lo que SUNAT tiene registrado de la empresa en un periodo:
+ventas con origen `emitido` y compras a proveedores con origen `recibido`. Es de SOLO
+LECTURA hacia SUNAT y **idempotente**: lo que ya existe
+(por la restricción única del comprobante) se respeta tal cual, así que
 sincronizar dos veces el mismo periodo no duplica ni pisa nada.
 
 El flujo de SUNAT es asíncrono por tickets. Una petición HTTP espera un tiempo
@@ -21,7 +22,9 @@ import asyncio
 import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 from app.core.concurrency import run_blocking
 from app.core.config import Settings
@@ -43,9 +46,12 @@ from app.services.bizlinks import sincronizar_respaldos
 from app.services.results import ArchivoOut, BizlinksSyncOut, EvidenciasPage, SireSyncOut
 from app.services.store import guardar_archivo_de_empresa_sin_fallar
 from app.sunat.sire import (
+    LIBRO_COMPRAS,
+    LIBRO_VENTAS,
     SireClient,
     SirePeriodoSinDatosError,
 )
+from app.sunat.sire_rce import RegistroRCE, parse_propuesta_rce
 from app.sunat.sire_rvie import RegistroSire, ResultadoPropuesta, parse_propuesta_zip
 
 SireClientFactory = Callable[[CompanyCredentials, Settings], SireClient]
@@ -80,6 +86,105 @@ def validar_periodo(periodo: str, hoy: date | None = None) -> str:
     return periodo
 
 
+@dataclass(frozen=True)
+class _Libro:
+    """Lo que cambia entre sincronizar el registro de ventas y el de compras."""
+
+    sigla: str  # RVIE / RCE: nombre del ZIP y de los mensajes
+    codigo: str  # libro que se pide a SUNAT
+    origen: OrigenComprobante
+    parsear: Callable[..., ResultadoPropuesta]
+    a_registro: Callable[..., ComprobanteRegistro]
+    carpeta: str  # carpeta de las evidencias en R2 (se le añade `/{ruc}/{periodo}`)
+    sustantivo: str  # «ventas» / «compras»
+
+
+def _a_registro(
+    dato: RegistroSire, *, access: CompanyMember, user: AuthenticatedUser
+) -> ComprobanteRegistro:
+    numero = f"{dato.correlativo:08d}"
+    return ComprobanteRegistro(
+        company_id=access.company_id,
+        origen=OrigenComprobante.emitido,
+        ruc_emisor=dato.ruc_emisor,
+        ruc_receptor=dato.ruc_receptor,
+        receptor_doc=dato.receptor_doc,
+        receptor_tipo_doc=dato.receptor_tipo_doc,
+        razon_social_emisor=dato.razon_social_emisor,
+        razon_social_receptor=dato.razon_social_receptor,
+        tipo_documento=dato.tipo_documento,
+        serie=dato.serie,
+        correlativo=dato.correlativo,
+        numero=numero,
+        nombre_archivo=f"{dato.ruc_emisor}-{dato.tipo_documento}-{dato.serie}-{numero}",
+        fecha_emision=dato.fecha_emision,
+        fecha_vencimiento=dato.fecha_vencimiento,
+        moneda=dato.moneda,
+        monto_total=dato.monto_total,
+        tipo_cambio=dato.tipo_cambio,
+        monto_pen=dato.monto_pen,
+        # Si SUNAT lo lista en su propuesta, lo recibió: Aprobado (o dado de baja).
+        estado=EstadoComprobante.anulado if dato.anulado else EstadoComprobante.aprobado,
+        # SIRE solo existe en producción: estos comprobantes son reales.
+        sunat_ambiente=SunatAmbiente.prod,
+        created_by=user.id,
+        fuente="sire",
+    )
+
+
+def _a_registro_rce(
+    dato: RegistroRCE, *, access: CompanyMember, user: AuthenticatedUser
+) -> ComprobanteRegistro:
+    """Compra: el emisor es el PROVEEDOR y la empresa es el adquirente."""
+    numero = f"{dato.correlativo:08d}"
+    return ComprobanteRegistro(
+        company_id=access.company_id,
+        origen=OrigenComprobante.recibido,
+        ruc_emisor=dato.ruc_proveedor,
+        ruc_receptor=dato.ruc_adquirente,
+        receptor_doc=dato.ruc_adquirente,
+        receptor_tipo_doc="6",
+        emisor_tipo_doc=dato.proveedor_tipo_doc,
+        razon_social_emisor=dato.razon_social_proveedor,
+        razon_social_receptor=access.company.razon_social,
+        tipo_documento=dato.tipo_documento,
+        serie=dato.serie,
+        correlativo=dato.correlativo,
+        numero=numero,
+        nombre_archivo=f"{dato.ruc_proveedor}-{dato.tipo_documento}-{dato.serie}-{numero}",
+        fecha_emision=dato.fecha_emision,
+        fecha_vencimiento=dato.fecha_vencimiento,
+        moneda=dato.moneda,
+        monto_total=dato.monto_total,
+        tipo_cambio=dato.tipo_cambio,
+        monto_pen=dato.monto_pen,
+        estado=EstadoComprobante.anulado if dato.anulado else EstadoComprobante.aprobado,
+        sunat_ambiente=SunatAmbiente.prod,
+        created_by=user.id,
+        fuente="sire",
+    )
+
+
+_VENTAS = _Libro(
+    sigla="RVIE",
+    codigo=LIBRO_VENTAS,
+    origen=OrigenComprobante.emitido,
+    parsear=parse_propuesta_zip,
+    a_registro=_a_registro,
+    carpeta="sire",
+    sustantivo="ventas",
+)
+_COMPRAS = _Libro(
+    sigla="RCE",
+    codigo=LIBRO_COMPRAS,
+    origen=OrigenComprobante.recibido,
+    parsear=parse_propuesta_rce,
+    a_registro=_a_registro_rce,
+    carpeta="sire-compras",
+    sustantivo="compras",
+)
+
+
 async def sincronizar_ventas(
     *,
     uow: UnitOfWork,
@@ -100,19 +205,84 @@ async def sincronizar_ventas(
     recupera el XML firmado y el CDR que falten de esos comprobantes. Un fallo de
     Bizlinks no invalida la sincronización: se informa en `respaldos_error`.
     """
+    return await _sincronizar(
+        _VENTAS,
+        uow=uow,
+        settings=settings,
+        secrets_provider=secrets_provider,
+        client_factory=client_factory,
+        user=user,
+        access=access,
+        periodo=periodo,
+        ticket=ticket,
+        traer_respaldos=traer_respaldos,
+        forzar=forzar,
+        bizlinks_client_factory=bizlinks_client_factory,
+    )
+
+
+async def sincronizar_compras(
+    *,
+    uow: UnitOfWork,
+    settings: Settings,
+    secrets_provider: SecretsProvider,
+    client_factory: SireClientFactory,
+    user: AuthenticatedUser,
+    access: CompanyMember,
+    periodo: str,
+    ticket: str | None = None,
+    forzar: bool = False,
+) -> SireSyncOut:
+    """Sincroniza el RCE del periodo (AAAAMM): las compras a proveedores de la empresa.
+
+    Mismo flujo, idempotencia y evidencia que ventas, pero con origen `recibido`: el emisor es
+    el proveedor. No hay respaldo por Bizlinks: su consulta anónima solo conoce lo que la
+    propia empresa emitió, así que el XML y el CDR de una compra se importan a mano.
+    """
+    return await _sincronizar(
+        _COMPRAS,
+        uow=uow,
+        settings=settings,
+        secrets_provider=secrets_provider,
+        client_factory=client_factory,
+        user=user,
+        access=access,
+        periodo=periodo,
+        ticket=ticket,
+        traer_respaldos=False,
+        forzar=forzar,
+        bizlinks_client_factory=None,
+    )
+
+
+async def _sincronizar(
+    libro: _Libro,
+    *,
+    uow: UnitOfWork,
+    settings: Settings,
+    secrets_provider: SecretsProvider,
+    client_factory: SireClientFactory,
+    user: AuthenticatedUser,
+    access: CompanyMember,
+    periodo: str,
+    ticket: str | None,
+    traer_respaldos: bool,
+    forzar: bool,
+    bizlinks_client_factory: Callable[..., Any] | None,
+) -> SireSyncOut:
     periodo = validar_periodo(periodo)
     if ticket is not None and not _TICKET_RE.match(ticket):
         raise PeriodoInvalidoError("El número de ticket no es válido", details={"ticket": ticket})
 
     ruc = access.company.ruc
     if ticket is None and not forzar:
-        await _rechazar_si_ya_cargado(uow, access, periodo)
+        await _rechazar_si_ya_cargado(uow, access, periodo, libro)
     credenciales = secrets_provider.get_company_credentials(ruc)
     cliente = client_factory(credenciales, settings)
 
     if ticket is None:
         try:
-            ticket = await run_blocking(cliente.solicitar_propuesta, periodo)
+            ticket = await run_blocking(cliente.solicitar_propuesta, periodo, libro.codigo)
         except SirePeriodoSinDatosError:
             return SireSyncOut(
                 periodo=periodo,
@@ -122,7 +292,7 @@ async def sincronizar_ventas(
 
     inicio = time.monotonic()
     while True:
-        estado = await run_blocking(cliente.consultar_ticket, ticket, periodo)
+        estado = await run_blocking(cliente.consultar_ticket, ticket, periodo, libro.codigo)
         if estado.terminado:
             break
         if estado.con_errores:
@@ -154,8 +324,8 @@ async def sincronizar_ventas(
     propuesta = ResultadoPropuesta()
     evidencias: list[ArchivoOut] = []
     for parte, archivo in enumerate(estado.archivos[:MAX_ARCHIVOS_TICKET], start=1):
-        contenido = await run_blocking(cliente.descargar_archivo, estado, archivo)
-        parcial = parse_propuesta_zip(contenido, ruc_esperado=ruc)
+        contenido = await run_blocking(cliente.descargar_archivo, estado, archivo, libro.codigo)
+        parcial = libro.parsear(contenido, ruc_esperado=ruc)
         propuesta.registros.extend(parcial.registros)
         for motivo, cantidad in parcial.omitidos.items():
             propuesta.omitidos[motivo] = propuesta.omitidos.get(motivo, 0) + cantidad
@@ -169,8 +339,8 @@ async def sincronizar_ventas(
             company_id=access.company_id,
             tipo=TipoArchivo.zip,
             file_bytes=contenido,
-            filename=f"{ruc}-RVIE-{periodo}-{ticket}-{parte}.zip",
-            folder_path=f"sire/{ruc}/{periodo}",
+            filename=f"{ruc}-{libro.sigla}-{periodo}-{ticket}-{parte}.zip",
+            folder_path=f"{libro.carpeta}/{ruc}/{periodo}",
         )
         if guardado is not None:
             evidencias.append(to_archivo_out(guardado))
@@ -178,7 +348,7 @@ async def sincronizar_ventas(
     nuevos = existentes = anulados = 0
     for registro in propuesta.registros:
         creado = await uow.comprobantes.create_if_absent(
-            _a_registro(registro, access=access, user=user)
+            libro.a_registro(registro, access=access, user=user)
         )
         if creado is None:
             existentes += 1
@@ -187,7 +357,8 @@ async def sincronizar_ventas(
         anulados += 1 if registro.anulado else 0
 
     logger.info(
-        "SIRE %s: %s nuevos, %s ya existían, %s omitidos",
+        "SIRE %s %s: %s nuevos, %s ya existían, %s omitidos",
+        libro.sigla,
         periodo,
         nuevos,
         existentes,
@@ -226,60 +397,31 @@ async def sincronizar_ventas(
     )
 
 
-async def _rechazar_si_ya_cargado(uow: UnitOfWork, access: CompanyMember, periodo: str) -> None:
-    """Rechaza la sincronización si el periodo ya tiene ventas traídas de SIRE.
+async def _rechazar_si_ya_cargado(
+    uow: UnitOfWork, access: CompanyMember, periodo: str, libro: _Libro
+) -> None:
+    """Rechaza la sincronización si el periodo ya tiene comprobantes traídos de SIRE.
 
     Se valida antes de llamar a SUNAT (ahorra el ticket). Retomar un ticket `en_proceso` no
     pasa por aquí: sus filas aún no se registraron. `forzar` permite volver a sincronizar
-    (sigue siendo idempotente: solo agrega lo que falte).
+    (sigue siendo idempotente: solo agrega lo que falte). Ventas y compras se miden por
+    separado: tener cargadas las ventas de un mes no impide cargar sus compras.
     """
     anio, mes = int(periodo[:4]), int(periodo[4:])
     desde = date(anio, mes, 1)
     hasta = date(anio + (mes == 12), mes % 12 + 1, 1) - timedelta(days=1)
     pagina = await uow.comprobantes.list_for_company(
         access.company_id,
-        FiltrosListado(
-            origen=OrigenComprobante.emitido, fuente="sire", fecha_desde=desde, fecha_hasta=hasta
-        ),
+        FiltrosListado(origen=libro.origen, fuente="sire", fecha_desde=desde, fecha_hasta=hasta),
         limit=1,
         contar=True,
     )
     if pagina.total:
         raise PeriodoYaCargadoError(
-            f"El periodo {periodo} ya está cargado ({pagina.total} comprobantes de SIRE). "
-            "No se volvió a sincronizar.",
+            f"El periodo {periodo} ya está cargado ({pagina.total} comprobantes de SIRE de "
+            f"{libro.sustantivo}). No se volvió a sincronizar.",
             details={"periodo": periodo, "cargados": pagina.total},
         )
-
-
-def _a_registro(
-    dato: RegistroSire, *, access: CompanyMember, user: AuthenticatedUser
-) -> ComprobanteRegistro:
-    numero = f"{dato.correlativo:08d}"
-    return ComprobanteRegistro(
-        company_id=access.company_id,
-        origen=OrigenComprobante.emitido,
-        ruc_emisor=dato.ruc_emisor,
-        ruc_receptor=dato.ruc_receptor,
-        receptor_doc=dato.receptor_doc,
-        razon_social_emisor=dato.razon_social_emisor,
-        razon_social_receptor=dato.razon_social_receptor,
-        tipo_documento=dato.tipo_documento,
-        serie=dato.serie,
-        correlativo=dato.correlativo,
-        numero=numero,
-        nombre_archivo=f"{dato.ruc_emisor}-{dato.tipo_documento}-{dato.serie}-{numero}",
-        fecha_emision=dato.fecha_emision,
-        fecha_vencimiento=dato.fecha_vencimiento,
-        moneda=dato.moneda,
-        monto_total=dato.monto_total,
-        # Si SUNAT lo lista en su propuesta, lo recibió: Aprobado (o dado de baja).
-        estado=EstadoComprobante.anulado if dato.anulado else EstadoComprobante.aprobado,
-        # SIRE solo existe en producción: estos comprobantes son reales.
-        sunat_ambiente=SunatAmbiente.prod,
-        created_by=user.id,
-        fuente="sire",
-    )
 
 
 async def listar_evidencias(

@@ -625,6 +625,7 @@ async def import_comprobante_xml(
         serie=registro.serie,
         correlativo=registro.correlativo,
         sunat_ambiente=registro.sunat_ambiente,
+        ruc_emisor=registro.ruc_emisor,
     )
     if existente is not None and existente.fuente == "sire":
         creado = await uow.comprobantes.completar_desde_xml(existente.id, registro)

@@ -327,6 +327,32 @@ base de datos (la apertura es inmediata): solo valida el JWT, limpia cada parte 
 caracteres reservados, la confina a la carpeta base y abre únicamente una carpeta que ya exista.
 Desplegado en un servidor responde 409 y el portal copia la ruta al portapapeles.
 
+### P14 — Compras a proveedores desde SIRE (RCE) (2026-10-21)
+
+Sección «Compras» separada de «Ventas» (el frontend manda `origen=emitido|recibido`; el estado
+`FiltrosState.origen` es la sección, no un filtro «limpiable»). `POST /companies/{ruc}/sire/
+compras/sync` reutiliza el flujo de ventas (`_sincronizar` en `app/services/sire.py`, con un
+`_Libro` por registro) y `SireClient` con `libro="rce"`. Verificado contra el manual SIRE
+Compras v28 (§5.34) y con una descarga real de TDM (202609: 589 filas, 80 columnas, UTF-8 sin
+BOM): libro `080000`; tickets y descarga son los mismos servicios `rvierce` con `codLibro`.
+
+Decisiones (no las revierta sin motivo):
+
+- En compras el emisor es el proveedor; solo se guardan proveedores con RUC (tipo doc `6`), porque
+  `ruc_emisor` exige 11 dígitos. El tipo 50 (declaración aduanera) y similares se omiten.
+- Migración `0010`: `ruc_emisor` entra en la llave única (en 202609 hay 4 casos de la misma
+  serie-número de proveedores distintos). Sigue siendo *constraint* porque el insert usa
+  `on conflict on constraint`.
+- Migración `0011`/`0012`: `tipo_cambio`, `monto_pen`, `emisor_tipo_doc`, `receptor_tipo_doc`.
+  SIRE da `Total CP` en SOLES: `monto_total` = total / tipo de cambio (comprobado: FF02-00000610,
+  68 411,09 / 3,402 = 20 109,08 USD, que es lo que Bizlinks reconoce). Rollbacks en
+  `supabase/rollback/`.
+- **El código nuevo selecciona las columnas de `0011`/`0012`: aplique las migraciones en Supabase
+  ANTES de desplegar el backend** (solo las nuevas; nunca `aplicar_migraciones` en una base con datos).
+- Bizlinks no aplica a compras (su consulta usa siempre el RUC de TDM como emisor).
+- Las 116 ventas USD ya cargadas se corrigen con `scripts/corregir_montos_sire.py` (simula por
+  defecto; relee los ZIP de evidencia de R2; requiere `0011` aplicada).
+
 ### P12 — El bucket guarda un documento por carpeta (2026-10-20)
 
 `app/services/store.py` arma la clave como

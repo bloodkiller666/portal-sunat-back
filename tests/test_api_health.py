@@ -46,6 +46,7 @@ def test_docs_y_openapi_disponibles(client: TestClient) -> None:
         "/api/v1/comprobantes/{comprobante_id}/archivos",
         "/api/v1/archivos/{archivo_id}/download-url",
         "/api/v1/companies/{ruc}/sire/ventas/sync",
+        "/api/v1/companies/{ruc}/sire/compras/sync",
         "/api/v1/companies/{ruc}/sire/evidencias",
         "/api/v1/companies/{ruc}/bizlinks/respaldos/sync",
     }

@@ -144,7 +144,10 @@ class ComprobantesRepository(Protocol):
         serie: str,
         correlativo: int,
         sunat_ambiente: SunatAmbiente,
-    ) -> Comprobante | None: ...
+        ruc_emisor: str | None = None,
+    ) -> Comprobante | None:
+        """Con `ruc_emisor` distingue a dos proveedores que emitieron la misma serie-número."""
+        ...
 
     async def find_emitido(
         self, company_id: UUID, *, tipo_documento: str, serie: str, correlativo: int

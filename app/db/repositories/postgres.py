@@ -47,7 +47,8 @@ from app.db.repositories.base import (
 _COLUMNAS_COMPROBANTE = """
     id, company_id, origen, ruc_emisor, ruc_receptor, receptor_doc, razon_social_emisor,
     razon_social_receptor, tipo_documento, serie, correlativo, numero, nombre_archivo,
-    fecha_emision, fecha_vencimiento, forma_pago, moneda, monto_total, estado, sunat_ambiente,
+    fecha_emision, fecha_vencimiento, forma_pago, moneda, monto_total, tipo_cambio, monto_pen,
+    emisor_tipo_doc, receptor_tipo_doc, estado, sunat_ambiente,
     n_sap, orden_compra,
     cdr_codigo, cdr_descripcion, cdr_notas, cdr_fecha, ultimo_envio_at, anulado_at,
     motivo_anulacion, created_at, updated_at, created_by, fuente
@@ -375,12 +376,14 @@ class PostgresComprobantesRepository:
         serie: str,
         correlativo: int,
         sunat_ambiente: SunatAmbiente,
+        ruc_emisor: str | None = None,
     ) -> Comprobante | None:
         record = await self._connection.fetchrow(
             f"""
             select {_COLUMNAS_COMPROBANTE} from public.comprobantes
             where company_id = $1 and origen = $2 and tipo_documento = $3
               and serie = $4 and correlativo = $5 and sunat_ambiente = $6
+              and ($7::text is null or ruc_emisor = $7)
             """,
             company_id,
             origen.value,
@@ -388,6 +391,7 @@ class PostgresComprobantesRepository:
             serie,
             correlativo,
             sunat_ambiente.value,
+            ruc_emisor,
         )
         data = _row(record)
         return Comprobante.model_validate(data) if data else None
@@ -488,10 +492,11 @@ class PostgresComprobantesRepository:
                     company_id, origen, ruc_emisor, ruc_receptor, receptor_doc,
                     razon_social_emisor, razon_social_receptor, tipo_documento, serie,
                     correlativo, numero, nombre_archivo, fecha_emision, fecha_vencimiento,
-                    forma_pago, moneda, monto_total, estado, sunat_ambiente, created_by, fuente
+                    forma_pago, moneda, monto_total, estado, sunat_ambiente, created_by, fuente,
+                    tipo_cambio, monto_pen, emisor_tipo_doc, receptor_tipo_doc
                 )
                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                        $16, $17, $18, $19, $20, $21)
+                        $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
                 {al_conflicto}
                 returning {_COLUMNAS_COMPROBANTE}
                 """,
@@ -516,6 +521,10 @@ class PostgresComprobantesRepository:
                 registro.sunat_ambiente.value,
                 registro.created_by,
                 registro.fuente,
+                registro.tipo_cambio,
+                registro.monto_pen,
+                registro.emisor_tipo_doc,
+                registro.receptor_tipo_doc,
             )
         except asyncpg.UniqueViolationError as exc:
             # Restricción comprobantes_unicos_por_ambiente.

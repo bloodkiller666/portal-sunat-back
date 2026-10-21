@@ -345,6 +345,7 @@ class InMemoryComprobantesRepository:
                 and c.serie == registro.serie
                 and c.correlativo == registro.correlativo
                 and c.sunat_ambiente == registro.sunat_ambiente
+                and c.ruc_emisor == registro.ruc_emisor
             ),
             None,
         )
@@ -380,6 +381,7 @@ class InMemoryComprobantesRepository:
         serie: str,
         correlativo: int,
         sunat_ambiente: SunatAmbiente,
+        ruc_emisor: str | None = None,
     ) -> Comprobante | None:
         return next(
             (
@@ -391,6 +393,7 @@ class InMemoryComprobantesRepository:
                 and c.serie == serie
                 and c.correlativo == correlativo
                 and c.sunat_ambiente == sunat_ambiente
+                and (ruc_emisor is None or c.ruc_emisor == ruc_emisor)
             ),
             None,
         )
@@ -404,6 +407,7 @@ class InMemoryComprobantesRepository:
         serie: str,
         correlativo: int,
         sunat_ambiente: SunatAmbiente,
+        ruc_emisor: str | None = None,
     ) -> Comprobante | None:
         return self._buscar(
             company_id,
@@ -412,6 +416,7 @@ class InMemoryComprobantesRepository:
             serie=serie,
             correlativo=correlativo,
             sunat_ambiente=sunat_ambiente,
+            ruc_emisor=ruc_emisor,
         )
 
     async def create_if_absent(self, registro: ComprobanteRegistro) -> Comprobante | None:
@@ -422,6 +427,7 @@ class InMemoryComprobantesRepository:
             serie=registro.serie,
             correlativo=registro.correlativo,
             sunat_ambiente=registro.sunat_ambiente,
+            ruc_emisor=registro.ruc_emisor,
         )
         if existente is not None:
             return None
@@ -943,16 +949,18 @@ class FakeSireClient:
     error_ticket: Exception | None = None
     credentials: Any = None
     solicitudes: list[str] = field(default_factory=list)
+    libros: list[str] = field(default_factory=list)
     consultas: int = 0
     descargas: int = 0
 
-    def solicitar_propuesta(self, periodo: str) -> str:
+    def solicitar_propuesta(self, periodo: str, libro: str = "rvie") -> str:
         self.solicitudes.append(periodo)
+        self.libros.append(libro)
         if self.error_solicitud is not None:
             raise self.error_solicitud
         return self.ticket
 
-    def consultar_ticket(self, ticket: str, periodo: str):
+    def consultar_ticket(self, ticket: str, periodo: str, libro: str = "rvie"):
         from app.sunat.sire import ArchivoTicket, EstadoTicket
 
         if self.error_ticket is not None:
@@ -973,7 +981,7 @@ class FakeSireClient:
             archivos=archivos,
         )
 
-    def descargar_archivo(self, estado: Any, archivo: Any) -> bytes:
+    def descargar_archivo(self, estado: Any, archivo: Any, libro: str = "rvie") -> bytes:
         self.descargas += 1
         return self.zips[int(archivo.nombre.removeprefix("parte").removesuffix(".zip"))]
 

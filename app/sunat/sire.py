@@ -28,7 +28,9 @@ from app.core.redaction import redact, register_secret_values
 from app.secrets.base import CompanyCredentials
 from app.sunat.endpoints import (
     SIRE_ARCHIVO_REPORTE_URL,
+    SIRE_EXPORTAR_PROPUESTA_RCE_URL,
     SIRE_EXPORTAR_PROPUESTA_URL,
+    SIRE_RCE_COD_LIBRO,
     SIRE_RVIE_COD_LIBRO,
     SIRE_SCOPE,
     SIRE_TICKETS_URL,
@@ -42,8 +44,12 @@ ESTADO_CON_ERRORES = "03"
 
 # Tope del ZIP descargado: una propuesta de ventas enorme sigue siendo de MB.
 TAMANO_MAXIMO_ZIP = 50 * 1024 * 1024
-# Error 422 «1070»: el periodo no tiene comprobantes (no es un fallo).
-CODIGO_SIN_COMPROBANTES = "1070"
+# Error 422 «1070» (ventas) o «1518» (compras): el periodo no tiene comprobantes (no es un fallo).
+CODIGOS_SIN_COMPROBANTES = frozenset({"1070", "1518"})
+
+LIBRO_VENTAS = "rvie"
+LIBRO_COMPRAS = "rce"
+_COD_LIBRO = {LIBRO_VENTAS: SIRE_RVIE_COD_LIBRO, LIBRO_COMPRAS: SIRE_RCE_COD_LIBRO}
 
 _MARGEN_TOKEN_SEGUNDOS = 60
 
@@ -106,19 +112,30 @@ class SireClient:
     # ------------------------------------------------------------------ #
     # Operaciones del manual
     # ------------------------------------------------------------------ #
-    def solicitar_propuesta(self, periodo: str) -> str:
-        """§5.18: pide la propuesta del periodo (AAAAMM) y devuelve el N° de ticket."""
-        respuesta = self._get(
-            SIRE_EXPORTAR_PROPUESTA_URL.format(periodo=periodo), {"codTipoArchivo": 0}
-        )
+    def solicitar_propuesta(self, periodo: str, libro: str = LIBRO_VENTAS) -> str:
+        """Pide la propuesta del periodo (AAAAMM) y devuelve el N° de ticket.
+
+        Ventas: §5.18 del manual RVIE. Compras: §5.34 del manual RCE (exige `codOrigenEnvio`).
+        """
+        if libro == LIBRO_COMPRAS:
+            respuesta = self._get(
+                SIRE_EXPORTAR_PROPUESTA_RCE_URL.format(periodo=periodo),
+                {"codTipoArchivo": 0, "codOrigenEnvio": 2},
+            )
+        else:
+            respuesta = self._get(
+                SIRE_EXPORTAR_PROPUESTA_URL.format(periodo=periodo), {"codTipoArchivo": 0}
+            )
         cuerpo = _json(respuesta)
         ticket = cuerpo.get("numTicket") if isinstance(cuerpo, dict) else None
         if not ticket:
             raise SunatFaultError("SUNAT no devolvió el número de ticket")
         return str(ticket)
 
-    def consultar_ticket(self, ticket: str, periodo: str) -> EstadoTicket:
-        """§5.16: estado del ticket en el periodo indicado."""
+    def consultar_ticket(
+        self, ticket: str, periodo: str, libro: str = LIBRO_VENTAS
+    ) -> EstadoTicket:
+        """§5.16 (ventas) / §5.31 (compras): estado del ticket en el periodo indicado."""
         respuesta = self._get(
             SIRE_TICKETS_URL,
             {
@@ -127,7 +144,7 @@ class SireClient:
                 "page": 1,
                 "perPage": 20,
                 "numTicket": ticket,
-                "codLibro": SIRE_RVIE_COD_LIBRO,
+                "codLibro": _COD_LIBRO[libro],
                 "codOrigenEnvio": 2,
             },
         )
@@ -162,15 +179,17 @@ class SireClient:
             "SUNAT no reconoce el ticket indicado para ese periodo", details={"ticket": ticket}
         )
 
-    def descargar_archivo(self, estado: EstadoTicket, archivo: ArchivoTicket) -> bytes:
-        """§5.17: descarga el ZIP del ticket terminado (con tope de tamaño)."""
+    def descargar_archivo(
+        self, estado: EstadoTicket, archivo: ArchivoTicket, libro: str = LIBRO_VENTAS
+    ) -> bytes:
+        """§5.17 (ventas) / §5.32 (compras): descarga el ZIP del ticket terminado."""
         params = {
             "nomArchivoReporte": archivo.nombre,
             "codTipoArchivoReporte": archivo.tipo or "null",
             "perTributario": estado.periodo,
             "codProceso": estado.proceso or "",
             "numTicket": estado.numero,
-            "codLibro": SIRE_RVIE_COD_LIBRO,
+            "codLibro": _COD_LIBRO[libro],
         }
         respuesta = self._get(SIRE_ARCHIVO_REPORTE_URL, params, accept="*/*")
         if len(respuesta.content) > TAMANO_MAXIMO_ZIP:
@@ -243,7 +262,7 @@ class SireClient:
             raise SunatUnavailableError(details={"http_status": respuesta.status_code})
         if respuesta.status_code == 422:
             codigos = _codigos_422(respuesta)
-            if CODIGO_SIN_COMPROBANTES in codigos:
+            if CODIGOS_SIN_COMPROBANTES & set(codigos):
                 raise SirePeriodoSinDatosError(details={"codigos": codigos})
             raise SunatFaultError(
                 f"SUNAT rechazó la solicitud SIRE (código {', '.join(codigos) or 's/c'})",

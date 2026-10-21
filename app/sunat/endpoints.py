@@ -119,3 +119,14 @@ SIRE_EXPORTAR_PROPUESTA_URL = (
 _SIRE_MASIVO = "/v1/contribuyente/migeigv/libros/rvierce/gestionprocesosmasivos/web/masivo/"
 SIRE_TICKETS_URL = SIRE_SCOPE + _SIRE_MASIVO + "consultaestadotickets"
 SIRE_ARCHIVO_REPORTE_URL = SIRE_SCOPE + _SIRE_MASIVO + "archivoreporte"
+
+# --------------------------------------------------------------------------- #
+# RCE (registro de compras). Fuente: «Manual de servicios Web Api - SIRE Compras» v28
+# (cpe.sunat.gob.pe), §5.34 (descargar propuesta). Los servicios de tickets y descarga de
+# archivos (§5.31, §5.32) son los mismos `rvierce` de ventas: solo cambia `codLibro`.
+# --------------------------------------------------------------------------- #
+SIRE_RCE_COD_LIBRO = "080000"
+SIRE_EXPORTAR_PROPUESTA_RCE_URL = (
+    SIRE_SCOPE + "/v1/contribuyente/migeigv/libros/rce/propuesta/web/propuesta/"
+    "{periodo}/exportacioncomprobantepropuesta"
+)

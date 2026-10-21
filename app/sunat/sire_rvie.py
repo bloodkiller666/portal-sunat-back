@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import io
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Any
 
 from app.core.errors import SunatFaultError
 
@@ -107,6 +109,9 @@ class RegistroSire:
     receptor_tipo_doc: str | None
     receptor_doc: str | None
     razon_social_receptor: str | None
+    # `monto_total` ya viene en la moneda del comprobante; SIRE lo informa en soles.
+    tipo_cambio: Decimal | None = None
+    monto_pen: Decimal | None = None
 
     @property
     def ruc_receptor(self) -> str | None:
@@ -118,7 +123,7 @@ class RegistroSire:
 
 @dataclass
 class ResultadoPropuesta:
-    registros: list[RegistroSire] = field(default_factory=list)
+    registros: list[Any] = field(default_factory=list)
     omitidos: dict[str, int] = field(default_factory=dict)
 
     def omitir(self, motivo: str) -> None:
@@ -129,8 +134,16 @@ class ResultadoPropuesta:
         return sum(self.omitidos.values())
 
 
-def parse_propuesta_zip(contenido: bytes, *, ruc_esperado: str) -> ResultadoPropuesta:
-    """Lee todos los TXT del ZIP y devuelve los comprobantes y lo omitido."""
+def parse_propuesta_zip(
+    contenido: bytes,
+    *,
+    ruc_esperado: str,
+    lector: Callable[[str, str, ResultadoPropuesta], None] | None = None,
+) -> ResultadoPropuesta:
+    """Lee todos los TXT del ZIP y devuelve los comprobantes y lo omitido.
+
+    `lector` permite reutilizar los topes de tamaño con otro formato (el RCE de compras).
+    """
     try:
         zf = zipfile.ZipFile(io.BytesIO(contenido))
     except zipfile.BadZipFile as exc:
@@ -158,7 +171,7 @@ def parse_propuesta_zip(contenido: bytes, *, ruc_esperado: str) -> ResultadoProp
                 "El archivo de la propuesta supera el tamaño máximo permitido",
                 details={"maximo_bytes": MAX_BYTES_TXT},
             )
-        _parse_txt(datos.decode("utf-8-sig", errors="replace"), ruc_esperado, resultado)
+        (lector or _parse_txt)(datos.decode("utf-8-sig", errors="replace"), ruc_esperado, resultado)
     return resultado
 
 
@@ -231,6 +244,8 @@ def _fila_a_registro(
 
     moneda = (valor("Moneda") or "PEN").upper()[:3]
     anulado = valor("Est. Comp") in ESTADOS_ANULADO
+    tipo_cambio = _decimal(valor("Tipo Cambio"))
+    monto, monto_pen = monto_en_moneda(total, moneda, tipo_cambio)
     return RegistroSire(
         ruc_emisor=valor("Ruc"),
         razon_social_emisor=valor("Razon Social") or None,
@@ -240,12 +255,37 @@ def _fila_a_registro(
         fecha_emision=emision,
         fecha_vencimiento=_fecha(valor("Fecha Vcto/Pago")),
         moneda=moneda,
-        monto_total=total,
+        monto_total=monto,
         anulado=anulado,
         receptor_tipo_doc=valor("Tipo Doc Identidad") or None,
         receptor_doc=valor("Nro Doc Identidad") or None,
         razon_social_receptor=valor("Apellidos Nombres/ Razón Social") or None,
+        tipo_cambio=tipo_cambio,
+        monto_pen=monto_pen,
     )
+
+
+def _decimal(texto: str) -> Decimal | None:
+    try:
+        return Decimal(texto) if texto else None
+    except InvalidOperation:
+        return None
+
+
+def monto_en_moneda(
+    total_sire: Decimal, moneda: str, tipo_cambio: Decimal | None
+) -> tuple[Decimal, Decimal | None]:
+    """Devuelve `(monto en la moneda del comprobante, total en soles que informó SIRE)`.
+
+    SIRE entrega `Total CP` en SOLES (convertido con `Tipo Cambio`) aunque `Moneda` diga USD:
+    comprobado con una factura en dólares, que Bizlinks solo reconoce con `total / tipo de
+    cambio`. Sin tipo de cambio válido no se puede convertir: se conserva el total tal cual.
+    """
+    if moneda == "PEN":
+        return total_sire, total_sire
+    if tipo_cambio is None or tipo_cambio <= 0:
+        return total_sire, None
+    return (total_sire / tipo_cambio).quantize(Decimal("0.01"), ROUND_HALF_UP), total_sire
 
 
 def _fecha(texto: str) -> date | None:

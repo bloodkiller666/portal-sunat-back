@@ -576,6 +576,31 @@ Si SUNAT todavía genera el archivo responde `"estado":"en_proceso"` con el
 propuesta. Estados: `completado`, `en_proceso`, `sin_datos`. Diagnóstico previo:
 `uv run python -m scripts.sire_probe --ruc $RUC --periodo 202609`.
 
+### `POST /api/v1/companies/{ruc}/sire/compras/sync`
+
+Igual que ventas, pero con el registro de **compras** (propuesta RCE, libro `080000`): los
+comprobantes que los proveedores emitieron a la empresa se registran con `origen=recibido` y
+`fuente=sire`, donde el **emisor es el proveedor** (`ruc_emisor`, `razon_social_emisor`) y la
+empresa es el adquirente. Mismo flujo por tickets, `ticket` para retomar, evidencia ZIP en R2
+(`sire-compras/{ruc}/{periodo}/`) y `409 periodo_ya_cargado` (con `"forzar": true`). El control
+de periodo ya cargado es independiente del de ventas. **No hay respaldo por Bizlinks**: el XML y
+el CDR de una compra se importan a mano. Se omiten (y se cuentan en `omitidos`) los tipos que no
+son 01/03/07/08 y los proveedores sin RUC.
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/v1/companies/$RUC/sire/compras/sync" \n  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \n  -d '{"periodo": "202609"}'
+```
+
+El listado y los indicadores separan ambos registros con `origen=emitido|recibido` (en compras,
+`q` busca también por RUC y razón social del proveedor).
+
+**Importes en moneda extranjera.** SIRE informa `Total CP` en soles convertidos con `Tipo
+Cambio`, aunque `Moneda` diga USD. Desde la migración `0011` el portal guarda `monto_total` en la
+moneda del comprobante (`total / tipo de cambio`, el importe que Bizlinks exige para reconocer
+una factura en dólares) y conserva `tipo_cambio` y `monto_pen`. Las ventas en USD cargadas antes
+se corrigen con `uv run python -m scripts.corregir_montos_sire --ruc $RUC` (simula; con
+`--aplicar` escribe).
+
 ## Conectar el frontend
 
 El frontend nunca habla con SUNAT: habla con esta API con un JWT de Supabase.
