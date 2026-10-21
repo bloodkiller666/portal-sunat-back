@@ -103,6 +103,12 @@ class Settings(BaseSettings):
     bizlinks_portal_max_por_llamada: int = Field(default=5, ge=1, le=100)
     bizlinks_portal_cooldown_horas: int = Field(default=24, ge=1, le=168)
 
+    # ---------------- Carpeta local de respaldo ----------------
+    # Solo tiene sentido si el backend corre en la PC del usuario: permite al botón «Abrir
+    # carpeta» del portal abrir `Descargas/AAAA/MM/SERIE-NÚMERO/RUC` en el Explorador.
+    local_abrir_carpeta: bool = False
+    local_descargas_dir: Path | None = None
+
     # ---------------- Supabase ----------------
     supabase_url: str | None = None
     supabase_jwt_alg: Literal["HS256", "HS384", "HS512", "ES256", "ES384", "RS256"] = "HS256"

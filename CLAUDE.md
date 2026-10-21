@@ -316,3 +316,12 @@ de Node (`node.exe`, `pnpm.exe`, etc. — ya ignorados).
 SUNAT) si la empresa ya tiene comprobantes `fuente=sire` emitidos en ese mes. `"forzar": true`
 lo permite (sigue siendo idempotente: solo agrega lo nuevo). Retomar un `ticket` no se valida.
 Bizlinks ya omitía lo que tiene XML y CDR (las boletas no exigen CDR).
+
+### P12 — Carpeta local `Descargas/AAAA/MM/SERIE-NÚMERO/RUC` (2026-10-20)
+
+El frontend guarda el XML y el CDR reales en la PC (File System Access API, Chrome/Edge; el
+usuario elige su Descargas una vez). `POST /comprobantes/{id}/abrir-carpeta` abre esa carpeta en
+el Explorador, pero SOLO si el backend corre en la misma PC (`LOCAL_ABRIR_CARPETA=true`; base
+`LOCAL_DESCARGAS_DIR`, por defecto `~/Downloads`). Nunca recibe rutas del cliente: la deriva del
+comprobante (RUC del cliente en ventas, del proveedor en compras). Desplegado en un servidor
+responde 409 y el portal copia la ruta al portapapeles.
