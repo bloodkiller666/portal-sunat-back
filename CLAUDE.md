@@ -317,11 +317,11 @@ SUNAT) si la empresa ya tiene comprobantes `fuente=sire` emitidos en ese mes. `"
 lo permite (sigue siendo idempotente: solo agrega lo nuevo). Retomar un `ticket` no se valida.
 Bizlinks ya omitía lo que tiene XML y CDR (las boletas no exigen CDR).
 
-### P13 — Carpeta local `Descargas/AAAA/MM/SERIE-NÚMERO/RUC` (2026-10-20)
+### P13 — Carpeta local `Descargas/AAAA/MM/RUC/SERIE-NÚMERO` (2026-10-20)
 
 El frontend guarda el XML y el CDR reales en la PC (File System Access API, Chrome/Edge; el
 usuario elige su Descargas una vez). `POST /carpeta-local/abrir` (`{"partes": [año, mes,
-SERIE-NÚMERO, RUC]}`) abre esa carpeta en el Explorador, pero SOLO si el backend corre en la misma
+RUC, SERIE-NÚMERO]}`) abre esa carpeta en el Explorador, pero SOLO si el backend corre en la misma
 PC (`LOCAL_ABRIR_CARPETA=true`; base `LOCAL_DESCARGAS_DIR`, por defecto `~/Downloads`). No toca la
 base de datos (la apertura es inmediata): solo valida el JWT, limpia cada parte de separadores y
 caracteres reservados, la confina a la carpeta base y abre únicamente una carpeta que ya exista.

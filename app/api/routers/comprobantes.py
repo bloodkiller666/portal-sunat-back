@@ -310,7 +310,7 @@ class CarpetaLocalIn(BaseModel):
     partes: list[str] = Field(
         min_length=4,
         max_length=4,
-        description="Año, mes, SERIE-NÚMERO y RUC de la contraparte (la carpeta del comprobante)",
+        description="Año, mes, RUC de la contraparte y SERIE-NÚMERO (la carpeta del comprobante)",
     )
 
 
@@ -326,7 +326,7 @@ class CarpetaLocalOut(BaseModel):
 async def post_abrir_carpeta(
     _user: CurrentUserDep, settings: SettingsDep, datos: CarpetaLocalIn
 ) -> CarpetaLocalOut:
-    """`Descargas/AAAA/MM/SERIE-NÚMERO/RUC`. 409 si el backend no corre en la PC del usuario.
+    """`Descargas/AAAA/MM/RUC/SERIE-NÚMERO`. 409 si el backend no corre en la PC del usuario.
 
     No usa la base de datos: solo valida el token y abre una carpeta existente bajo la base.
     """

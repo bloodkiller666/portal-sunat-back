@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 
-PARTES = ["2026", "09", "FF01-00000123", "20100000001"]
+PARTES = ["2026", "09", "20100000001", "FF01-00000123"]
 URL = "/api/v1/carpeta-local/abrir"
 
 

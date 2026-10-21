@@ -1,4 +1,4 @@
-"""Carpeta local de respaldo: `Descargas/AAAA/MM/SERIE-NÚMERO/RUC`.
+"""Carpeta local de respaldo: `Descargas/AAAA/MM/RUC/SERIE-NÚMERO`.
 
 El navegador guarda ahí el XML y el CDR (ver el frontend). Este módulo, cuando el backend corre
 en la MISMA PC del usuario, pide al sistema operativo abrirla. Por seguridad nunca recibe una
@@ -65,7 +65,7 @@ def _abrir_en_explorador(ruta: Path) -> None:
 
 
 def abrir_carpeta(*, settings: Settings, partes: list[str]) -> str:
-    """Abre en el explorador la carpeta `año/mes/documento/RUC` y devuelve su ruta completa.
+    """Abre en el explorador la carpeta `año/mes/RUC/documento` y devuelve su ruta completa.
 
     No consulta la base de datos (la apertura es inmediata): el frontend manda las partes que ya
     conoce y aquí se limpian de separadores y caracteres reservados, de modo que nunca puede salir
