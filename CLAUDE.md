@@ -392,6 +392,11 @@ mientras la PC está apagada (el extractor procesa todo lo no registrado); no ha
 al pasar a un servidor, SIRE e importación se programan allí y el correo debe leerse por Microsoft Graph.
 Cada corrida real también se guarda en `automatizacion_logs` (migración `0013`, **aplicar en Supabase antes de desplegar**) y
 el portal la muestra en el apartado «Logs» (`GET /companies/{ruc}/automatizacion/logs`, `components/portal/vista-logs.tsx`).
+Primera corrida real (2026-10-22, 46 min por el histórico ago-sep): hallazgos y arreglos. SIRE da `Tipo Cambio` `0.000` en los
+comprobantes dados de baja y la base exige `tipo_cambio > 0`: una sola fila hacía fallar todo el periodo (`tipo_cambio_valido`
+→ `None`). Leer el correo deja la base inactiva minutos y el pooler corta la conexión (`InterfaceError`/`TimeoutError`):
+`con_reintentos` repite cada carpeta/periodo (una transacción por operación) y el pool se reabre antes de importar.
+Los errores de la bitácora ahora traen la restricción violada (`describir_error`).
 Proveedores que NO llegan al buzón (hallazgo del 2026-10-22): Petroperú, bancos, comercio exterior (DP World, Maersk, APM),
 Repsol: están en sus portales o en el correo de facturación registrado en cada uno.
 

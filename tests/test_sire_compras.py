@@ -379,3 +379,12 @@ def test_un_lector_no_puede_sincronizar_compras(
     client: TestClient, auth_lector: dict[str, str]
 ) -> None:
     assert _sincronizar(client, auth_lector).status_code == 403
+
+
+def test_en_compras_un_tipo_de_cambio_cero_tampoco_se_guarda() -> None:
+    zip_ = _zip(_fila(Moneda="USD", **{"Total CP": "100.00", "Tipo de Cambio": "0.000"}))
+
+    (compra,) = parse_propuesta_rce(zip_, ruc_esperado=RUC_PRINCIPAL).registros
+
+    assert compra.tipo_cambio is None and compra.monto_pen is None
+    assert compra.monto_total == Decimal("100.00")  # sin conversión posible: se conserva el total

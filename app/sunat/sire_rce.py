@@ -30,10 +30,10 @@ from app.sunat.sire_rvie import (
     MAX_FILAS,
     TIPOS_SOPORTADOS,
     ResultadoPropuesta,
-    _decimal,
     _fecha,
     monto_en_moneda,
     parse_propuesta_zip,
+    tipo_cambio_valido,
 )
 
 # Columnas (ya normalizadas) sin las cuales no se puede construir el comprobante.
@@ -114,9 +114,7 @@ def _parse_txt(texto: str, ruc_esperado: str, resultado: ResultadoPropuesta) -> 
             posicion = idx.get(nombre)
             return _celdas[posicion].strip() if posicion is not None else ""
 
-        registro = _fila_a_registro(
-            valor, celdas[posicion_nombre].strip(), ruc_esperado, resultado
-        )
+        registro = _fila_a_registro(valor, celdas[posicion_nombre].strip(), ruc_esperado, resultado)
         if registro is not None:
             resultado.registros.append(registro)
 
@@ -160,7 +158,7 @@ def _fila_a_registro(
         return None
 
     moneda = (valor("moneda") or "PEN").upper()[:3]
-    tipo_cambio = _decimal(valor("tipo de cambio"))
+    tipo_cambio = tipo_cambio_valido(valor("tipo de cambio"))
     monto, monto_pen = monto_en_moneda(total, moneda, tipo_cambio)
     return RegistroRCE(
         ruc_adquirente=ruc_esperado,

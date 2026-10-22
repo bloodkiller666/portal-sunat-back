@@ -244,7 +244,7 @@ def _fila_a_registro(
 
     moneda = (valor("Moneda") or "PEN").upper()[:3]
     anulado = valor("Est. Comp") in ESTADOS_ANULADO
-    tipo_cambio = _decimal(valor("Tipo Cambio"))
+    tipo_cambio = tipo_cambio_valido(valor("Tipo Cambio"))
     monto, monto_pen = monto_en_moneda(total, moneda, tipo_cambio)
     return RegistroSire(
         ruc_emisor=valor("Ruc"),
@@ -270,6 +270,17 @@ def _decimal(texto: str) -> Decimal | None:
         return Decimal(texto) if texto else None
     except InvalidOperation:
         return None
+
+
+def tipo_cambio_valido(texto: str) -> Decimal | None:
+    """Tipo de cambio de SIRE, o `None` si no hay uno utilizable.
+
+    SIRE informa `0.000` en los comprobantes dados de baja (total 0) y en los que no tienen
+    conversión: guardar ese 0 viola la restricción `tipo_cambio > 0` de la base y hacía fallar la
+    sincronización completa del periodo.
+    """
+    valor = _decimal(texto)
+    return valor if valor is not None and valor > 0 else None
 
 
 def monto_en_moneda(

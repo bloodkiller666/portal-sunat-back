@@ -143,9 +143,7 @@ def test_zip_con_demasiados_archivos_se_rechaza() -> None:
 
 def test_el_tope_de_filas_protege_la_memoria(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sire_rvie, "MAX_FILAS", 2)
-    zip_ = construir_zip_propuesta(
-        [_fila(**{NRO: str(n)}) for n in range(1, 5)]
-    )
+    zip_ = construir_zip_propuesta([_fila(**{NRO: str(n)}) for n in range(1, 5)])
 
     with pytest.raises(SunatFaultError):
         parse_propuesta_zip(zip_, ruc_esperado=RUC_PRINCIPAL)
@@ -301,9 +299,7 @@ def test_los_omitidos_se_informan(
     client: TestClient, auth: dict[str, str], sire: FakeSireClient
 ) -> None:
     sire.zips = [
-        construir_zip_propuesta(
-            [_fila(), _fila(**{"Tipo CP/Doc.": "00", "Serie del CDP": "X001"})]
-        )
+        construir_zip_propuesta([_fila(), _fila(**{"Tipo CP/Doc.": "00", "Serie del CDP": "X001"})])
     ]
 
     cuerpo = _sincronizar(client, auth).json()
@@ -431,9 +427,7 @@ def test_periodo_futuro_devuelve_422(client: TestClient, auth: dict[str, str]) -
     assert respuesta.status_code == 422
 
 
-def test_ticket_con_formato_invalido_devuelve_422(
-    client: TestClient, auth: dict[str, str]
-) -> None:
+def test_ticket_con_formato_invalido_devuelve_422(client: TestClient, auth: dict[str, str]) -> None:
     respuesta = _sincronizar(client, auth, ticket="1; drop table")
 
     assert respuesta.status_code == 422
@@ -504,6 +498,7 @@ def test_un_xml_repetido_sigue_dando_409(
 # --------------------------------------------------------------------------- #
 # Evidencia: el ZIP original de SUNAT se archiva en R2 con su hash
 # --------------------------------------------------------------------------- #
+
 
 def test_cada_sincronizacion_archiva_el_zip_original_con_su_hash(
     cliente_r2: TestClient,
@@ -626,3 +621,27 @@ def test_un_zip_ilegible_no_deja_evidencia(
     assert _sincronizar(cliente_r2, auth).status_code == 502
     assert almacenamiento.subidas == []
     assert not uow.archivos.archivos
+
+
+def test_un_tipo_de_cambio_cero_no_es_un_tipo_de_cambio() -> None:
+    # SIRE informa 0.000 en los comprobantes dados de baja: la base exige tipo_cambio > 0.
+    zip_ = construir_zip_propuesta(
+        [
+            _fila(
+                **{
+                    "Moneda": "USD",
+                    "Est. Comp": "2",
+                    "Total CP": "0",
+                    "Tipo Cambio": "0.000",
+                    "Tipo Doc Identidad": "0",
+                }
+            ),
+            _fila(**{NRO: "2", "Moneda": "USD", "Total CP": "340.60", "Tipo Cambio": "3.406"}),
+        ]
+    )
+
+    baja, vigente = parse_propuesta_zip(zip_, ruc_esperado=RUC_PRINCIPAL).registros
+
+    assert baja.tipo_cambio is None and baja.monto_pen is None
+    assert vigente.tipo_cambio == Decimal("3.406")
+    assert vigente.monto_total == Decimal("100.00") and vigente.monto_pen == Decimal("340.60")

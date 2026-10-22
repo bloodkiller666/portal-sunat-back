@@ -374,3 +374,82 @@ def test_la_corrida_se_guarda_con_su_estado_y_sus_pendientes(entorno) -> None:
     assert log.estado == {"ultima_sire_ok": "2026-10-22T09:01:00"}
     assert log.pendientes == {"carpetas": ["2026/10/x/y"]}
     assert log.created_by == entorno["usuario"].id
+
+
+# --------------------------------------------------------------------------- #
+# Cortes de conexión y mensajes de error
+# --------------------------------------------------------------------------- #
+def _sin_espera(_segundos):
+    async def nada():
+        return None
+
+    return nada()
+
+
+def test_un_corte_de_conexion_se_reintenta_y_luego_funciona() -> None:
+    import asyncpg
+
+    intentos: list[int] = []
+
+    async def operacion() -> str:
+        intentos.append(1)
+        if len(intentos) < 3:
+            raise asyncpg.InterfaceError("connection is closed")
+        return "listo"
+
+    resultado = asyncio.run(au.con_reintentos(operacion, dormir=_sin_espera))
+
+    assert resultado == "listo" and len(intentos) == 3
+
+
+def test_si_la_conexion_sigue_cortada_se_rinde_con_el_ultimo_error() -> None:
+    async def operacion() -> None:
+        raise TimeoutError()
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(au.con_reintentos(operacion, intentos=2, dormir=_sin_espera))
+
+
+def test_un_error_de_datos_no_se_reintenta() -> None:
+    llamadas: list[int] = []
+
+    async def operacion() -> None:
+        llamadas.append(1)
+        raise ValueError("dato inválido")
+
+    with pytest.raises(ValueError):
+        asyncio.run(au.con_reintentos(operacion, dormir=_sin_espera))
+
+    assert llamadas == [1]
+
+
+def test_el_mensaje_de_error_dice_que_restriccion_se_violo() -> None:
+    class ViolacionError(Exception):
+        constraint_name = "comprobantes_tipo_cambio_check"
+
+    texto = au.describir_error(ViolacionError('new row for relation "comprobantes" violates check'))
+
+    assert texto.startswith("ViolacionError: comprobantes_tipo_cambio_check: new row for relation")
+    assert au.describir_error(RuntimeError()) == "RuntimeError"
+
+
+def test_importar_reintenta_si_la_conexion_se_corta_a_mitad(entorno, monkeypatch) -> None:
+    import asyncpg
+
+    _carpeta(entorno, CARPETA, **{"f.xml": FACTURA})
+    au._escribir_json(entorno["rutas"].pendientes, {"carpetas": [CARPETA], "sin_clasificar": []})
+    original = au.importar_archivos_proveedores
+    fallos = []
+
+    async def con_corte(**kw):
+        if not fallos:
+            fallos.append(1)
+            raise asyncpg.InterfaceError("cannot call Transaction.__aexit__: connection closed")
+        return await original(**kw)
+
+    monkeypatch.setattr(au, "importar_archivos_proveedores", con_corte)
+
+    informe = _importar(entorno, espera=0)
+
+    assert informe["errores"] == [] and informe["nuevas"] == 1
+    assert fallos == [1]

@@ -37,11 +37,15 @@ import subprocess
 import sys
 import time
 import traceback
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 from uuid import UUID
+
+import asyncpg
 
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
@@ -56,6 +60,16 @@ from app.services.companies import resolve_company_access
 from app.services.proveedores_paquete import importar_archivos_proveedores
 from app.services.sire import sincronizar_compras, sincronizar_ventas
 
+# Cortes de conexión con la base (el pooler cierra las conexiones inactivas, p. ej. mientras se
+# lee el correo durante minutos): no son un fallo de los datos, se reintentan.
+ERRORES_TRANSITORIOS = (
+    asyncpg.InterfaceError,
+    asyncpg.PostgresConnectionError,
+    TimeoutError,
+    ConnectionError,
+)
+INTENTOS_BASE = 3
+ESPERA_REINTENTO_SEGUNDOS = 5
 HORA_SIRE_POR_DEFECTO = 9
 ESPERA_TICKET_SEGUNDOS = 20
 MAX_REINTENTOS_TICKET = 12
@@ -97,6 +111,35 @@ class Rutas:
 # --------------------------------------------------------------------------- #
 # Lógica pura (se prueba sin Outlook, base ni SUNAT)
 # --------------------------------------------------------------------------- #
+async def con_reintentos[T](
+    operacion: Callable[[], Awaitable[T]],
+    *,
+    intentos: int = INTENTOS_BASE,
+    espera: float = ESPERA_REINTENTO_SEGUNDOS,
+    dormir: Any = asyncio.sleep,
+) -> T:
+    """Ejecuta `operacion` y la repite si la conexión con la base se cortó.
+
+    Cada intento abre su propia transacción, así que repetirla es seguro: si la anterior se cortó,
+    se deshizo. Cualquier otro error (datos, permisos…) se propaga de inmediato.
+    """
+    for intento in range(1, intentos + 1):
+        try:
+            return await operacion()
+        except ERRORES_TRANSITORIOS:
+            if intento == intentos:
+                raise
+            await dormir(espera * intento)
+    raise AssertionError("inalcanzable")  # pragma: no cover
+
+
+def describir_error(exc: BaseException) -> str:
+    """Texto útil para la bitácora: tipo, restricción violada (si la hay) y un resumen."""
+    restriccion = getattr(exc, "constraint_name", None)
+    detalle = redact(str(exc)).strip().splitlines()[0][:120] if str(exc).strip() else ""
+    return ": ".join(x for x in (type(exc).__name__, restriccion, detalle) if x)
+
+
 def meses_a_sincronizar(hoy: date) -> list[str]:
     """Mes actual y anterior (`AAAAMM`): SIRE sigue añadiendo comprobantes a ese último."""
     anterior = hoy.replace(day=1) - timedelta(days=1)
@@ -236,6 +279,20 @@ def _huella(datos: bytes) -> str:
     return hashlib.sha256(datos).hexdigest()[:20]
 
 
+async def _importar_grupo(
+    uow_factory: Any,
+    settings: Settings,
+    usuario: AuthenticatedUser,
+    acceso: CompanyMember,
+    archivos: list[tuple[str, bytes]],
+) -> Any:
+    """Importa un grupo de archivos en SU transacción (si se corta la conexión, se deshace)."""
+    async with uow_factory(usuario.claims_para_rls) as uow:
+        return await importar_archivos_proveedores(
+            uow=uow, settings=settings, user=usuario, access=acceso, archivos=archivos
+        )
+
+
 async def importar_pendientes(
     uow_factory: Any,
     settings: Settings,
@@ -246,6 +303,7 @@ async def importar_pendientes(
     *,
     reintentar_sueltos: bool = False,
     simular: bool = False,
+    espera: float = ESPERA_REINTENTO_SEGUNDOS,
 ) -> dict[str, Any]:
     """Importa las carpetas con novedades (una transacción por carpeta) y los PDF sueltos nuevos."""
     pend = _leer_json(rutas.pendientes, {})
@@ -278,12 +336,12 @@ async def importar_pendientes(
         if not archivos:
             continue
         try:
-            async with uow_factory(usuario.claims_para_rls) as uow:
-                r = await importar_archivos_proveedores(
-                    uow=uow, settings=settings, user=usuario, access=acceso, archivos=archivos
-                )
+            r = await con_reintentos(
+                partial(_importar_grupo, uow_factory, settings, usuario, acceso, archivos),
+                espera=espera,
+            )
         except Exception as exc:
-            informe["errores"].append(f"{carpeta}: {type(exc).__name__}")
+            informe["errores"].append(f"{carpeta}: {describir_error(exc)}")
             quedan_carpetas.append(carpeta)
             continue
         informe["completadas"] += r.completadas
@@ -309,16 +367,14 @@ async def importar_pendientes(
             if huella in intentados and not reintentar_sueltos:
                 continue
             try:
-                async with uow_factory(usuario.claims_para_rls) as uow:
-                    r = await importar_archivos_proveedores(
-                        uow=uow,
-                        settings=settings,
-                        user=usuario,
-                        access=acceso,
-                        archivos=[(pdf.name, datos)],
-                    )
+                r = await con_reintentos(
+                    partial(
+                        _importar_grupo, uow_factory, settings, usuario, acceso, [(pdf.name, datos)]
+                    ),
+                    espera=espera,
+                )
             except Exception as exc:
-                informe["errores"].append(f"{carpeta}/{pdf.name}: {type(exc).__name__}")
+                informe["errores"].append(f"{carpeta}/{pdf.name}: {describir_error(exc)}")
                 continue
             intentados.add(huella)
             informe["pdf_sueltos_unidos"] += sum(
@@ -332,6 +388,13 @@ async def importar_pendientes(
 # --------------------------------------------------------------------------- #
 # SIRE
 # --------------------------------------------------------------------------- #
+async def _sincronizar_un_periodo(
+    uow_factory: Any, usuario: AuthenticatedUser, funcion: Any, **kwargs: Any
+) -> Any:
+    async with uow_factory(usuario.claims_para_rls) as uow:
+        return await funcion(uow=uow, user=usuario, **kwargs)
+
+
 async def sincronizar_sire(
     uow_factory: Any,
     settings: Settings,
@@ -341,6 +404,7 @@ async def sincronizar_sire(
     *,
     simular: bool = False,
     dormir: Any = asyncio.sleep,
+    espera: float = ESPERA_REINTENTO_SEGUNDOS,
 ) -> dict[str, Any]:
     """Ventas y compras de cada mes, retomando el ticket si SUNAT tarda."""
     informe: dict[str, Any] = {
@@ -361,25 +425,30 @@ async def sincronizar_sire(
             ticket: str | None = None
             for _ in range(MAX_REINTENTOS_TICKET):
                 try:
-                    async with uow_factory(usuario.claims_para_rls) as uow:
-                        r = await funcion(
-                            uow=uow,
+                    r = await con_reintentos(
+                        partial(
+                            _sincronizar_un_periodo,
+                            uow_factory,
+                            usuario,
+                            funcion,
                             settings=settings,
                             secrets_provider=proveedor,
                             client_factory=fabrica,
-                            user=usuario,
                             access=acceso,
                             periodo=periodo,
                             ticket=ticket,
                             forzar=True,
-                        )
+                        ),
+                        espera=espera,
+                        dormir=dormir,
+                    )
                 except AppError as exc:
                     informe["errores"].append(
                         f"SIRE {libro} {periodo}: {exc.code} {redact(exc.message)}"
                     )
                     break
                 except Exception as exc:
-                    informe["errores"].append(f"SIRE {libro} {periodo}: {type(exc).__name__}")
+                    informe["errores"].append(f"SIRE {libro} {periodo}: {describir_error(exc)}")
                     break
                 if r.estado == "en_proceso" and r.ticket:
                     ticket = r.ticket
@@ -435,8 +504,11 @@ async def guardar_log(
     acceso: CompanyMember,
     registro: AutomatizacionLogRegistro,
 ) -> None:
-    async with uow_factory(usuario.claims_para_rls) as uow:
-        await uow.automatizacion_logs.registrar(registro)
+    async def _guardar() -> None:
+        async with uow_factory(usuario.claims_para_rls) as uow:
+            await uow.automatizacion_logs.registrar(registro)
+
+    await con_reintentos(_guardar)
 
 
 # --------------------------------------------------------------------------- #
@@ -552,7 +624,12 @@ async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[st
                     if ext["errores"]:
                         resumen["errores"].append(f"{ext['errores']} correo(s) no se pudieron leer")
             except Exception as exc:
-                resumen["errores"].append(f"Correo: {type(exc).__name__}")
+                resumen["errores"].append(f"Correo: {describir_error(exc)}")
+
+            # Leer el correo tarda minutos con la base inactiva: el pooler suele cerrar esas
+            # conexiones, así que se abren de nuevo antes de importar.
+            await db.close()
+            await db.connect()
 
             toca_sueltos = args.aplicar and sueltos_toca(estado, ahora)
             imp = await importar_pendientes(
