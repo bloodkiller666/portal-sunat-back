@@ -9,7 +9,11 @@ tipo de cambio de cada fila, y para cada venta en moneda extranjera sin `tipo_ca
     monto_pen   = total en soles, tal como lo informó SIRE
     tipo_cambio = el de SIRE
 
-Requisito: haber aplicado la migración `0011_tipo_cambio_monto_pen.sql`.
+También rellena `receptor_tipo_doc` (0 = cliente del exterior, 1 = DNI...) de las ventas ya
+cargadas, que antes no se guardaba: así el portal distingue un DNI o un cliente extranjero de un
+RUC faltante.
+
+Requisito: haber aplicado las migraciones `0011` y `0012`.
 
 Por defecto solo **simula** (no escribe en la base):
 
@@ -147,6 +151,28 @@ async def ejecutar(args: argparse.Namespace) -> int:
             )
         sin_dato = len(filas) - len(correcciones)
         print(f"Con corrección: {len(correcciones)} | sin dato en los ZIP: {sin_dato}")
+        tipos = {
+            (r.tipo_documento, r.serie, r.correlativo): r.receptor_tipo_doc
+            for r in registros
+            if r.receptor_tipo_doc
+        }
+        sin_tipo = [
+            dict(f)
+            for f in await conexion.fetch(
+                """
+                select id, tipo_documento, serie, correlativo from public.comprobantes
+                 where company_id = $1 and origen = 'emitido' and fuente = 'sire'
+                   and receptor_tipo_doc is null
+                """,
+                company_id,
+            )
+        ]
+        con_tipo = [
+            (f["id"], tipos[(f["tipo_documento"], f["serie"], f["correlativo"])])
+            for f in sin_tipo
+            if (f["tipo_documento"], f["serie"], f["correlativo"]) in tipos
+        ]
+        print(f"Tipo de documento del receptor por rellenar: {len(con_tipo)} de {len(sin_tipo)}")
         if not args.aplicar:
             print("Simulación: nada se escribió. Repita con --aplicar.")
             return 0
@@ -160,7 +186,14 @@ async def ejecutar(args: argparse.Namespace) -> int:
                     c.monto_pen,
                     c.tipo_cambio,
                 )
-        print(f"Actualizadas: {len(correcciones)}")
+            for comprobante_id, tipo in con_tipo:
+                await conexion.execute(
+                    "update public.comprobantes set receptor_tipo_doc = $2 "
+                    "where id = $1 and receptor_tipo_doc is null",
+                    comprobante_id,
+                    tipo,
+                )
+        print(f"Montos actualizados: {len(correcciones)} | tipos de documento: {len(con_tipo)}")
         return 0
     finally:
         await conexion.close()

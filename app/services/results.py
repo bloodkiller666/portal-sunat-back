@@ -122,6 +122,10 @@ class ComprobanteOut(BaseModel):
     origen_label: str = "Emitido"
     ruc_emisor: str
     ruc_receptor: str | None = None
+    # Documento del receptor cuando no es un RUC (cliente del exterior, DNI de una boleta) y su
+    # tipo según SIRE (catálogo 06: `0` no domiciliado, `1` DNI, `4` carnet de extranjería...).
+    receptor_doc: str | None = None
+    receptor_tipo_doc: str | None = None
     razon_social_emisor: str | None = None
     razon_social_receptor: str | None = None
     tipo_documento: str

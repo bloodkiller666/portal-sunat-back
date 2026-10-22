@@ -349,6 +349,8 @@ def to_comprobante_out(comprobante: Comprobante) -> ComprobanteOut:
         origen_label=comprobante.origen.etiqueta,
         ruc_emisor=comprobante.ruc_emisor,
         ruc_receptor=comprobante.ruc_receptor,
+        receptor_doc=comprobante.receptor_doc,
+        receptor_tipo_doc=comprobante.receptor_tipo_doc,
         razon_social_emisor=comprobante.razon_social_emisor,
         razon_social_receptor=comprobante.razon_social_receptor,
         tipo_documento=comprobante.tipo_documento,
