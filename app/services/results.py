@@ -265,6 +265,9 @@ class PaqueteItemOut(BaseModel):
     numero: str | None = None
     pdf: bool = False
     cdr: bool = False
+    # Solo el importador de proveedores: qué archivo es y qué pasó con él.
+    tipo: str | None = None  # xml | pdf | cdr | otro
+    situacion: str | None = None  # nueva | completada | repetida | guardado | unido | omitido…
     code: str | None = None
     mensaje: str | None = None
 
@@ -280,6 +283,10 @@ class PaqueteOut(BaseModel):
     con_pdf: int
     # Solo el importador de proveedores une el CDR; en ventas se carga con `import-cdr`.
     con_cdr: int = 0
+    # Compras que no estaban en SIRE ni en la tabla y se crearon con su XML.
+    nuevas: int = 0
+    # Compras que SIRE ya traía y se completaron con su XML.
+    completadas: int = 0
     duplicados: int
     con_error: int
     sin_xml: int

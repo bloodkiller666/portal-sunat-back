@@ -439,6 +439,18 @@ SIRE no refleja (o refleja sin XML). Reglas:
   PDF o el CDR que falte (sin duplicar lo ya archivado).
 - Las guías de remisión y los XML no reconocidos se ignoran y se informan (`guia`, `xml_no_reconocido`).
 - Solo `admin`/`emisor`. Tope: 50 MB y 400 archivos por ZIP.
+- La respuesta trae UN resultado por archivo (`tipo`: xml/pdf/cdr; `situacion`: `completada` si SIRE ya traía la
+  compra, `nueva` si no estaba en SIRE ni en la tabla, `repetida`, `guardado`, `unido`, `ya_estaba`, `omitido`) y
+  los totales `nuevas`, `completadas`, `con_pdf`, `con_cdr`, `duplicados`, `con_error`.
+- Un PDF sin XML se une a una compra YA registrada solo si su texto (sin OCR) da el RUC del proveedor y la
+  serie-número exactos; si coincide con varias (`ambiguo`) o no se identifica (`sin_xml`, p. ej. un escaneo) se
+  informa sin error. En una prueba con 277 PDF sueltos de correos reales, 44 se identificaron.
+
+### `POST /api/v1/companies/{ruc}/comprobantes/import-proveedores/archivos`
+
+Igual que el anterior pero con los archivos sueltos de UNA compra (`archivos` multipart, hasta 60). El portal lo usa
+para importar una compra tras otra y mostrar el avance en tiempo real; cada llamada se confirma sola, así que un
+error en una compra no deshace las anteriores.
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8000/api/v1/companies/$RUC/comprobantes/import-proveedores" \n  -H "Authorization: Bearer $TOKEN" -F "paquete=@lote-001.zip"

@@ -396,6 +396,22 @@ class PostgresComprobantesRepository:
         data = _row(record)
         return Comprobante.model_validate(data) if data else None
 
+    async def find_recibidas(
+        self, company_id: UUID, *, ruc_emisor: str, serie: str, correlativo: int
+    ) -> list[Comprobante]:
+        registros = await self._connection.fetch(
+            f"""
+            select {_COLUMNAS_COMPROBANTE} from public.comprobantes
+            where company_id = $1 and origen = 'recibido' and ruc_emisor = $2
+              and serie = $3 and correlativo = $4
+            """,
+            company_id,
+            ruc_emisor,
+            serie,
+            correlativo,
+        )
+        return [Comprobante.model_validate(_row(r)) for r in registros]
+
     async def find_emitido(
         self, company_id: UUID, *, tipo_documento: str, serie: str, correlativo: int
     ) -> Comprobante | None:

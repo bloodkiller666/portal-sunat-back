@@ -357,6 +357,19 @@ class InMemoryComprobantesRepository:
         self.comprobantes[creado.id] = creado
         return creado
 
+    async def find_recibidas(
+        self, company_id: UUID, *, ruc_emisor: str, serie: str, correlativo: int
+    ) -> list[Comprobante]:
+        return [
+            c
+            for c in self.comprobantes.values()
+            if c.company_id == company_id
+            and c.origen is OrigenComprobante.recibido
+            and c.ruc_emisor == ruc_emisor
+            and c.serie == serie
+            and c.correlativo == correlativo
+        ]
+
     async def find_emitido(
         self, company_id: UUID, *, tipo_documento: str, serie: str, correlativo: int
     ) -> Comprobante | None:

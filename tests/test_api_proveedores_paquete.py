@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import zipfile
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
@@ -226,7 +227,7 @@ def test_sin_r2_se_registra_la_compra_aunque_no_se_archive_nada(
 
 def test_exige_un_zip_con_algun_xml(client: TestClient, auth: dict[str, str]) -> None:
     assert _subir(client, auth, b"esto no es un zip").status_code == 422
-    assert _subir(client, auth, _zip(("a.pdf", PDF))).status_code == 422
+    assert _subir(client, auth, _zip(("a.txt", b"hola"))).status_code == 422
 
 
 def test_un_lector_no_puede_importar(client: TestClient, auth_lector: dict[str, str]) -> None:
@@ -240,3 +241,197 @@ def test_el_estado_no_se_degrada_con_el_cdr(cliente_r2: TestClient, uow: FakeUni
 
     (comprobante,) = uow.comprobantes.comprobantes.values()
     assert comprobante.estado is EstadoComprobante.aprobado
+
+
+# --------------------------------------------------------------------------- #
+# Resultado por archivo, situación y PDF sueltos
+# --------------------------------------------------------------------------- #
+GRUPO = f"/api/v1/companies/{RUC_PRINCIPAL}/comprobantes/import-proveedores/archivos"
+
+
+def _pdf_con_texto(texto: str) -> bytes:
+    """PDF mínimo de una página con ese texto (lo bastante válido para que pypdf lo lea)."""
+    contenido = f"BT /F1 12 Tf 72 720 Td ({texto}) Tj ET".encode()
+    objetos = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length "
+        + str(len(contenido)).encode()
+        + b" >>\nstream\n"
+        + contenido
+        + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    salida = bytearray(b"%PDF-1.4\n")
+    posiciones = []
+    for numero, objeto in enumerate(objetos, start=1):
+        posiciones.append(len(salida))
+        salida += f"{numero} 0 obj\n".encode() + objeto + b"\nendobj\n"
+    inicio_xref = len(salida)
+    salida += f"xref\n0 {len(objetos) + 1}\n0000000000 65535 f \n".encode()
+    for posicion in posiciones:
+        salida += f"{posicion:010d} 00000 n \n".encode()
+    salida += (
+        f"trailer\n<< /Size {len(objetos) + 1} /Root 1 0 R >>\nstartxref\n{inicio_xref}\n%%EOF\n"
+    ).encode()
+    return bytes(salida)
+
+
+def _grupo(client: TestClient, headers: dict[str, str], *archivos: tuple[str, bytes]):
+    return client.post(
+        GRUPO,
+        headers=headers,
+        files=[
+            ("archivos", (nombre, datos, "application/octet-stream")) for nombre, datos in archivos
+        ],
+    )
+
+
+def _compra_de_sire(uow: FakeUnitOfWork, **campos):
+    empresa = uow.companies.empresas[0]
+    compra = construir_comprobante(
+        empresa.id,
+        ruc="20999999999",
+        serie="F010",
+        correlativo=456,
+        origen=OrigenComprobante.recibido,
+        ambiente=SunatAmbiente.prod,
+        estado=EstadoComprobante.aprobado,
+    ).model_copy(update={"fuente": "sire", **campos})
+    uow.comprobantes.comprobantes[compra.id] = compra
+    return compra
+
+
+def _token() -> dict[str, str]:
+    return {"Authorization": f"Bearer {crear_token()}"}
+
+
+def test_cada_archivo_trae_su_tipo_y_la_situacion_de_la_compra(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    paquete = _zip(
+        (f"{CARPETA}/f.xml", FACTURA), (f"{CARPETA}/f.pdf", PDF), (f"{CARPETA}/c.xml", _cdr())
+    )
+
+    nueva = _subir(cliente_r2, _token(), paquete).json()
+    repetida = _subir(cliente_r2, _token(), paquete).json()
+
+    assert [(i["tipo"], i["situacion"]) for i in nueva["items"]] == [
+        ("xml", "nueva"),
+        ("pdf", "guardado"),
+        ("cdr", "guardado"),
+    ]
+    assert (nueva["nuevas"], nueva["completadas"], nueva["importados"]) == (1, 0, 1)
+    assert [(i["tipo"], i["situacion"]) for i in repetida["items"]] == [
+        ("xml", "repetida"),
+        ("pdf", "ya_estaba"),
+        ("cdr", "ya_estaba"),
+    ]
+    assert (repetida["duplicados"], repetida["importados"], repetida["con_error"]) == (1, 0, 0)
+
+
+def test_una_compra_de_sire_queda_como_completada(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    _compra_de_sire(uow)
+
+    cuerpo = _grupo(cliente_r2, _token(), ("f.xml", FACTURA), ("f.pdf", PDF)).json()
+
+    assert cuerpo["items"][0]["situacion"] == "completada"
+    assert (cuerpo["completadas"], cuerpo["nuevas"], cuerpo["con_pdf"]) == (1, 0, 1)
+
+
+def test_el_endpoint_por_grupos_importa_una_compra_con_sus_archivos(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    cuerpo = _grupo(
+        cliente_r2,
+        _token(),
+        ("factura.xml", FACTURA),
+        ("representacion.pdf", PDF),
+        ("R-cdr.xml", _cdr()),
+    ).json()
+
+    assert (cuerpo["total"], cuerpo["importados"]) == (3, 1)
+    assert (cuerpo["con_pdf"], cuerpo["con_cdr"]) == (1, 1)
+    assert {i["archivo"] for i in cuerpo["items"]} == {
+        "factura.xml",
+        "representacion.pdf",
+        "R-cdr.xml",
+    }
+    (comprobante,) = uow.comprobantes.comprobantes.values()
+    assert comprobante.ruc_emisor == "20999999999"
+
+
+def test_un_xml_con_error_marca_sus_pdf_como_no_procesados(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    ajeno = FACTURA.replace(b"20123456789", b"20555555555")
+
+    cuerpo = _grupo(cliente_r2, _token(), ("f.xml", ajeno), ("f.pdf", PDF)).json()
+
+    assert [(i["tipo"], i["ok"], i["code"]) for i in cuerpo["items"]] == [
+        ("xml", False, "invalid_document"),
+        ("pdf", False, "xml_con_error"),
+    ]
+    assert cuerpo["con_error"] == 1  # el PDF no cuenta como un error más
+
+
+def test_un_pdf_suelto_se_une_a_la_compra_que_su_texto_identifica(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    compra = _compra_de_sire(uow)
+    pdf = _pdf_con_texto(
+        "PROVEEDOR SAC RUC 20999999999 FACTURA ELECTRONICA F010-00000456 total 118"
+    )
+
+    cuerpo = _grupo(cliente_r2, _token(), ("scan-001.pdf", pdf)).json()
+
+    (item,) = cuerpo["items"]
+    assert (item["tipo"], item["ok"], item["situacion"]) == ("pdf", True, "unido")
+    assert item["comprobante_id"] == str(compra.id)
+    assert any(
+        a.tipo.value == "pdf" and a.comprobante_id == compra.id for a in uow.archivos.archivos
+    )
+
+
+def test_un_pdf_que_no_se_puede_identificar_se_informa_sin_error(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    _compra_de_sire(uow)
+    otro_ruc = _pdf_con_texto(
+        "PROVEEDOR SAC RUC 20111111111 FACTURA ELECTRONICA F010-00000456 total 1"
+    )
+    sin_texto = b"%PDF-1.4\n%%EOF\n"
+
+    cuerpo = _grupo(cliente_r2, _token(), ("a.pdf", otro_ruc), ("b.pdf", sin_texto)).json()
+
+    assert [(i["ok"], i["code"], i["situacion"]) for i in cuerpo["items"]] == [
+        (False, "sin_xml", "omitido"),
+        (False, "sin_xml", "omitido"),
+    ]
+    assert (cuerpo["con_error"], cuerpo["sin_xml"]) == (0, 2)
+    assert uow.archivos.archivos == []
+
+
+def test_un_pdf_que_coincide_con_dos_compras_no_se_une(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    primera = _compra_de_sire(uow)
+    segunda = primera.model_copy(update={"id": uuid4(), "tipo_documento": "07"})
+    uow.comprobantes.comprobantes[segunda.id] = segunda
+    pdf = _pdf_con_texto("RUC 20999999999 F010-00000456 documento de prueba con suficiente texto")
+
+    cuerpo = _grupo(cliente_r2, _token(), ("x.pdf", pdf)).json()
+
+    assert cuerpo["items"][0]["code"] == "ambiguo"
+    assert uow.archivos.archivos == []
+
+
+def test_el_endpoint_por_grupos_exige_rol_y_archivos(
+    client: TestClient, auth: dict[str, str], auth_lector: dict[str, str]
+) -> None:
+    assert _grupo(client, auth_lector, ("f.xml", FACTURA)).status_code == 403
+    assert client.post(GRUPO, headers=auth).status_code == 422

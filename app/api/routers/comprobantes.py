@@ -26,6 +26,7 @@ from app.core.enums import (
     OrigenComprobante,
     RespaldoFiltro,
 )
+from app.core.errors import FileTooLargeError
 from app.db.repositories.base import FiltrosListado
 from app.services.carpeta_local import abrir_carpeta
 from app.services.cdr_paquete import TAMANO_MAXIMO_PAQUETE as TAMANO_MAXIMO_CDR
@@ -45,7 +46,12 @@ from app.services.comprobantes import (
     resumen_comprobantes,
 )
 from app.services.paquetes import TAMANO_MAXIMO_PAQUETE, importar_paquete
-from app.services.proveedores_paquete import importar_paquete_proveedores
+from app.services.proveedores_paquete import (
+    MAX_BYTES_GRUPO,
+    MAX_BYTES_POR_ENTRADA,
+    importar_archivos_proveedores,
+    importar_paquete_proveedores,
+)
 from app.services.results import (
     CdrPaqueteOut,
     ComprobanteDetalleOut,
@@ -288,6 +294,37 @@ async def post_importar_proveedores(
     contenido = await leer_con_limite(paquete, TAMANO_MAXIMO_PAQUETE)
     return await importar_paquete_proveedores(
         uow=uow, settings=settings, user=user, access=access, paquete=contenido
+    )
+
+
+@router.post(
+    "/companies/{ruc}/comprobantes/import-proveedores/archivos",
+    response_model=PaqueteOut,
+    summary="Importa UNA compra de proveedor (su XML, PDF y CDR) enviada como archivos sueltos",
+)
+async def post_importar_proveedores_archivos(
+    access: AcessoOperativo,
+    user: CurrentUserDep,
+    uow: UowDep,
+    settings: SettingsDep,
+    archivos: Annotated[list[UploadFile], File(description="XML, PDF y CDR de una compra")],
+) -> PaqueteOut:
+    """Igual que `import-proveedores`, pero con los archivos de una sola compra (admin/emisor).
+
+    Existe para que el portal importe de a una compra y muestre el avance en tiempo real: cada
+    llamada responde un resultado por archivo (`tipo`, `situacion`, `code`, `mensaje`). Un PDF
+    sin XML se une a una compra ya registrada solo si su texto da el RUC y la serie-número exactos.
+    """
+    recibidos: list[tuple[str, bytes]] = []
+    total = 0
+    for archivo in archivos:
+        contenido = await leer_con_limite(archivo, MAX_BYTES_POR_ENTRADA)
+        total += len(contenido)
+        if total > MAX_BYTES_GRUPO:
+            raise FileTooLargeError(details={"maximo_bytes": MAX_BYTES_GRUPO})
+        recibidos.append((archivo.filename or "archivo", contenido))
+    return await importar_archivos_proveedores(
+        uow=uow, settings=settings, user=user, access=access, archivos=recibidos
     )
 
 

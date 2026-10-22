@@ -149,6 +149,12 @@ class ComprobantesRepository(Protocol):
         """Con `ruc_emisor` distingue a dos proveedores que emitieron la misma serie-número."""
         ...
 
+    async def find_recibidas(
+        self, company_id: UUID, *, ruc_emisor: str, serie: str, correlativo: int
+    ) -> list[Comprobante]:
+        """Compras de un proveedor con esa serie-número (sirve para unir un PDF suelto)."""
+        ...
+
     async def find_emitido(
         self, company_id: UUID, *, tipo_documento: str, serie: str, correlativo: int
     ) -> Comprobante | None:

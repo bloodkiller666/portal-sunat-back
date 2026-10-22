@@ -367,6 +367,12 @@ Se leen con **Outlook clásico de Windows** (sin administrador ni registro de ap
 - `POST /companies/{ruc}/comprobantes/import-proveedores` (`app/services/proveedores_paquete.py`):
   agrupa por carpeta, une PDF y CDR a su factura y completa lo que SIRE ya trae (README).
 - El PDF se muestra SOLO en compras (frontend); ventas sigue sin PDF.
+- Importar en Compras (`components/portal/importar-proveedores.tsx`, lógica en `lib/importar-proveedores.ts`):
+  carpeta, ZIP o archivos; se manda UNA compra por llamada a `.../import-proveedores/archivos` y cada archivo
+  pasa en vivo de «en espera» a completada (estaba en SIRE) / nueva (no estaba en SIRE ni en la tabla) / ya estaba
+  / no se importó / error. Un PDF sin XML se une por su texto (`app/services/pdf_identificar.py`, `pypdf`) solo
+  con RUC y serie-número exactos.
+- Si el portal corre en beta y la compra ya está importada en prod, el XML la duplica: en local use `SUNAT_ENV=prod`.
 
 Hallazgos con los correos de octubre (no los revierta sin revisar): el 57 % de los correos trae solo PDF
 (sin XML) y no se puede registrar; solo el 24 % de las compras tiene CDR; 38 facturas eran de otros
