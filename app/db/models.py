@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -211,6 +211,30 @@ class BizlinksConsultaRegistro(RowModel):
 
 
 class BizlinksConsulta(BizlinksConsultaRegistro):
+    id: UUID
+    created_at: datetime | None = None
+
+
+class AutomatizacionLogRegistro(RowModel):
+    """Una corrida de la automatización diaria (SIRE + correo + importación)."""
+
+    company_id: UUID
+    modo: Literal["real", "simulacion"] = "real"
+    tareas: list[str] = []
+    resultado: Literal["ok", "con_novedades", "con_errores"]
+    duracion_segundos: int | None = None
+    novedades: dict[str, int] = {}
+    errores: list[str] = []
+    advertencias: list[str] = []
+    # Resumen de cada tarea (sire, correo, importacion).
+    detalle: dict[str, Any] = {}
+    # Foto de `estado.json` y de `pendientes_importar.json` al terminar la corrida.
+    estado: dict[str, Any] = {}
+    pendientes: dict[str, Any] = {}
+    created_by: UUID | None = None
+
+
+class AutomatizacionLog(AutomatizacionLogRegistro):
     id: UUID
     created_at: datetime | None = None
 

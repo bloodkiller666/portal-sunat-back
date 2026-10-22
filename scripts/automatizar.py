@@ -47,7 +47,7 @@ from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.redaction import redact
 from app.core.security import AuthenticatedUser
-from app.db.models import CompanyMember
+from app.db.models import AutomatizacionLogRegistro, CompanyMember
 from app.db.pool import Database
 from app.db.uow import build_uow_factory
 from app.main import crear_cliente_sire
@@ -395,6 +395,51 @@ async def sincronizar_sire(
 
 
 # --------------------------------------------------------------------------- #
+# Registro de la corrida en la base (apartado «Logs» del portal)
+# --------------------------------------------------------------------------- #
+def resultado_de(resumen: dict[str, Any]) -> str:
+    if resumen.get("errores"):
+        return "con_errores"
+    return "con_novedades" if any(resumen.get("novedades", {}).values()) else "ok"
+
+
+def armar_log(
+    resumen: dict[str, Any],
+    *,
+    acceso: CompanyMember,
+    usuario: AuthenticatedUser,
+    estado: dict[str, Any],
+    pendientes: dict[str, Any],
+    segundos: int,
+) -> AutomatizacionLogRegistro:
+    """Lo que ve el portal de una corrida real: resumen, errores y una foto del estado."""
+    return AutomatizacionLogRegistro(
+        company_id=acceso.company_id,
+        modo="real",
+        tareas=list(resumen.get("tareas", [])),
+        resultado=resultado_de(resumen),  # type: ignore[arg-type]
+        duracion_segundos=segundos,
+        novedades={k: int(v) for k, v in resumen.get("novedades", {}).items()},
+        errores=[str(e) for e in resumen.get("errores", [])],
+        advertencias=[str(a) for a in resumen.get("advertencias", [])],
+        detalle={k: resumen[k] for k in ("sire", "correo", "importacion") if k in resumen},
+        estado=estado,
+        pendientes=pendientes,
+        created_by=usuario.id,
+    )
+
+
+async def guardar_log(
+    uow_factory: Any,
+    usuario: AuthenticatedUser,
+    acceso: CompanyMember,
+    registro: AutomatizacionLogRegistro,
+) -> None:
+    async with uow_factory(usuario.claims_para_rls) as uow:
+        await uow.automatizacion_logs.registrar(registro)
+
+
+# --------------------------------------------------------------------------- #
 # Corrida completa
 # --------------------------------------------------------------------------- #
 async def _usuario_de_servicio(
@@ -424,6 +469,7 @@ async def _usuario_de_servicio(
 
 
 async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[str, Any]:
+    inicio = time.monotonic()
     destino = Path(args.destino)  # ya resuelto en main()
     rutas = Rutas(destino / "_automatizacion")
     resumen: dict[str, Any] = {
@@ -529,6 +575,22 @@ async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[st
                 estado["ultimo_reintento_sueltos"] = ahora.isoformat(timespec="seconds")
         if args.aplicar:
             _escribir_json(rutas.estado, estado)
+            try:
+                registro = armar_log(
+                    resumen,
+                    acceso=acceso,
+                    usuario=usuario,
+                    estado=estado,
+                    pendientes=_leer_json(rutas.pendientes, {}),
+                    segundos=round(time.monotonic() - inicio),
+                )
+                await guardar_log(uow_factory, usuario, acceso, registro)
+            except Exception as exc:
+                # El log local (automatizacion.log) igual queda; solo falta verlo en el portal.
+                resumen.setdefault("advertencias", []).append(
+                    f"No se pudo guardar la corrida en la base ({type(exc).__name__}): "
+                    "¿está aplicada la migración 0013?"
+                )
     finally:
         await db.close()
     return resumen

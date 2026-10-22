@@ -10,7 +10,15 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.api.routers import archivos, bizlinks, companies, comprobantes, health, sire
+from app.api.routers import (
+    archivos,
+    automatizacion,
+    bizlinks,
+    companies,
+    comprobantes,
+    health,
+    sire,
+)
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, get_logger, get_request_id
@@ -35,6 +43,10 @@ OPENAPI_TAGS = [
     {
         "name": "bizlinks",
         "description": "Respaldo del XML firmado y el CDR desde el OSE (Bizlinks).",
+    },
+    {
+        "name": "automatizacion",
+        "description": "Corridas de la automatización diaria (apartado Logs).",
     },
 ]
 
@@ -207,6 +219,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(archivos.router, prefix=settings.api_v1_prefix)
     app.include_router(sire.router, prefix=settings.api_v1_prefix)
     app.include_router(bizlinks.router, prefix=settings.api_v1_prefix)
+    app.include_router(automatizacion.router, prefix=settings.api_v1_prefix)
 
     logger.info(
         "API lista (%s, SUNAT_ENV=%s, docs=%s)",

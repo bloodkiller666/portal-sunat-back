@@ -654,7 +654,13 @@ uv run --with pywin32 python -m scripts.automatizar --tarea auto
 .\scriptsegistrar_tarea_windows.ps1
 ```
 
-Registro: `Descargas\FacturasProveedores\_automatizacion\` → `automatizacion.log` (legible),
+**Apartado «Logs» del portal** (como Evidencias SIRE): cada corrida real se guarda también en la tabla
+`automatizacion_logs` (migración `0013`) y se lee con `GET /companies/{ruc}/automatizacion/logs` (cualquier miembro,
+filtros `resultado`/`limit`/`offset`): novedades, errores, detalle por tarea, la última sincronización de SIRE y lo que
+falta importar (las fotos de `estado.json` y `pendientes_importar.json`). Si la tabla no existe, la corrida sigue y lo
+advierte.
+
+Registro local: `Descargas\FacturasProveedores\_automatizacion\` → `automatizacion.log` (legible),
 `bitacora-AAAA-MM.jsonl` (una línea JSON por corrida), `estado.json`, `pendientes_importar.json`. Los autores de lo
 importado salen de `AUTOMATIZACION_USER_ID` (usuario «Automatización» con rol emisor); sin él se usa el primer administrador.
 Requiere la PC encendida con Outlook clásico; no se ejecutan dos corridas a la vez (`automatizar.lock`).

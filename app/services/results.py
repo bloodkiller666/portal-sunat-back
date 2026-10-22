@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -409,6 +409,42 @@ class SireSyncOut(BaseModel):
     respaldos: BizlinksSyncOut | None = None
     respaldos_error: str | None = None
     mensaje: str
+
+
+class LogAutomatizacionOut(BaseModel):
+    """Una corrida de la automatización diaria."""
+
+    id: UUID
+    created_at: datetime | None
+    modo: Literal["real", "simulacion"]
+    tareas: list[str]
+    resultado: Literal["ok", "con_novedades", "con_errores"]
+    duracion_segundos: int | None
+    novedades: dict[str, int]
+    errores: list[str]
+    advertencias: list[str]
+    detalle: dict[str, Any]
+
+
+class EstadoAutomatizacionOut(BaseModel):
+    """Dónde va la automatización: `estado.json` y `pendientes_importar.json` de la PC."""
+
+    ultima_corrida_at: datetime | None
+    ultimo_resultado: Literal["ok", "con_novedades", "con_errores"] | None
+    ultima_sire_ok: str | None = None
+    ultimo_reintento_sueltos: str | None = None
+    # Compras (carpetas del correo) que aún faltan por importar al portal.
+    carpetas_pendientes: list[str] = Field(default_factory=list)
+    # Carpetas con PDF sueltos por revisar (solo se unen si su texto identifica la compra).
+    sueltos_pendientes: list[str] = Field(default_factory=list)
+
+
+class LogsPage(BaseModel):
+    """Corridas de la automatización (las más recientes primero) y su estado actual."""
+
+    items: list[LogAutomatizacionOut]
+    total: int
+    estado: EstadoAutomatizacionOut | None = None
 
 
 class EvidenciasPage(BaseModel):

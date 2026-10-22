@@ -390,6 +390,8 @@ lo que falla queda pendiente) y aviso de Windows solo con novedades o errores. B
 `Descargas/FacturasProveedores/_automatizacion/`. Sin `--aplicar` solo simula. Decisiones: el correo se acumula en Outlook
 mientras la PC está apagada (el extractor procesa todo lo no registrado); no hay dos corridas a la vez (lock de 3 h);
 al pasar a un servidor, SIRE e importación se programan allí y el correo debe leerse por Microsoft Graph.
+Cada corrida real también se guarda en `automatizacion_logs` (migración `0013`, **aplicar en Supabase antes de desplegar**) y
+el portal la muestra en el apartado «Logs» (`GET /companies/{ruc}/automatizacion/logs`, `components/portal/vista-logs.tsx`).
 Proveedores que NO llegan al buzón (hallazgo del 2026-10-22): Petroperú, bancos, comercio exterior (DP World, Maersk, APM),
 Repsol: están en sus portales o en el correo de facturación registrado en cada uno.
 

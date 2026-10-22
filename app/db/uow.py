@@ -10,6 +10,7 @@ from typing import Any
 from app.db.pool import Database
 from app.db.repositories.postgres import (
     PostgresArchivosRepository,
+    PostgresAutomatizacionLogsRepository,
     PostgresBizlinksConsultasRepository,
     PostgresCompaniesRepository,
     PostgresComprobanteItemsRepository,
@@ -28,6 +29,7 @@ class PostgresUnitOfWork:
     sunat_envios: PostgresSunatEnviosRepository
     archivos: PostgresArchivosRepository
     bizlinks_consultas: PostgresBizlinksConsultasRepository
+    automatizacion_logs: PostgresAutomatizacionLogsRepository
 
 
 def build_uow_factory(database: Database) -> UowFactory:
@@ -43,6 +45,7 @@ def build_uow_factory(database: Database) -> UowFactory:
                 sunat_envios=PostgresSunatEnviosRepository(connection),
                 archivos=PostgresArchivosRepository(connection),
                 bizlinks_consultas=PostgresBizlinksConsultasRepository(connection),
+                automatizacion_logs=PostgresAutomatizacionLogsRepository(connection),
             )
 
     return factory

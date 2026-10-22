@@ -24,6 +24,8 @@ from app.core.enums import (
 from app.db.models import (
     Archivo,
     ArchivoRegistro,
+    AutomatizacionLog,
+    AutomatizacionLogRegistro,
     BizlinksConsulta,
     BizlinksConsultaRegistro,
     Company,
@@ -267,6 +269,19 @@ class ArchivosRepository(Protocol):
 
 
 @runtime_checkable
+@runtime_checkable
+class AutomatizacionLogsRepository(Protocol):
+    """Corridas de la automatización diaria (solo agregado; se leen en el apartado Logs)."""
+
+    async def registrar(self, registro: AutomatizacionLogRegistro) -> AutomatizacionLog: ...
+
+    async def listar(
+        self, company_id: UUID, *, resultado: str | None, limit: int, offset: int
+    ) -> tuple[list[AutomatizacionLog], int]:
+        """Las más recientes primero, con el total del conjunto filtrado."""
+        ...
+
+
 class UnitOfWork(Protocol):
     """Agrupa los repositorios que comparten la misma conexión/transacción."""
 
@@ -276,3 +291,4 @@ class UnitOfWork(Protocol):
     sunat_envios: SunatEnviosRepository
     archivos: ArchivosRepository
     bizlinks_consultas: BizlinksConsultasRepository
+    automatizacion_logs: AutomatizacionLogsRepository

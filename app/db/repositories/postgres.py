@@ -25,6 +25,8 @@ from app.core.errors import ConflictError
 from app.db.models import (
     Archivo,
     ArchivoRegistro,
+    AutomatizacionLog,
+    AutomatizacionLogRegistro,
     BizlinksConsulta,
     BizlinksConsultaRegistro,
     Company,
@@ -835,6 +837,65 @@ class PostgresArchivosRepository:
         data = _row(record)
         assert data is not None
         return Archivo.model_validate(data)
+
+
+class PostgresAutomatizacionLogsRepository:
+    """Corridas de la automatización diaria."""
+
+    _COLUMNAS = (
+        "id, company_id, created_at, modo, tareas, resultado, duracion_segundos, novedades, "
+        "errores, advertencias, detalle, estado, pendientes, created_by"
+    )
+
+    def __init__(self, connection: asyncpg.Connection) -> None:
+        self._connection = connection
+
+    async def registrar(self, registro: AutomatizacionLogRegistro) -> AutomatizacionLog:
+        record = await self._connection.fetchrow(
+            f"""
+            insert into public.automatizacion_logs (
+                company_id, modo, tareas, resultado, duracion_segundos, novedades, errores,
+                advertencias, detalle, estado, pendientes, created_by
+            )
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            returning {self._COLUMNAS}
+            """,
+            registro.company_id,
+            registro.modo,
+            registro.tareas,
+            registro.resultado,
+            registro.duracion_segundos,
+            registro.novedades,
+            registro.errores,
+            registro.advertencias,
+            registro.detalle,
+            registro.estado,
+            registro.pendientes,
+            registro.created_by,
+        )
+        data = _row(record)
+        assert data is not None
+        return AutomatizacionLog.model_validate(data)
+
+    async def listar(
+        self, company_id: UUID, *, resultado: str | None, limit: int, offset: int
+    ) -> tuple[list[AutomatizacionLog], int]:
+        registros = await self._connection.fetch(
+            f"""
+            select {self._COLUMNAS}, count(*) over() as total
+              from public.automatizacion_logs
+             where company_id = $1 and ($2::text is null or resultado = $2)
+             order by created_at desc, id desc
+             limit $3 offset $4
+            """,
+            company_id,
+            resultado,
+            limit,
+            offset,
+        )
+        total = int(registros[0]["total"]) if registros else 0
+        items = [AutomatizacionLog.model_validate(_row(r)) for r in registros]
+        return items, total
 
 
 class PostgresBizlinksConsultasRepository:

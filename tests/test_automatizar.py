@@ -335,3 +335,42 @@ def test_en_simulacion_sire_no_llama_a_sunat(entorno, monkeypatch: pytest.Monkey
     )
 
     assert informe["errores"] == [] and informe["ventas_nuevas"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Registro de la corrida en la base (apartado Logs)
+# --------------------------------------------------------------------------- #
+def test_el_resultado_de_la_corrida_distingue_errores_novedades_y_nada() -> None:
+    assert au.resultado_de({"errores": ["x"], "novedades": {"a": 3}}) == "con_errores"
+    assert au.resultado_de({"errores": [], "novedades": {"a": 3, "b": 0}}) == "con_novedades"
+    assert au.resultado_de({"errores": [], "novedades": {"a": 0}}) == "ok"
+
+
+def test_la_corrida_se_guarda_con_su_estado_y_sus_pendientes(entorno) -> None:
+    resumen = {
+        "tareas": ["sire", "correo"],
+        "errores": [],
+        "novedades": {"PDF unidos": 2},
+        "advertencias": ["usó el primer administrador"],
+        "sire": {"meses": ["202610"]},
+        "importacion": {"nuevas": 1},
+        "segundos": 99,  # lo calcula la corrida, no se copia
+    }
+    registro = au.armar_log(
+        resumen,
+        acceso=entorno["acceso"],
+        usuario=entorno["usuario"],
+        estado={"ultima_sire_ok": "2026-10-22T09:01:00"},
+        pendientes={"carpetas": ["2026/10/x/y"]},
+        segundos=53,
+    )
+
+    asyncio.run(au.guardar_log(entorno["fabrica"], entorno["usuario"], entorno["acceso"], registro))
+
+    (log,) = entorno["uow"].automatizacion_logs.logs
+    assert (log.resultado, log.modo, log.duracion_segundos) == ("con_novedades", "real", 53)
+    assert log.tareas == ["sire", "correo"] and log.novedades == {"PDF unidos": 2}
+    assert log.detalle == {"sire": {"meses": ["202610"]}, "importacion": {"nuevas": 1}}
+    assert log.estado == {"ultima_sire_ok": "2026-10-22T09:01:00"}
+    assert log.pendientes == {"carpetas": ["2026/10/x/y"]}
+    assert log.created_by == entorno["usuario"].id

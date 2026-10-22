@@ -29,6 +29,8 @@ from app.core.errors import ConflictError, NotFoundError
 from app.db.models import (
     Archivo,
     ArchivoRegistro,
+    AutomatizacionLog,
+    AutomatizacionLogRegistro,
     BizlinksConsulta,
     BizlinksConsultaRegistro,
     Company,
@@ -163,9 +165,7 @@ class InMemoryCompaniesRepository:
     async def get_by_id(self, company_id: UUID) -> Company | None:
         return next((e for e in self.empresas if e.id == company_id), None)
 
-    async def get_access(
-        self, ruc: str, user_id: UUID
-    ) -> tuple[Company, Membership | None] | None:
+    async def get_access(self, ruc: str, user_id: UUID) -> tuple[Company, Membership | None] | None:
         empresa = await self.get_by_ruc(ruc)
         if empresa is None:
             return None
@@ -543,9 +543,7 @@ class InMemoryComprobantesRepository:
 class InMemoryComprobanteItemsRepository:
     items: list[ComprobanteItem] = field(default_factory=list)
 
-    async def create_many(
-        self, registros: list[ComprobanteItemRegistro]
-    ) -> list[ComprobanteItem]:
+    async def create_many(self, registros: list[ComprobanteItemRegistro]) -> list[ComprobanteItem]:
         ahora = datetime.now(tz=UTC)
         creados = [
             ComprobanteItem(
@@ -585,6 +583,32 @@ class InMemorySunatEnviosRepository:
     ) -> list[SunatEnvio]:
         coincidencias = [e for e in self.envios if e.comprobante_id == comprobante_id]
         return list(reversed(coincidencias))[:limit]
+
+
+@dataclass
+class InMemoryAutomatizacionLogsRepository:
+    """Corridas en memoria (la fila más reciente primero, como el SQL)."""
+
+    logs: list[AutomatizacionLog] = field(default_factory=list)
+    company_ids_visibles: set[UUID] = field(default_factory=set)
+
+    async def registrar(self, registro: AutomatizacionLogRegistro) -> AutomatizacionLog:
+        log = AutomatizacionLog(
+            id=uuid4(), created_at=datetime.now(tz=UTC), **registro.model_dump()
+        )
+        self.logs.append(log)
+        return log
+
+    async def listar(
+        self, company_id: UUID, *, resultado: str | None, limit: int, offset: int
+    ) -> tuple[list[AutomatizacionLog], int]:
+        filas = [
+            log
+            for log in self.logs
+            if log.company_id == company_id and (resultado is None or log.resultado == resultado)
+        ]
+        filas.sort(key=lambda log: log.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
+        return filas[offset : offset + limit], len(filas)
 
 
 @dataclass
@@ -710,6 +734,9 @@ class FakeUnitOfWork:
     archivos: InMemoryArchivosRepository = field(default_factory=InMemoryArchivosRepository)
     bizlinks_consultas: InMemoryBizlinksConsultasRepository = field(
         default_factory=InMemoryBizlinksConsultasRepository
+    )
+    automatizacion_logs: InMemoryAutomatizacionLogsRepository = field(
+        default_factory=InMemoryAutomatizacionLogsRepository
     )
     claims: dict[str, Any] = field(default_factory=dict)
 
