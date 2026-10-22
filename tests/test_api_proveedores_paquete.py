@@ -435,3 +435,27 @@ def test_el_endpoint_por_grupos_exige_rol_y_archivos(
 ) -> None:
     assert _grupo(client, auth_lector, ("f.xml", FACTURA)).status_code == 403
     assert client.post(GRUPO, headers=auth).status_code == 422
+
+
+def test_una_compra_con_xml_ya_registrado_no_se_vuelve_a_insertar(
+    cliente_r2: TestClient, uow: FakeUnitOfWork, monkeypatch
+) -> None:
+    """En Postgres un INSERT duplicado aborta la transacción y rompe todo lo que sigue (un 500)."""
+    paquete = _zip((f"{CARPETA}/f.xml", FACTURA), (f"{CARPETA}/f.pdf", PDF))
+    _subir(cliente_r2, _token(), paquete)
+    inserciones: list[object] = []
+    original = uow.comprobantes.create
+
+    async def contar(registro):
+        inserciones.append(registro)
+        return await original(registro)
+
+    monkeypatch.setattr(uow.comprobantes, "create", contar)
+
+    cuerpo = _subir(cliente_r2, _token(), paquete).json()
+
+    assert inserciones == []  # ni siquiera se intentó insertar
+    assert [(i["tipo"], i["situacion"]) for i in cuerpo["items"]] == [
+        ("xml", "repetida"),
+        ("pdf", "ya_estaba"),
+    ]

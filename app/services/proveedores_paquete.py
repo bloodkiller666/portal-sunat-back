@@ -383,24 +383,25 @@ async def _importar(
     """Importa una compra y devuelve su XML, cada PDF y su CDR como resultados separados."""
     previo = await _previo(uow, settings, access, asignacion.xml)
     item = PaqueteItemOut(archivo=asignacion.xml.nombre, tipo="xml")
-    try:
-        comprobante = await import_comprobante_xml(
-            uow=uow,
-            settings=settings,
-            user=user,
-            access=access,
-            xml=asignacion.xml.contenido,
-            origen=OrigenComprobante.recibido,
-        )
-        comprobante_id = comprobante.id
-        numero = comprobante.nombre_archivo or comprobante.numero
-        if previo is not None and previo.fuente == "sire":
-            item.situacion, item.mensaje = COMPLETADA, "Estaba en SIRE: se completó con su XML"
-        else:
-            item.situacion = NUEVA
-            item.mensaje = "No estaba en SIRE ni en la tabla: se registró con su XML"
-    except AppError as exc:
-        if exc.code != "conflict" or previo is None:
+    if previo is not None and previo.fuente != "sire":
+        # Ya tiene su XML: NO se vuelve a insertar. En Postgres un INSERT duplicado aborta la
+        # transacción entera y las consultas siguientes (PDF, CDR, otras compras) fallarían con
+        # un 500. Se informa como repetida y se completa con el PDF/CDR que falten.
+        item.code, item.situacion = "conflict", REPETIDA
+        item.mensaje = "Ya estaba registrada con su XML"
+        comprobante_id = previo.id
+        numero = previo.nombre_archivo or previo.numero
+    else:
+        try:
+            comprobante = await import_comprobante_xml(
+                uow=uow,
+                settings=settings,
+                user=user,
+                access=access,
+                xml=asignacion.xml.contenido,
+                origen=OrigenComprobante.recibido,
+            )
+        except AppError as exc:
             item.ok = False
             item.code = exc.code
             item.mensaje = redact(exc.message)
@@ -416,11 +417,13 @@ async def _importar(
                 for a in (*asignacion.pdfs, *([asignacion.cdr] if asignacion.cdr else []))
             ]
             return [item, *sin_xml]
-        # Ya estaba registrada con XML: se informa, pero se completa con el PDF/CDR que falten.
-        item.code, item.situacion = "conflict", REPETIDA
-        item.mensaje = "Ya estaba registrada con su XML"
-        comprobante_id = previo.id
-        numero = previo.nombre_archivo or previo.numero
+        comprobante_id = comprobante.id
+        numero = comprobante.nombre_archivo or comprobante.numero
+        if previo is not None:  # era una compra de SIRE: el XML la completó
+            item.situacion, item.mensaje = COMPLETADA, "Estaba en SIRE: se completó con su XML"
+        else:
+            item.situacion = NUEVA
+            item.mensaje = "No estaba en SIRE ni en la tabla: se registró con su XML"
 
     item.comprobante_id = comprobante_id
     item.numero = numero
