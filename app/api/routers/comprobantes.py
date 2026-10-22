@@ -45,6 +45,7 @@ from app.services.comprobantes import (
     resumen_comprobantes,
 )
 from app.services.paquetes import TAMANO_MAXIMO_PAQUETE, importar_paquete
+from app.services.proveedores_paquete import importar_paquete_proveedores
 from app.services.results import (
     CdrPaqueteOut,
     ComprobanteDetalleOut,
@@ -263,6 +264,30 @@ async def post_importar_paquete(
         access=access,
         paquete=contenido,
         origen=origen,
+    )
+
+
+@router.post(
+    "/companies/{ruc}/comprobantes/import-proveedores",
+    response_model=PaqueteOut,
+    summary="Importa compras desde un ZIP por carpetas (XML + PDF + CDR de cada proveedor)",
+)
+async def post_importar_proveedores(
+    access: AcessoOperativo,
+    user: CurrentUserDep,
+    uow: UowDep,
+    settings: SettingsDep,
+    paquete: Annotated[UploadFile, File(description="ZIP con una carpeta por compra")],
+) -> PaqueteOut:
+    """Registra compras que llegaron por correo y SIRE no refleja (admin/emisor).
+
+    Cada carpeta reúne el XML, los PDF y el CDR de una compra (`RUC/SERIE-NÚMERO/…`); también se
+    acepta un ZIP plano. Si SIRE ya trae la compra, el XML la completa; lo ya registrado no se
+    duplica pero sí recibe el PDF o el CDR que le falte.
+    """
+    contenido = await leer_con_limite(paquete, TAMANO_MAXIMO_PAQUETE)
+    return await importar_paquete_proveedores(
+        uow=uow, settings=settings, user=user, access=access, paquete=contenido
     )
 
 

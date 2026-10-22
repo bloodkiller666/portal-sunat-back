@@ -629,6 +629,19 @@ async def import_comprobante_xml(
         sunat_ambiente=registro.sunat_ambiente,
         ruc_emisor=registro.ruc_emisor,
     )
+    if existente is None and registro.sunat_ambiente is not SunatAmbiente.prod:
+        # SIRE solo existe en producción: sus filas son `prod` aunque este entorno sea beta.
+        en_prod = await uow.comprobantes.find_by_key(
+            access.company_id,
+            origen=origen,
+            tipo_documento=registro.tipo_documento,
+            serie=registro.serie,
+            correlativo=registro.correlativo,
+            sunat_ambiente=SunatAmbiente.prod,
+            ruc_emisor=registro.ruc_emisor,
+        )
+        if en_prod is not None and en_prod.fuente == "sire":
+            existente = en_prod
     if existente is not None and existente.fuente == "sire":
         creado = await uow.comprobantes.completar_desde_xml(existente.id, registro)
     else:

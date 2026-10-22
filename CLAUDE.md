@@ -353,6 +353,27 @@ Decisiones (no las revierta sin motivo):
 - Las 116 ventas USD ya cargadas se corrigen con `scripts/corregir_montos_sire.py` (simula por
   defecto; relee los ZIP de evidencia de R2; requiere `0011` aplicada).
 
+### P15 — Facturas de proveedores desde el correo (2026-10-22)
+
+El buzón `recepcionfacturas@holdingtdm.com` recibe las facturas de proveedores (XML, PDF y CDR).
+Se leen con **Outlook clásico de Windows** (sin administrador ni registro de aplicaciones):
+
+- `scripts/diagnostico_outlook.py`: cuenta, solo lectura (carpetas, fechas, adjuntos).
+- `scripts/extraer_correo_outlook.py`: extrae y ordena en `Descargas/FacturasProveedores/AAAA/MM/RUC/
+  SERIE-NÚMERO/` (fecha de emisión y RUC del proveedor salen del XML). Aparte: `_otras_empresas/` (facturas
+  a otro RUC del grupo), `_sin_clasificar/` (PDF sin XML, CDR sueltos), `_originales_zip/`, `_correos/`
+  (auditoría) y `_paquetes_importar/{fecha}/lote-NNN.zip` listos para el botón Importar. Idempotente
+  (`registro_correos.jsonl`); nunca modifica el buzón. Requiere `pywin32` (`uv run --with pywin32`).
+- `POST /companies/{ruc}/comprobantes/import-proveedores` (`app/services/proveedores_paquete.py`):
+  agrupa por carpeta, une PDF y CDR a su factura y completa lo que SIRE ya trae (README).
+- El PDF se muestra SOLO en compras (frontend); ventas sigue sin PDF.
+
+Hallazgos con los correos de octubre (no los revierta sin revisar): el 57 % de los correos trae solo PDF
+(sin XML) y no se puede registrar; solo el 24 % de las compras tiene CDR; 38 facturas eran de otros
+RUC del grupo (20615204791, 20551198058…), que el portal aún no maneja; las series `E001` no empiezan
+por F/B, por eso `parse_comprobante_ubl` usa `InvoiceTypeCode` primero. De 118 compras para TDM, 116 ya
+estaban en SIRE (las 2 restantes son de julio, periodo no consultado).
+
 ### P12 — El bucket guarda un documento por carpeta (2026-10-20)
 
 `app/services/store.py` arma la clave como

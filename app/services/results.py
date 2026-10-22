@@ -264,6 +264,7 @@ class PaqueteItemOut(BaseModel):
     comprobante_id: UUID | None = None
     numero: str | None = None
     pdf: bool = False
+    cdr: bool = False
     code: str | None = None
     mensaje: str | None = None
 
@@ -277,6 +278,8 @@ class PaqueteOut(BaseModel):
     total: int
     importados: int
     con_pdf: int
+    # Solo el importador de proveedores une el CDR; en ventas se carga con `import-cdr`.
+    con_cdr: int = 0
     duplicados: int
     con_error: int
     sin_xml: int

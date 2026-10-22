@@ -128,7 +128,7 @@ def _entradas_validas(archivo_zip: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     return list(entradas.values())
 
 
-def _leer_cdr(contenido: bytes, extension: str) -> tuple[CdrInfo, bytes]:
+def leer_cdr(contenido: bytes, extension: str) -> tuple[CdrInfo, bytes]:
     """Interpreta el CDR y devuelve también el ZIP que se archivará."""
     if extension == "xml":
         cdr = parse_cdr_xml(contenido)
@@ -172,7 +172,7 @@ async def _procesar(
         return _falla(item, "ya_tiene_cdr", "El comprobante ya tiene un CDR archivado")
 
     try:
-        cdr, zip_bytes = _leer_cdr(archivo_zip.read(info.filename), coincidencia["ext"].lower())
+        cdr, zip_bytes = leer_cdr(archivo_zip.read(info.filename), coincidencia["ext"].lower())
     except AppError as exc:
         return _falla(item, exc.code, redact(exc.message))
 
@@ -207,4 +207,4 @@ def _falla(item: CdrItemOut, codigo: str, mensaje: str) -> CdrItemOut:
     return item
 
 
-__all__ = ["importar_cdrs"]
+__all__ = ["importar_cdrs", "leer_cdr"]

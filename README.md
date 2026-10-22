@@ -426,6 +426,27 @@ curl -s "http://127.0.0.1:8000/api/v1/comprobantes/$ID/envios?limit=20" \
 # {"items":[{"id":1,"tipo_operacion":"consulta_cdr","exito":true,"codigo":"0",...}],"total":1}
 ```
 
+### `POST /api/v1/companies/{ruc}/comprobantes/import-proveedores`
+
+Registra **compras** desde un ZIP organizado por carpetas (`AAAA/MM/RUC/SERIE-NÚMERO/` o `RUC/SERIE-NÚMERO/`,
+una por compra) con su XML, sus PDF y su CDR en XML. Es la vía para las facturas que llegaron por correo y
+SIRE no refleja (o refleja sin XML). Reglas:
+
+- Con UN comprobante en la carpeta, todos los PDF y el CDR de esa carpeta son suyos; con varios (ZIP plano)
+  el PDF se une por el nombre o por la serie-número que lleve, y el CDR por su `ReferenceID`.
+- El XML se importa con `origen=recibido` (el adquirente debe ser la empresa) y completa la compra de SIRE
+  si ya existe, aunque el portal corra en beta. Un XML repetido no es error: sigue sirviendo para añadir el
+  PDF o el CDR que falte (sin duplicar lo ya archivado).
+- Las guías de remisión y los XML no reconocidos se ignoran y se informan (`guia`, `xml_no_reconocido`).
+- Solo `admin`/`emisor`. Tope: 50 MB y 400 archivos por ZIP.
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/v1/companies/$RUC/comprobantes/import-proveedores" \n  -H "Authorization: Bearer $TOKEN" -F "paquete=@lote-001.zip"
+```
+
+El PDF solo se ofrece en la sección de compras del portal. Las series `E001` (factura electrónica emitida
+desde SOL) se reconocen por el `InvoiceTypeCode` del XML, no por la letra de la serie.
+
 ### `POST /api/v1/companies/{ruc}/comprobantes/import-cdr`
 
 Carga masiva de **CDR** (constancias de recepción) desde un ZIP. Es la vía para los

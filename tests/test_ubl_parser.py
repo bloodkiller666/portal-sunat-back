@@ -67,3 +67,28 @@ def test_serie_desconocida_no_define_tipo() -> None:
     xml = _leer("factura.xml").replace(b"F001-00000001", b"X001-00000001")
     with pytest.raises(InvalidDocumentError, match="tipo de comprobante"):
         parse_comprobante_ubl(xml)
+
+
+def test_una_serie_e001_se_toma_del_codigo_de_tipo_del_xml() -> None:
+    # Factura electrónica emitida desde SOL: la serie empieza por E, pero el XML dice que es 01.
+    xml = (
+        _leer("factura.xml")
+        .replace(b"F001-00000001", b"E001-00000010")
+        .replace(
+            b"<cbc:ID>E001-00000010</cbc:ID>",
+            b"<cbc:ID>E001-00000010</cbc:ID><cbc:InvoiceTypeCode>01</cbc:InvoiceTypeCode>",
+        )
+    )
+
+    dato = parse_comprobante_ubl(xml)
+
+    assert (dato.tipo_documento, dato.serie, dato.correlativo) == ("01", "E001", 10)
+
+
+def test_un_codigo_de_tipo_no_reconocido_vuelve_a_la_serie() -> None:
+    xml = _leer("factura.xml").replace(
+        b"<cbc:ID>F001-00000001</cbc:ID>",
+        b"<cbc:ID>F001-00000001</cbc:ID><cbc:InvoiceTypeCode>99</cbc:InvoiceTypeCode>",
+    )
+
+    assert parse_comprobante_ubl(xml).tipo_documento == "01"

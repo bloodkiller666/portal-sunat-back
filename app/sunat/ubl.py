@@ -27,6 +27,7 @@ _TIPOS_POR_RAIZ = {
 }
 
 _PREFIJO_TIPO = {"F": "01", "B": "03"}
+_TIPOS_FACTURA = frozenset({"01", "03"})
 
 _NOMBRE_ARCHIVO_RE = re.compile(r"^([A-Z0-9]{1,4})-([0-9]{1,8})$")
 
@@ -153,7 +154,10 @@ def parse_comprobante_ubl(xml: bytes, *, ruc_esperado: str | None = None) -> Com
 
     tipo_documento = _TIPOS_POR_RAIZ[raiz]
     if tipo_documento is None:
-        tipo_documento = _PREFIJO_TIPO.get(serie[0])
+        # El código del XML manda: hay series que no empiezan por F/B (las `E001` de la factura
+        # electrónica emitida desde SOL) y igual son facturas. La serie solo es el respaldo.
+        codigo = (_texto_en(root, "InvoiceTypeCode") or "").strip()
+        tipo_documento = codigo if codigo in _TIPOS_FACTURA else _PREFIJO_TIPO.get(serie[0])
     if tipo_documento is None:
         raise InvalidDocumentError(
             "No se pudo determinar el tipo de comprobante a partir de la serie",

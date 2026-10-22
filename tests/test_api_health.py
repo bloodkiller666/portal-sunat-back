@@ -37,6 +37,7 @@ def test_docs_y_openapi_disponibles(client: TestClient) -> None:
         "/api/v1/companies/{ruc}/comprobantes/import",
         "/api/v1/companies/{ruc}/comprobantes/refresh",
         "/api/v1/companies/{ruc}/comprobantes/import-paquete",
+        "/api/v1/companies/{ruc}/comprobantes/import-proveedores",
         "/api/v1/companies/{ruc}/comprobantes/import-cdr",
         "/api/v1/companies/{ruc}/comprobantes/import-sap",
         "/api/v1/comprobantes/{comprobante_id}",
