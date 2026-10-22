@@ -380,6 +380,19 @@ RUC del grupo (20615204791, 20551198058…), que el portal aún no maneja; las s
 por F/B, por eso `parse_comprobante_ubl` usa `InvoiceTypeCode` primero. De 118 compras para TDM, 116 ya
 estaban en SIRE (las 2 restantes son de julio, periodo no consultado).
 
+### P16 — Automatización diaria (2026-10-22)
+
+`scripts/automatizar.py` (Tarea programada de Windows con `scripts/registrar_tarea_windows.ps1`: 9:00, 13:00, 17:00 y al
+iniciar sesión): SIRE ventas+compras (mes actual y anterior, `forzar`, una vez al día desde las 9:00 con recuperación si
+la PC estuvo apagada), extractor del correo (`extraer()` devuelve el resumen y anota las carpetas con novedades en
+`_automatizacion/pendientes_importar.json`), importación sin pantalla (`importar_pendientes`, una transacción por carpeta;
+lo que falla queda pendiente) y aviso de Windows solo con novedades o errores. Bitácora en
+`Descargas/FacturasProveedores/_automatizacion/`. Sin `--aplicar` solo simula. Decisiones: el correo se acumula en Outlook
+mientras la PC está apagada (el extractor procesa todo lo no registrado); no hay dos corridas a la vez (lock de 3 h);
+al pasar a un servidor, SIRE e importación se programan allí y el correo debe leerse por Microsoft Graph.
+Proveedores que NO llegan al buzón (hallazgo del 2026-10-22): Petroperú, bancos, comercio exterior (DP World, Maersk, APM),
+Repsol: están en sus portales o en el correo de facturación registrado en cada uno.
+
 ### P12 — El bucket guarda un documento por carpeta (2026-10-20)
 
 `app/services/store.py` arma la clave como

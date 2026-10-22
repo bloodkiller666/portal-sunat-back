@@ -634,6 +634,31 @@ una factura en dólares) y conserva `tipo_cambio` y `monto_pen`. Las ventas en U
 se corrigen con `uv run python -m scripts.corregir_montos_sire --ruc $RUC` (simula; con
 `--aplicar` escribe).
 
+## Automatización diaria (SIRE + correo + importación)
+
+`scripts/automatizar.py` hace sin pulsar botones lo que antes eran tres pasos manuales. La Tarea programada de
+Windows lo ejecuta a las **9:00, 13:00 y 17:00** (y 5 min después de iniciar sesión); cada corrida:
+
+1. **SIRE** (ventas y compras del mes actual y el anterior): una vez al día a partir de las 9:00. Si la PC
+   estaba apagada, la primera corrida posterior lo recupera. Solo lectura hacia SUNAT; con `forzar` solo agrega lo nuevo.
+2. **Correo**: extrae los adjuntos de TODOS los correos que aún no vio (si la PC estuvo apagada se acumulan en
+   Outlook y se bajan en la siguiente corrida).
+3. **Importación**: sube lo extraído (una transacción por compra); lo que falla queda pendiente y se reintenta solo.
+   Una vez por semana reintenta unir los PDF sueltos por su texto.
+4. **Aviso en pantalla** solo si hubo datos nuevos o errores, y **bitácora** de cada corrida.
+
+```powershell
+# Probar sin escribir nada (muestra qué haría)
+uv run --with pywin32 python -m scripts.automatizar --tarea auto
+# Registrar la tarea programada (la ejecuta el usuario; -Probar la lanza una vez, -Quitar la elimina)
+.\scriptsegistrar_tarea_windows.ps1
+```
+
+Registro: `Descargas\FacturasProveedores\_automatizacion\` → `automatizacion.log` (legible),
+`bitacora-AAAA-MM.jsonl` (una línea JSON por corrida), `estado.json`, `pendientes_importar.json`. Los autores de lo
+importado salen de `AUTOMATIZACION_USER_ID` (usuario «Automatización» con rol emisor); sin él se usa el primer administrador.
+Requiere la PC encendida con Outlook clásico; no se ejecutan dos corridas a la vez (`automatizar.lock`).
+
 ## Conectar el frontend
 
 El frontend nunca habla con SUNAT: habla con esta API con un JWT de Supabase.

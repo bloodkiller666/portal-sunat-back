@@ -301,6 +301,35 @@ def trozos_para_lotes(
     return lotes
 
 
+def anotar_pendientes(destino: Path, tocadas: set[str]) -> None:
+    """Suma las carpetas con novedades a la lista de lo que falta importar al portal.
+
+    Las compras (`AAAA/MM/RUC/SERIE-NÚMERO`) se importan completas; las de `_sin_clasificar` se
+    revisan solo para unir sus PDF por el texto. El importador quita de la lista lo que sale bien,
+    así que lo que falle se reintenta solo en la corrida siguiente.
+    """
+    if not tocadas:
+        return
+    ruta = destino / "_automatizacion" / "pendientes_importar.json"
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    actual = json.loads(ruta.read_text(encoding="utf-8")) if ruta.exists() else {}
+    carpetas = set(actual.get("carpetas", []))
+    sueltas = set(actual.get("sin_clasificar", []))
+    for carpeta in tocadas:
+        if carpeta.startswith("_sin_clasificar/"):
+            sueltas.add(carpeta)
+        elif carpeta[:4].isdigit():  # AAAA/MM/RUC/SERIE-NÚMERO de la empresa
+            carpetas.add(carpeta)
+    ruta.write_text(
+        json.dumps(
+            {"carpetas": sorted(carpetas), "sin_clasificar": sorted(sueltas)},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 @dataclass
 class Informe:
     revisados: int = 0
@@ -334,13 +363,21 @@ def guardar_sin_duplicar(carpeta: Path, nombre: str, datos: bytes) -> bool:
     return True
 
 
-def _escribir(destino: Path, plan: PlanCorreo, informe: Informe) -> int:
-    """Escribe el plan en disco. Devuelve cuántos archivos eran nuevos."""
+def _escribir(
+    destino: Path, plan: PlanCorreo, informe: Informe, tocadas: set[str] | None = None
+) -> int:
+    """Escribe el plan en disco. Devuelve cuántos archivos eran nuevos.
+
+    `tocadas` recoge las carpetas (relativas al destino) donde llegó algo nuevo: son las que hay
+    que importar después.
+    """
     nuevos = 0
     for c in plan.colocaciones:
         carpeta, _, nombre = c.ruta.rpartition("/")
         if guardar_sin_duplicar(destino / carpeta, nombre, c.datos):
             nuevos += 1
+            if tocadas is not None:
+                tocadas.add(carpeta)
             informe.bytes_guardados += len(c.datos)
             informe.archivos[extension(nombre) or "(sin extensión)"] += 1
     return nuevos
@@ -357,7 +394,9 @@ def _indice_cargar(ruta: Path) -> dict[tuple[str, int], list[dict[str, Any]]]:
 
 
 def unir_sueltos(
-    destino: Path, indice: dict[tuple[str, int], list[dict[str, Any]]]
+    destino: Path,
+    indice: dict[tuple[str, int], list[dict[str, Any]]],
+    tocadas: set[str] | None = None,
 ) -> Counter[str]:
     """Une lo que llegó en otro correo: CDR por su referencia y PDF por la serie-número del nombre.
 
@@ -391,6 +430,8 @@ def unir_sueltos(
         carpeta.mkdir(parents=True, exist_ok=True)
         shutil.move(str(archivo), str(nombre_libre(carpeta, archivo.name)))
         unidos[tipo] += 1
+        if tocadas is not None:
+            tocadas.add(candidatos[0]["carpeta"])
     return unidos
 
 
@@ -490,7 +531,8 @@ def _adjuntos_utiles(
     return resultado
 
 
-def ejecutar(args: argparse.Namespace) -> int:
+def extraer(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
+    """Extrae el correo nuevo. Devuelve `(código de salida, resumen)`; sin resumen si falló."""
     try:
         import win32com.client  # type: ignore[import-not-found]
     except ImportError:
@@ -498,7 +540,7 @@ def ejecutar(args: argparse.Namespace) -> int:
             "Falta pywin32: ejecute con "
             "`uv run --with pywin32 python -m scripts.extraer_correo_outlook`"
         )
-        return 2
+        return 2, None
 
     destino = Path(args.destino).expanduser().resolve()
     desde = date.fromisoformat(args.desde) if args.desde else None
@@ -509,11 +551,11 @@ def ejecutar(args: argparse.Namespace) -> int:
     buzones = [b for b in espacio.Folders if args.buzon.lower() in str(b.Name).lower()]
     if len(buzones) != 1:
         print(f"Se esperaba 1 buzón con «{args.buzon}» y hay {len(buzones)}.")
-        return 2
+        return 2, None
     carpetas = _carpetas(buzones[0], nombres)
     if not carpetas:
         print(f"No se encontró ninguna de estas carpetas: {sorted(nombres)}")
-        return 2
+        return 2, None
 
     if not args.simular:
         destino.mkdir(parents=True, exist_ok=True)
@@ -524,6 +566,7 @@ def ejecutar(args: argparse.Namespace) -> int:
     informe = Informe()
     vistos_empresa: set[str] = set()
     vistos_otras: set[str] = set()
+    tocadas: set[str] = set()
     print(
         f"Buzón: {buzones[0].Name} | destino: {destino} | "
         f"{'SIMULACIÓN' if args.simular else 'guardando'}"
@@ -572,7 +615,7 @@ def ejecutar(args: argparse.Namespace) -> int:
                 informe.sin_clasificar.update(motivo for _, motivo in plan.sin_clasificar)
                 if args.simular:
                     continue
-                nuevos = _escribir(destino, plan, informe)
+                nuevos = _escribir(destino, plan, informe, tocadas)
                 informe.ya_existian += len(plan.colocaciones) - nuevos
                 _registrar(
                     destino,
@@ -593,7 +636,8 @@ def ejecutar(args: argparse.Namespace) -> int:
     informe.otras_empresas = len(vistos_otras)
     paquetes: list[Path] = []
     if not args.simular:
-        informe.unidos_despues.update(unir_sueltos(destino, indice))
+        informe.unidos_despues.update(unir_sueltos(destino, indice, tocadas))
+        anotar_pendientes(destino, tocadas)
         temporal = destino / "_temporal"
         if temporal.is_dir():
             temporal.rmdir()  # queda vacía: Outlook solo guarda adjuntos a disco
@@ -623,7 +667,11 @@ def ejecutar(args: argparse.Namespace) -> int:
         (destino / "informe.json").write_text(
             json.dumps(resumen_final, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-    return 0
+    return 0, resumen_final
+
+
+def ejecutar(args: argparse.Namespace) -> int:
+    return extraer(args)[0]
 
 
 def _registrar(
