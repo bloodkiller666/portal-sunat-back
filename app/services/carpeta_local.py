@@ -33,6 +33,19 @@ def carpeta_base(settings: Settings) -> Path:
     return (settings.local_descargas_dir or Path.home() / "Downloads").resolve()
 
 
+def carpetas_base(settings: Settings) -> list[Path]:
+    """Dónde buscar: lo que guarda el navegador y lo que extrae el correo (facturas de proveedores).
+
+    El extractor escribe en su propia carpeta; sin buscar ahí, el botón diría que no existe una
+    compra que sí está en la PC.
+    """
+    proveedores = (
+        settings.local_proveedores_dir or Path.home() / "Downloads" / "FacturasProveedores"
+    ).resolve()
+    base = carpeta_base(settings)
+    return [base] if proveedores == base else [base, proveedores]
+
+
 def _traer_al_frente(titulo: str) -> None:  # pragma: no cover - solo Windows, con ventanas reales
     """Restaura y enfoca la ventana del Explorador cuyo título es `titulo`.
 
@@ -77,14 +90,19 @@ def abrir_carpeta(*, settings: Settings, partes: list[str]) -> str:
             "(LOCAL_ABRIR_CARPETA=true en su .env).",
             details={"motivo": "deshabilitado"},
         )
-    base = carpeta_base(settings)
-    ruta = base.joinpath(*(_limpio(parte, "sin-dato") for parte in partes)).resolve()
-    if not ruta.is_relative_to(base):  # defensa en profundidad: los nombres ya están limpios
-        raise NotFoundError("La carpeta del comprobante no es válida")
-    if not ruta.is_dir():
+    limpias = [_limpio(parte, "sin-dato") for parte in partes]
+    ruta: Path | None = None
+    for base in carpetas_base(settings):
+        candidata = base.joinpath(*limpias).resolve()
+        if not candidata.is_relative_to(base):  # defensa en profundidad: ya están limpios
+            raise NotFoundError("La carpeta del comprobante no es válida")
+        if candidata.is_dir():
+            ruta = candidata
+            break
+    if ruta is None:
         raise NotFoundError(
             "Esa carpeta aún no existe en la PC: usa «Guardar en mi PC» primero.",
-            details={"ruta": str(ruta)},
+            details={"ruta": str(carpeta_base(settings).joinpath(*limpias))},
         )
     _abrir_en_explorador(ruta)
     logger.info("Carpeta local abierta: %s", ruta)

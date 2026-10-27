@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     # carpeta» del portal abrir `Descargas/AAAA/MM/SERIE-NÚMERO/RUC` en el Explorador.
     local_abrir_carpeta: bool = False
     local_descargas_dir: Path | None = None
+    # Donde `scripts/extraer_correo_outlook.py` deja las facturas de proveedores (mismo esquema
+    # AAAA/MM/RUC/SERIE-NÚMERO); por defecto `~/Downloads/FacturasProveedores`.
+    local_proveedores_dir: Path | None = None
 
     # ---------------- Supabase ----------------
     supabase_url: str | None = None

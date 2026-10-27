@@ -69,6 +69,25 @@ def test_si_la_carpeta_no_existe_devuelve_404_y_no_abre_nada(
     assert abiertas == []
 
 
+def test_abre_la_carpeta_de_proveedores_si_no_esta_en_la_base(
+    client: TestClient,
+    auth: dict[str, str],
+    settings: Settings,
+    tmp_path: Path,
+    abiertas: list[Path],
+) -> None:
+    settings.local_abrir_carpeta = True
+    settings.local_descargas_dir = tmp_path / "SIRE"
+    settings.local_proveedores_dir = tmp_path / "FacturasProveedores"
+    destino = settings.local_proveedores_dir.joinpath(*PARTES)
+    destino.mkdir(parents=True)
+
+    r = client.post(URL, headers=auth, json={"partes": PARTES})
+
+    assert r.status_code == 200
+    assert abiertas == [destino.resolve()]
+
+
 def test_no_puede_salir_de_la_carpeta_base(
     client: TestClient,
     auth: dict[str, str],
