@@ -1,4 +1,6 @@
-"""Importación de compras desde un ZIP por carpetas: XML + PDF + CDR de cada proveedor."""
+"""Importación de compras desde un ZIP por carpetas: XML + PDF de cada proveedor.
+
+El CDR ya no se guarda: si llega, se ignora y se informa."""
 
 from __future__ import annotations
 
@@ -69,8 +71,8 @@ def test_con_un_solo_comprobante_la_carpeta_entera_es_suya() -> None:
 
     (asignacion,) = agrupacion.asignaciones
     assert [p.nombre for p in asignacion.pdfs] == ["documento-1.pdf", "otro.pdf"]
-    assert asignacion.cdr is not None and asignacion.cdr.nombre == "R-cdr.xml"
-    assert agrupacion.ignorados == []
+    # El CDR no se guarda: queda como ignorado, con su motivo.
+    assert [(e.nombre, c) for e, c, _ in agrupacion.ignorados] == [("R-cdr.xml", "cdr_ignorado")]
 
 
 def test_la_guia_y_los_archivos_de_otro_tipo_se_ignoran_y_se_informan() -> None:
@@ -107,8 +109,10 @@ def test_en_un_zip_plano_el_pdf_se_une_por_su_nombre_o_por_la_serie_numero() -> 
     por_xml = {a.xml.nombre: a for a in agrupacion.asignaciones}
     assert [p.nombre for p in por_xml["a.xml"].pdfs] == ["a.pdf"]
     assert [p.nombre for p in por_xml["b.xml"].pdfs] == ["Factura F010-457.pdf"]
-    assert por_xml["b.xml"].cdr is not None and por_xml["a.xml"].cdr is None
-    assert [(e.nombre, c) for e, c, _ in agrupacion.ignorados] == [("suelto.pdf", "sin_xml")]
+    assert sorted((e.nombre, c) for e, c, _ in agrupacion.ignorados) == [
+        ("R-1.xml", "cdr_ignorado"),
+        ("suelto.pdf", "sin_xml"),
+    ]
 
 
 def test_dos_carpetas_con_el_mismo_nombre_de_pdf_no_se_pisan() -> None:
@@ -128,7 +132,7 @@ def test_dos_carpetas_con_el_mismo_nombre_de_pdf_no_se_pisan() -> None:
 # --------------------------------------------------------------------------- #
 # Endpoint
 # --------------------------------------------------------------------------- #
-def test_registra_la_compra_con_su_pdf_y_su_cdr(
+def test_registra_la_compra_con_su_pdf_y_no_guarda_el_cdr(
     cliente_r2: TestClient, uow: FakeUnitOfWork
 ) -> None:
     paquete = _zip(
@@ -139,12 +143,15 @@ def test_registra_la_compra_con_su_pdf_y_su_cdr(
 
     cuerpo = _subir(cliente_r2, {"Authorization": f"Bearer {crear_token()}"}, paquete).json()
 
-    assert (cuerpo["importados"], cuerpo["con_pdf"], cuerpo["con_cdr"]) == (1, 1, 1)
+    assert (cuerpo["importados"], cuerpo["con_pdf"], cuerpo["con_error"]) == (1, 1, 0)
+    assert cuerpo["con_cdr"] == 0  # el CDR de una compra no se guarda ni se cuenta
     (comprobante,) = uow.comprobantes.comprobantes.values()
     assert comprobante.origen is OrigenComprobante.recibido
     assert comprobante.ruc_emisor == "20999999999"
-    assert comprobante.cdr_codigo == "0"
-    assert {a.tipo.value for a in uow.archivos.archivos} == {"xml", "pdf", "cdr"}
+    assert comprobante.cdr_codigo is None  # un CDR recibido no toca el estado ni el código
+    assert {a.tipo.value for a in uow.archivos.archivos} == {"xml", "pdf"}
+    (cdr,) = [i for i in cuerpo["items"] if i["archivo"].startswith("R-")]
+    assert (cdr["ok"], cdr["code"], cdr["situacion"]) == (False, "cdr_ignorado", "omitido")
 
 
 def test_repetir_el_paquete_no_duplica_y_completa_lo_que_falte(
@@ -169,10 +176,10 @@ def test_repetir_el_paquete_no_duplica_y_completa_lo_que_falte(
     ).json()
 
     assert len(uow.comprobantes.comprobantes) == 1
-    assert (segunda["duplicados"], segunda["con_pdf"], segunda["con_cdr"]) == (1, 1, 1)
+    assert (segunda["duplicados"], segunda["con_pdf"], segunda["con_error"]) == (1, 1, 0)
     assert tercera["duplicados"] == 1
     assert sum(1 for a in uow.archivos.archivos if a.tipo.value == "pdf") == 1  # no se repite
-    assert sum(1 for a in uow.archivos.archivos if a.tipo.value == "cdr") == 1
+    assert not any(a.tipo.value == "cdr" for a in uow.archivos.archivos)
 
 
 def test_una_compra_de_sire_se_completa_con_el_xml_aunque_el_portal_corra_en_beta(
@@ -234,13 +241,18 @@ def test_un_lector_no_puede_importar(client: TestClient, auth_lector: dict[str, 
     assert _subir(client, auth_lector, _zip((f"{CARPETA}/f.xml", FACTURA))).status_code == 403
 
 
-def test_el_estado_no_se_degrada_con_el_cdr(cliente_r2: TestClient, uow: FakeUnitOfWork) -> None:
-    paquete = _zip((f"{CARPETA}/f.xml", FACTURA), (f"{CARPETA}/cdr.xml", _cdr(codigo="0")))
+def test_un_cdr_rechazado_no_cambia_el_estado_de_la_compra(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    """El CDR se ignora: ni siquiera uno de rechazo mueve el estado que trae SIRE."""
+    _compra_de_sire(uow)
+    paquete = _zip((f"{CARPETA}/f.xml", FACTURA), (f"{CARPETA}/cdr.xml", _cdr(codigo="2335")))
 
-    _subir(cliente_r2, {"Authorization": f"Bearer {crear_token()}"}, paquete)
+    cuerpo = _subir(cliente_r2, _token(), paquete).json()
 
     (comprobante,) = uow.comprobantes.comprobantes.values()
     assert comprobante.estado is EstadoComprobante.aprobado
+    assert cuerpo["con_error"] == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -321,13 +333,14 @@ def test_cada_archivo_trae_su_tipo_y_la_situacion_de_la_compra(
     assert [(i["tipo"], i["situacion"]) for i in nueva["items"]] == [
         ("xml", "nueva"),
         ("pdf", "guardado"),
-        ("cdr", "guardado"),
+        ("xml", "omitido"),  # el CDR llega como .xml, pero se ignora
     ]
+    assert nueva["items"][2]["code"] == "cdr_ignorado"
     assert (nueva["nuevas"], nueva["completadas"], nueva["importados"]) == (1, 0, 1)
     assert [(i["tipo"], i["situacion"]) for i in repetida["items"]] == [
         ("xml", "repetida"),
         ("pdf", "ya_estaba"),
-        ("cdr", "ya_estaba"),
+        ("xml", "omitido"),
     ]
     assert (repetida["duplicados"], repetida["importados"], repetida["con_error"]) == (1, 0, 0)
 
@@ -355,7 +368,7 @@ def test_el_endpoint_por_grupos_importa_una_compra_con_sus_archivos(
     ).json()
 
     assert (cuerpo["total"], cuerpo["importados"]) == (3, 1)
-    assert (cuerpo["con_pdf"], cuerpo["con_cdr"]) == (1, 1)
+    assert (cuerpo["con_pdf"], cuerpo["con_error"]) == (1, 0)
     assert {i["archivo"] for i in cuerpo["items"]} == {
         "factura.xml",
         "representacion.pdf",
@@ -459,3 +472,181 @@ def test_una_compra_con_xml_ya_registrado_no_se_vuelve_a_insertar(
         ("xml", "repetida"),
         ("pdf", "ya_estaba"),
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Lo que SIRE manda no siempre cuadra con lo que llega por correo
+# --------------------------------------------------------------------------- #
+def _fila_sire(uow: FakeUnitOfWork, **campos):
+    """Una compra que SIRE ya trajo (sin XML), con la clave que se indique."""
+    empresa = uow.companies.empresas[0]
+    valores = {
+        "ruc": "20999999999",
+        "serie": "F010",
+        "correlativo": 456,
+        "origen": OrigenComprobante.recibido,
+        "ambiente": SunatAmbiente.prod,
+        "estado": EstadoComprobante.aprobado,
+    }
+    valores.update(campos)
+    fila = construir_comprobante(empresa.id, **valores).model_copy(update={"fuente": "sire"})
+    uow.comprobantes.comprobantes[fila.id] = fila
+    return fila
+
+
+def test_si_sire_trae_otro_numero_el_xml_se_registra_como_nueva_y_no_toca_la_de_sire(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    de_sire = _fila_sire(uow, correlativo=457)  # SIRE dice 457; el XML del correo es el 456
+
+    cuerpo = _grupo(cliente_r2, _token(), ("f.xml", FACTURA), ("f.pdf", PDF)).json()
+
+    assert cuerpo["items"][0]["situacion"] == "nueva"
+    assert (cuerpo["nuevas"], cuerpo["completadas"]) == (1, 0)
+    assert len(uow.comprobantes.comprobantes) == 2
+    assert uow.comprobantes.comprobantes[de_sire.id].fuente == "sire"  # sigue sin XML
+
+
+def test_si_sire_trae_otra_serie_el_xml_no_se_une_a_esa_fila(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    _fila_sire(uow, serie="F011")
+
+    cuerpo = _grupo(cliente_r2, _token(), ("f.xml", FACTURA)).json()
+
+    assert (cuerpo["nuevas"], cuerpo["completadas"]) == (1, 0)
+
+
+def test_la_misma_serie_numero_de_otro_proveedor_no_se_confunde(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    """Dos proveedores pueden emitir F010-456: la llave incluye el RUC del emisor."""
+    ajena = _fila_sire(uow, ruc="20111111111")
+
+    cuerpo = _grupo(cliente_r2, _token(), ("f.xml", FACTURA)).json()
+
+    assert (cuerpo["nuevas"], cuerpo["completadas"]) == (1, 0)
+    assert uow.comprobantes.comprobantes[ajena.id].ruc_emisor == "20111111111"
+    assert len(uow.comprobantes.comprobantes) == 2
+
+
+def test_la_misma_serie_numero_con_otro_tipo_de_documento_no_se_confunde(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    _fila_sire(uow, tipo_documento="07")  # una nota de crédito con la misma serie-número
+
+    cuerpo = _grupo(cliente_r2, _token(), ("f.xml", FACTURA)).json()
+
+    assert (cuerpo["nuevas"], cuerpo["completadas"]) == (1, 0)
+
+
+def test_si_sire_coincide_exacto_el_xml_la_completa(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    de_sire = _fila_sire(uow)
+
+    cuerpo = _grupo(cliente_r2, _token(), ("f.xml", FACTURA)).json()
+
+    assert (cuerpo["nuevas"], cuerpo["completadas"]) == (0, 1)
+    assert len(uow.comprobantes.comprobantes) == 1
+    assert uow.comprobantes.comprobantes[de_sire.id].fuente == "xml"
+
+
+def test_una_foto_de_la_factura_no_es_un_error_se_informa_y_el_xml_se_importa(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    foto = b"\xff\xd8\xff\xe0 foto de la factura"
+
+    cuerpo = _grupo(
+        cliente_r2, _token(), ("f.xml", FACTURA), ("IMG_0001.jpg", foto), ("guia.png", b"\x89PNG")
+    ).json()
+
+    assert (cuerpo["importados"], cuerpo["con_error"]) == (1, 0)
+    omitidos = [i for i in cuerpo["items"] if i["situacion"] == "omitido"]
+    assert {(i["archivo"], i["code"]) for i in omitidos} == {
+        ("IMG_0001.jpg", "tipo_no_soportado"),
+        ("guia.png", "tipo_no_soportado"),
+    }
+    assert not any(a.nombre.endswith((".jpg", ".png")) for a in uow.archivos.archivos)
+
+
+def test_solo_una_foto_sin_xml_no_crea_nada_ni_da_error(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    cuerpo = _grupo(cliente_r2, _token(), ("IMG_0001.jpg", b"\xff\xd8\xff")).json()
+
+    assert (cuerpo["importados"], cuerpo["con_error"]) == (0, 0)
+    assert cuerpo["items"][0]["code"] == "tipo_no_soportado"
+    assert uow.comprobantes.comprobantes == {}
+
+
+def test_un_pdf_escaneado_sin_texto_no_se_une_a_nada_y_no_es_error(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    _fila_sire(uow)
+    escaneado = b"%PDF-1.4\n1 0 obj<</Type/XObject/Subtype/Image>>endobj\n%%EOF\n"
+
+    cuerpo = _grupo(cliente_r2, _token(), ("escaneo.pdf", escaneado)).json()
+
+    (item,) = cuerpo["items"]
+    assert (item["ok"], item["code"], item["situacion"]) == (False, "sin_xml", "omitido")
+    assert cuerpo["con_error"] == 0
+    assert uow.archivos.archivos == []
+
+
+def test_un_pdf_con_otra_serie_numero_que_la_de_sire_no_se_une(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    _fila_sire(uow)  # F010-456
+    pdf = _pdf_con_texto("PROVEEDOR SAC RUC 20999999999 FACTURA ELECTRONICA F010-00000999 total 1")
+
+    cuerpo = _grupo(cliente_r2, _token(), ("f.pdf", pdf)).json()
+
+    assert cuerpo["items"][0]["code"] == "sin_xml"
+    assert uow.archivos.archivos == []
+
+
+def test_una_factura_con_sus_guias_de_remision_en_xml_y_pdf_importa_la_factura_sola(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    cuerpo = _grupo(
+        cliente_r2, _token(), ("f.xml", FACTURA), ("guia.xml", GUIA), ("guia.pdf", PDF)
+    ).json()
+
+    assert (cuerpo["importados"], cuerpo["con_error"]) == (1, 0)
+    codigos = {i["archivo"]: i["code"] for i in cuerpo["items"]}
+    assert codigos["guia.xml"] == "guia"
+    assert len(uow.comprobantes.comprobantes) == 1
+
+
+def test_un_zip_con_una_compra_buena_y_otra_con_xml_roto_importa_la_buena(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    paquete = _zip(
+        (f"{CARPETA}/f.xml", FACTURA),
+        ("20111111111/F001-00000001/roto.xml", b"<Invoice><sin cerrar"),
+        ("20111111111/F001-00000001/roto.pdf", PDF),
+    )
+
+    cuerpo = _subir(cliente_r2, _token(), paquete).json()
+
+    assert cuerpo["importados"] == 1
+    assert len(uow.comprobantes.comprobantes) == 1
+    roto = [i for i in cuerpo["items"] if i["archivo"] == "roto.xml"]
+    assert roto[0]["code"] == "xml_no_reconocido"
+
+
+def test_el_correo_txt_que_acompana_a_la_carpeta_se_ignora_sin_dar_error(
+    cliente_r2: TestClient, uow: FakeUnitOfWork
+) -> None:
+    paquete = _zip(
+        (f"{CARPETA}/f.xml", FACTURA),
+        (f"{CARPETA}/f.pdf", PDF),
+        (f"{CARPETA}/correo.txt", b"Asunto: Factura F010-456"),
+    )
+
+    cuerpo = _subir(cliente_r2, _token(), paquete).json()
+
+    assert (cuerpo["importados"], cuerpo["con_pdf"], cuerpo["con_error"]) == (1, 1, 0)
+    texto = [i for i in cuerpo["items"] if i["archivo"] == "correo.txt"]
+    assert texto[0]["code"] == "tipo_no_soportado"

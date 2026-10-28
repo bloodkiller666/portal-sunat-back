@@ -47,6 +47,7 @@ def test_existen_las_migraciones_en_orden() -> None:
         "0011_tipo_cambio_monto_pen.sql",
         "0012_emisor_tipo_doc.sql",
         "0013_automatizacion_logs.sql",
+        "0014_comprobante_correo.sql",
     ]
 
 

@@ -51,7 +51,7 @@ _COLUMNAS_COMPROBANTE = """
     razon_social_receptor, tipo_documento, serie, correlativo, numero, nombre_archivo,
     fecha_emision, fecha_vencimiento, forma_pago, moneda, monto_total, tipo_cambio, monto_pen,
     emisor_tipo_doc, receptor_tipo_doc, estado, sunat_ambiente,
-    n_sap, orden_compra,
+    n_sap, orden_compra, correo_asunto, correo_remitente, correo_recibido_at,
     cdr_codigo, cdr_descripcion, cdr_notas, cdr_fecha, ultimo_envio_at, anulado_at,
     motivo_anulacion, created_at, updated_at, created_by, fuente
 """
@@ -107,6 +107,7 @@ def _donde(company_id: UUID, filtros: FiltrosListado) -> tuple[str, list[object]
             brazos += [
                 f"c.razon_social_emisor ilike ${n} escape '\\'",
                 f"c.ruc_emisor ilike ${n} escape '\\'",
+                f"c.correo_asunto ilike ${n} escape '\\'",
             ]
         condiciones.append("(" + " or ".join(brazos) + ")")
     # Cobertura de respaldo: columnas que mantiene el trigger de `archivos` (migración 0008).
@@ -465,6 +466,36 @@ class PostgresComprobantesRepository:
 
             raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
         return Comprobante.model_validate(data)
+
+    async def registrar_correo(
+        self,
+        company_id: UUID,
+        *,
+        ruc_emisor: str,
+        serie: str,
+        correlativo: int,
+        asunto: str,
+        remitente: str | None,
+        recibido_at: datetime,
+    ) -> int:
+        """Anota de qué correo llegó una compra. Si ya tenía otro, gana el que llegó primero."""
+        resultado = await self._connection.execute(
+            """
+            update public.comprobantes
+               set correo_asunto = $5, correo_remitente = $6, correo_recibido_at = $7
+             where company_id = $1 and origen = 'recibido'
+               and ruc_emisor = $2 and serie = $3 and correlativo = $4
+               and (correo_recibido_at is null or $7 < correo_recibido_at)
+            """,
+            company_id,
+            ruc_emisor,
+            serie,
+            correlativo,
+            asunto,
+            remitente,
+            recibido_at,
+        )
+        return int(resultado.rsplit(" ", 1)[-1])
 
     async def actualizar_pago(
         self, comprobante_id: UUID, *, fecha_vencimiento: date | None, forma_pago: str | None

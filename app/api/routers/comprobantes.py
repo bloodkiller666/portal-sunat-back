@@ -276,7 +276,7 @@ async def post_importar_paquete(
 @router.post(
     "/companies/{ruc}/comprobantes/import-proveedores",
     response_model=PaqueteOut,
-    summary="Importa compras desde un ZIP por carpetas (XML + PDF + CDR de cada proveedor)",
+    summary="Importa compras desde un ZIP por carpetas (XML + PDF de cada proveedor)",
 )
 async def post_importar_proveedores(
     access: AcessoOperativo,
@@ -287,9 +287,9 @@ async def post_importar_proveedores(
 ) -> PaqueteOut:
     """Registra compras que llegaron por correo y SIRE no refleja (admin/emisor).
 
-    Cada carpeta reúne el XML, los PDF y el CDR de una compra (`RUC/SERIE-NÚMERO/…`); también se
-    acepta un ZIP plano. Si SIRE ya trae la compra, el XML la completa; lo ya registrado no se
-    duplica pero sí recibe el PDF o el CDR que le falte.
+    Cada carpeta reúne el XML y los PDF de una compra (`RUC/SERIE-NÚMERO/…`); también se acepta
+    un ZIP plano. Si SIRE ya trae la compra, el XML la completa; lo ya registrado no se duplica
+    pero sí recibe el PDF que le falte. Un CDR se ignora y se informa: las compras no lo guardan.
     """
     contenido = await leer_con_limite(paquete, TAMANO_MAXIMO_PAQUETE)
     return await importar_paquete_proveedores(
@@ -300,14 +300,14 @@ async def post_importar_proveedores(
 @router.post(
     "/companies/{ruc}/comprobantes/import-proveedores/archivos",
     response_model=PaqueteOut,
-    summary="Importa UNA compra de proveedor (su XML, PDF y CDR) enviada como archivos sueltos",
+    summary="Importa UNA compra de proveedor (su XML y PDF) enviada como archivos sueltos",
 )
 async def post_importar_proveedores_archivos(
     access: AcessoOperativo,
     user: CurrentUserDep,
     uow: UowDep,
     settings: SettingsDep,
-    archivos: Annotated[list[UploadFile], File(description="XML, PDF y CDR de una compra")],
+    archivos: Annotated[list[UploadFile], File(description="XML y PDF de una compra")],
 ) -> PaqueteOut:
     """Igual que `import-proveedores`, pero con los archivos de una sola compra (admin/emisor).
 

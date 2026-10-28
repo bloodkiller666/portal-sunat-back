@@ -3,6 +3,7 @@
 #   .\scripts\registrar_tarea_windows.ps1                 # crea la tarea: 09:00, 13:00 y 17:00
 #   .\scripts\registrar_tarea_windows.ps1 -Horas 08:30,12:00,16:30
 #   .\scripts\registrar_tarea_windows.ps1 -Probar          # la ejecuta ahora mismo, una vez
+#   .\scripts\registrar_tarea_windows.ps1 -Destino C:\Users\yo\Downloads\FacturasProovedores
 #   .\scripts\registrar_tarea_windows.ps1 -Quitar          # la elimina
 #
 # La tarea ejecuta `scripts.automatizar --tarea auto --aplicar`: SIRE una vez al dia (a partir de
@@ -11,11 +12,13 @@
 # en cuanto la PC vuelve a estar disponible: si estuvo apagada, el correo se acumula en Outlook y
 # la proxima corrida lo baja. Corre con TU usuario y sesion iniciada (Outlook clasico lo necesita).
 #
-# El resultado queda en: Descargas\FacturasProveedores\_automatizacion\automatizacion.log
+# El resultado queda en: <Destino>\_automatizacion\automatizacion.log
+# (por defecto Descargas\FacturasProveedores; con -Destino, la carpeta que indiques).
 # Variable opcional: AUTOMATIZACION_USER_ID (usuario "Automatizacion" de Supabase) en el .env.
 
 param(
     [string[]]$Horas = @("09:00", "13:00", "17:00"),
+    [string]$Destino = (Join-Path $env:USERPROFILE "Downloads\FacturasProveedores"),
     [switch]$Quitar,
     [switch]$Probar
 )
@@ -31,7 +34,7 @@ if ($Quitar) {
 
 $repo = Split-Path -Parent $PSScriptRoot
 $uv = (Get-Command uv -ErrorAction Stop).Source
-$argumentos = "run --with pywin32 python -m scripts.automatizar --tarea auto --aplicar"
+$argumentos = "run --with pywin32 python -m scripts.automatizar --tarea auto --aplicar --destino `"$Destino`""
 
 $accion = New-ScheduledTaskAction -Execute $uv -Argument $argumentos -WorkingDirectory $repo
 $disparadores = @()
@@ -54,7 +57,8 @@ Register-ScheduledTask -TaskName $nombre -Action $accion -Trigger $disparadores 
 
 Write-Host "Tarea registrada: $nombre"
 Write-Host "Horarios: $($Horas -join ', ') y 5 minutos despues de iniciar sesion"
-Write-Host "Registro: $env:USERPROFILE\Downloads\FacturasProveedores\_automatizacion\automatizacion.log"
+Write-Host "Facturas en: $Destino"
+Write-Host "Registro: $Destino\_automatizacion\automatizacion.log"
 
 if ($Probar) {
     Start-ScheduledTask -TaskName $nombre

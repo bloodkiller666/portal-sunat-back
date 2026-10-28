@@ -269,7 +269,7 @@ class InMemoryComprobantesRepository:
                     c.orden_compra or "",
                 ]
                 if f.origen is OrigenComprobante.recibido:
-                    campos += [c.razon_social_emisor or "", c.ruc_emisor]
+                    campos += [c.razon_social_emisor or "", c.ruc_emisor, c.correo_asunto or ""]
                 if not any(f.q.lower() in campo.lower() for campo in campos):
                     continue
             tipos = self._tipos(c)
@@ -468,6 +468,35 @@ class InMemoryComprobantesRepository:
         actualizado = comprobante.model_copy(update={**cambios, "fuente": "xml"})
         self.comprobantes[comprobante_id] = actualizado
         return actualizado
+
+    async def registrar_correo(
+        self,
+        company_id: UUID,
+        *,
+        ruc_emisor: str,
+        serie: str,
+        correlativo: int,
+        asunto: str,
+        remitente: str | None,
+        recibido_at: datetime,
+    ) -> int:
+        cuenta = 0
+        for id_, c in list(self.comprobantes.items()):
+            coincide = (
+                c.company_id == company_id
+                and c.origen is OrigenComprobante.recibido
+                and (c.ruc_emisor, c.serie, c.correlativo) == (ruc_emisor, serie, correlativo)
+            )
+            if coincide and (c.correo_recibido_at is None or recibido_at < c.correo_recibido_at):
+                self.comprobantes[id_] = c.model_copy(
+                    update={
+                        "correo_asunto": asunto,
+                        "correo_remitente": remitente,
+                        "correo_recibido_at": recibido_at,
+                    }
+                )
+                cuenta += 1
+        return cuenta
 
     async def actualizar_pago(
         self, comprobante_id: UUID, *, fecha_vencimiento: date | None, forma_pago: str | None

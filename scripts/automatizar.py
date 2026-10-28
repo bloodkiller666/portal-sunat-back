@@ -8,7 +8,7 @@ ejecuta 3 veces al día. En cada corrida (`--tarea auto`):
    y no duplica nada (con `forzar` solo agrega lo nuevo).
 2. **Correo**: extrae los adjuntos de los correos que aún no vio (todos los pendientes, no solo los
    de hoy: si la PC estuvo apagada, se acumulan y se bajan en la siguiente corrida).
-3. **Importación**: sube al portal lo que el correo trajo (completa lo de SIRE, une PDF y CDR, y
+3. **Importación**: sube al portal lo que el correo trajo (completa lo de SIRE, une el PDF y
    no duplica). Lo que falla queda pendiente y se reintenta en la corrida siguiente.
 4. **Avisos y bitácora**: cada corrida deja una línea en la bitácora; solo hay aviso en pantalla
    cuando se registró algo nuevo o hubo errores.
@@ -46,6 +46,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+from scripts.cargar_correos import leer_registro_correos
 
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
@@ -57,6 +58,7 @@ from app.db.uow import build_uow_factory
 from app.main import crear_cliente_sire
 from app.secrets.factory import build_secrets_provider
 from app.services.companies import resolve_company_access
+from app.services.correo_compras import CorreoDeCompra, clave_de_carpeta, registrar_correos
 from app.services.proveedores_paquete import importar_archivos_proveedores
 from app.services.sire import sincronizar_compras, sincronizar_ventas
 
@@ -262,8 +264,7 @@ INFORMATIVOS = frozenset(
         "conflict",
         "sin_xml",
         "guia",
-        "cdr_sin_comprobante",
-        "cdr_repetido",
+        "cdr_ignorado",
         "xml_no_reconocido",
         "tipo_no_soportado",
         "sin_comprobante",
@@ -293,6 +294,41 @@ async def _importar_grupo(
         )
 
 
+async def _registrar_correos_grupo(
+    uow_factory: Any,
+    usuario: AuthenticatedUser,
+    acceso: CompanyMember,
+    correos: list[CorreoDeCompra],
+) -> int:
+    """Anota el correo de origen de las compras recién importadas (su propia transacción)."""
+    async with uow_factory(usuario.claims_para_rls) as uow:
+        return await registrar_correos(uow=uow, access=acceso, correos=correos)
+
+
+async def _anotar_correo_de_carpeta(
+    uow_factory: Any,
+    usuario: AuthenticatedUser,
+    acceso: CompanyMember,
+    carpeta: str,
+    correos_por_carpeta: dict[tuple[str, str, int], CorreoDeCompra],
+    informe: dict[str, Any],
+    espera: float,
+) -> int:
+    """Anota el correo de UNA carpeta; un fallo se informa pero no frena la importación."""
+    clave = clave_de_carpeta(carpeta)
+    correo = correos_por_carpeta.get(clave) if clave else None
+    if correo is None:
+        return 0
+    try:
+        return await con_reintentos(
+            partial(_registrar_correos_grupo, uow_factory, usuario, acceso, [correo]),
+            espera=espera,
+        )
+    except Exception as exc:
+        informe["errores"].append(f"{carpeta}/correo: {describir_error(exc)}")
+        return 0
+
+
 async def importar_pendientes(
     uow_factory: Any,
     settings: Settings,
@@ -318,12 +354,15 @@ async def importar_pendientes(
         "nuevas": 0,
         "repetidas": 0,
         "pdf_guardados": 0,
-        "cdr_guardados": 0,
         "pdf_sueltos_unidos": 0,
+        "correos_registrados": 0,
         "errores": [],
     }
     if simular:
         return informe
+
+    # De qué correo llegó cada compra (columna «Correo»): se anota al importar su carpeta.
+    correos_por_carpeta = await asyncio.to_thread(leer_registro_correos, destino, set(carpetas))
 
     quedan_carpetas: list[str] = []
     for carpeta in carpetas:
@@ -350,14 +389,15 @@ async def importar_pendientes(
         informe["pdf_guardados"] += sum(
             1 for i in r.items if i.tipo == "pdf" and i.ok and i.situacion == "guardado"
         )
-        informe["cdr_guardados"] += sum(
-            1 for i in r.items if i.tipo == "cdr" and i.ok and i.situacion == "guardado"
-        )
         fallos = [i for i in r.items if not i.ok and i.code not in INFORMATIVOS]
         for i in fallos:
             informe["errores"].append(f"{carpeta}/{i.archivo}: {i.code} {redact(i.mensaje or '')}")
         if fallos:
             quedan_carpetas.append(carpeta)
+        else:
+            informe["correos_registrados"] += await _anotar_correo_de_carpeta(
+                uow_factory, usuario, acceso, carpeta, correos_por_carpeta, informe, espera
+            )
 
     intentados = set(_leer_json(rutas.sueltos_intentados, []))
     for carpeta in sueltas:
@@ -647,7 +687,7 @@ async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[st
             resumen["novedades"]["compras completadas con su XML"] = imp["completadas"]
             resumen["novedades"]["compras nuevas (no estaban en SIRE)"] = imp["nuevas"]
             resumen["novedades"]["PDF unidos"] = imp["pdf_guardados"] + imp["pdf_sueltos_unidos"]
-            resumen["novedades"]["CDR guardados"] = imp["cdr_guardados"]
+            resumen["novedades"]["compras con su correo anotado"] = imp["correos_registrados"]
             if toca_sueltos:
                 estado["ultimo_reintento_sueltos"] = ahora.isoformat(timespec="seconds")
         if args.aplicar:

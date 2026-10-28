@@ -2,22 +2,31 @@
 
 SOLO LECTURA sobre el buzón: no borra, mueve ni marca ningún correo. Cada comprobante queda en
 
-    {destino}/AAAA/MM/RUC/SERIE-NÚMERO/        XML, PDF y CDR de ESA factura
+    {destino}/AAAA/MM/RUC/SERIE-NÚMERO/        XML y PDF de ESA factura + `correo.txt`
         (AAAA/MM = fecha de emisión; RUC = el del proveedor; el nombre es serie-número de 8 dígitos)
 
 y lo que no se puede ubicar se aparta para revisarlo a mano:
 
     {destino}/_otras_empresas/{RUC adquirente}/AAAA/MM/RUC/SERIE-NÚMERO/    facturas a otro RUC
-    {destino}/_sin_clasificar/AAAA-MM/{correo}/        PDF sin XML, CDR sueltos…
+    {destino}/_sin_clasificar/AAAA-MM/{correo}/        PDF sin XML, fotos de documentos…
     {destino}/_correos/AAAA-MM/{correo}.json        de qué correo salió cada archivo (auditoría)
     {destino}/_paquetes_importar/{fecha}/lote-NNN.zip    ZIP para el botón «Importar» (Compras)
     {destino}/registro_correos.jsonl, indice_comprobantes.jsonl, informe.json
 
 La carpeta de cada compra sale del XML (proveedor, serie y número, fecha de emisión), no del
 correo. Un PDF sin XML no dice a qué documento pertenece, por eso va a `_sin_clasificar`. Las
-reglas para unir PDF y CDR a su factura son las mismas del importador del backend
-(`app.services.proveedores_paquete`). Al final de cada ejecución se intenta unir los CDR (y los
-PDF con serie-número en el nombre) que llegaron en otro correo.
+reglas para unir el PDF a su factura son las mismas del importador del backend
+(`app.services.proveedores_paquete`). Al final de cada ejecución se intenta unir los PDF con
+serie-número en el nombre que llegaron en otro correo.
+
+* **CDR**: el portal ya no los guarda. Si llegan en el correo se descartan y se cuentan en el
+  informe (`omitidos.cdr_ignorado`).
+* **Asunto**: cada carpeta lleva `correo.txt` con el asunto, el remitente, la fecha, los adjuntos
+  (con su SHA-256) y el cuerpo del correo del que salió: es el argumento de dónde vino. Si la misma
+  factura llega en dos correos, queda un `correo.txt` por cada uno. No se importa al portal.
+* **Fotos de documentos**: una imagen que no es firma ni logo (tamaño, nombre y si está incrustada
+  en el cuerpo) se conserva. Como no se puede leer, va con la factura si el correo trae una sola
+  y, si no, a `_sin_clasificar` (código `imagen`) para revisarla a mano.
 
 Requisitos: Windows, Outlook CLÁSICO abierto con el buzón agregado y `pywin32`:
 
@@ -52,8 +61,6 @@ from app.services.proveedores_paquete import (
     Asignacion,
     Entrada,
     agrupar,
-    raiz_xml,
-    referencia_cdr,
     serie_numero_de,
 )
 from app.sunat.ubl import parse_comprobante_ubl
@@ -63,7 +70,23 @@ OL_BY_VALUE = 1  # OlAttachmentType.olByValue: archivo real
 GUARDAR = {"xml", "pdf"}  # se guardan tal cual
 ABRIR = {"zip"}  # se abren; el original se conserva
 APARTE = {"rar", "7z", ""}  # se apartan para revisión manual (sin extensión incluida)
-DE_FIRMA = {"png", "jpg", "jpeg", "gif", "bmp", "ico", "emf", "wmf", "svg"}
+IMAGENES = {"png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "heic"}
+DE_FIRMA = {"ico", "emf", "wmf", "svg"}  # nunca son un documento
+# Una imagen más pequeña que esto es casi seguro un logo o el pie de una firma.
+MIN_BYTES_FOTO = 40 * 1024
+# Una imagen incrustada en el cuerpo (cid:) solo cuenta como documento si es grande.
+MIN_BYTES_FOTO_INCRUSTADA = 400 * 1024
+_NOMBRE_DE_FIRMA = re.compile(
+    r"^(image\d{3}|outlook-[\w-]+|logo|firma|signature|banner|facebook|linkedin|twitter|"
+    r"instagram|icon)",
+    re.IGNORECASE,
+)
+_NOMBRE_DE_DOCUMENTO = re.compile(
+    r"factura|boleta|guia|guía|remision|remisión|comprobante|documento|scan|escane|foto|img[_-]",
+    re.IGNORECASE,
+)
+MAX_CUERPO_CORREO = 20_000  # caracteres del cuerpo que se guardan en `correo.txt`
+NOMBRE_CORREO = "correo.txt"
 
 CARPETAS_POR_DEFECTO = "Bandeja de entrada,MEGA GAS,TEMPO TOURS,TRANSPORTES CIMSA"
 RUC_EMPRESA_POR_DEFECTO = "20514831620"
@@ -115,7 +138,7 @@ def nombre_libre(carpeta: Path, nombre: str) -> Path:
 
 
 def leer_zip(contenido: bytes) -> tuple[list[tuple[str, bytes]], list[str]]:
-    """XML y PDF de un ZIP, con topes de tamaño. Devuelve `(archivos, motivos_de_omision)`.
+    """XML, PDF y fotos de un ZIP, con topes de tamaño. Devuelve `(archivos, motivos_de_omision)`.
 
     Solo se usa el nombre base de cada entrada (jamás una ruta del ZIP) y no se abren ZIP
     anidados. Un ZIP ilegible o que supera los topes se informa, no detiene la extracción.
@@ -132,7 +155,8 @@ def leer_zip(contenido: bytes) -> tuple[list[tuple[str, bytes]], list[str]]:
     total = 0
     for info in entradas:
         ext = extension(info.filename)
-        if ext not in GUARDAR:
+        foto = ext in IMAGENES and es_foto_de_documento(info.filename, info.file_size, False)
+        if ext not in GUARDAR and not foto:
             omitidos.append(f"zip_omite_{ext or 'sin_extension'}")
             continue
         with zf.open(info) as flujo:
@@ -158,6 +182,56 @@ class Colocacion:
     origen: str = "adjunto"
 
 
+def es_foto_de_documento(nombre: str, tamano: int, incrustada: bool) -> bool:
+    """¿Esta imagen adjunta puede ser la foto de un documento (y no un logo o una firma)?
+
+    Se prefiere conservar de más: una foto de factura descartada se pierde sin avisar, mientras
+    que un logo de más solo ocupa lugar en `_sin_clasificar`.
+    """
+    if extension(nombre) in DE_FIRMA:
+        return False
+    if incrustada:  # pegada en el cuerpo del correo: casi siempre firma, salvo que sea grande
+        return tamano >= MIN_BYTES_FOTO_INCRUSTADA
+    if _NOMBRE_DE_DOCUMENTO.search(nombre):
+        return tamano >= 5 * 1024
+    if _NOMBRE_DE_FIRMA.search(PurePosixPath(nombre).name):
+        return tamano >= MIN_BYTES_FOTO_INCRUSTADA
+    return tamano >= MIN_BYTES_FOTO
+
+
+@dataclass(frozen=True)
+class MetaCorreo:
+    """Del correo, lo que queda como argumento de dónde salieron los archivos."""
+
+    asunto: str
+    remitente: str
+    para: str
+    recibido: datetime
+    carpeta_outlook: str
+    cuerpo: str = ""
+
+
+def texto_correo(meta: MetaCorreo, archivos: list[tuple[str, int, str]]) -> str:
+    """`correo.txt`: asunto, remitente, fecha, adjuntos (nombre, bytes, SHA-256) y cuerpo."""
+    cuerpo = meta.cuerpo.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(cuerpo) > MAX_CUERPO_CORREO:
+        cuerpo = cuerpo[:MAX_CUERPO_CORREO] + "\n[… cuerpo recortado]"
+    lineas = [
+        f"Asunto:    {meta.asunto or '(sin asunto)'}",
+        f"De:        {meta.remitente or '(desconocido)'}",
+        f"Para:      {meta.para or '(desconocido)'}",
+        f"Recibido:  {meta.recibido:%Y-%m-%d %H:%M:%S}",
+        f"Carpeta:   {meta.carpeta_outlook}",
+        "",
+        "Archivos de este correo:",
+        *[f"  - {nombre} ({tam} bytes, sha256 {huella[:16]}…)" for nombre, tam, huella in archivos],
+        "",
+        "Cuerpo:",
+        cuerpo or "(vacío)",
+    ]
+    return "\n".join(lineas) + "\n"
+
+
 @dataclass
 class ComprobanteColocado:
     serie: str
@@ -172,6 +246,7 @@ class PlanCorreo:
     colocaciones: list[Colocacion] = field(default_factory=list)
     comprobantes: list[ComprobanteColocado] = field(default_factory=list)
     sin_clasificar: list[tuple[str, str]] = field(default_factory=list)  # (nombre, motivo)
+    omitidos: Counter[str] = field(default_factory=Counter)  # p. ej. `cdr_ignorado`
 
 
 def carpeta_de_comprobante(
@@ -196,8 +271,12 @@ def planificar_correo(
     ruc_empresa: str,
     recibido: datetime,
     identificador: str,
+    meta: MetaCorreo | None = None,
 ) -> PlanCorreo:
-    """Decide dónde va cada archivo de UN correo. `archivos` = `(nombre, datos, origen)`."""
+    """Decide dónde va cada archivo de UN correo. `archivos` = `(nombre, datos, origen)`.
+
+    Con `meta`, además deja `correo.txt` (asunto, remitente…) en cada carpeta donde pone algo.
+    """
     plan = PlanCorreo()
     origenes: dict[str, str] = {}
     entradas: list[Entrada] = []
@@ -232,17 +311,46 @@ def planificar_correo(
                 plan.sin_clasificar.append((archivo.nombre, "xml_no_valido"))
 
     for archivo, codigo, _texto in agrupacion.ignorados:
+        if codigo == "cdr_ignorado":
+            plan.omitidos[codigo] += 1  # el portal no guarda CDR
+            continue
         if codigo == "tipo_no_soportado":
-            codigo = "revisar_a_mano"  # RAR, archivos sin extensión…
-        # Con una sola factura en el correo, su guía de remisión va con ella.
-        ruta = destino_unico if codigo == "guia" and destino_unico else None
+            # Una foto de factura o de guía se reconoce por su extensión; el resto (RAR, archivos
+            # sin extensión…) se aparta para revisarlo a mano.
+            codigo = "imagen" if archivo.extension in IMAGENES else "revisar_a_mano"
+        # Con una sola factura en el correo, su guía de remisión o su foto van con ella.
+        ruta = destino_unico if codigo in ("guia", "imagen") and destino_unico else None
         ruta = ruta or _sin_clasificar(recibido, identificador)
         if ruta.startswith("_sin_clasificar"):
             plan.sin_clasificar.append((archivo.nombre, codigo))
         plan.colocaciones.append(
             Colocacion(f"{ruta}/{archivo.nombre}", archivo.contenido, origenes[archivo.nombre])
         )
+    if meta is not None:
+        _agregar_texto_correo(plan, meta)
     return plan
+
+
+def _agregar_texto_correo(plan: PlanCorreo, meta: MetaCorreo) -> None:
+    """Un `correo.txt` por carpeta de destino (no por el ZIP original ni por `_originales_zip`)."""
+    carpetas = dict.fromkeys(
+        c.ruta.rpartition("/")[0]
+        for c in plan.colocaciones
+        if not c.ruta.startswith("_originales_zip/")
+    )
+    for carpeta in carpetas:
+        presentes = [
+            (c.ruta.rpartition("/")[2], len(c.datos), sha256(c.datos))
+            for c in plan.colocaciones
+            if c.ruta.rpartition("/")[0] == carpeta
+        ]
+        plan.colocaciones.append(
+            Colocacion(
+                f"{carpeta}/{NOMBRE_CORREO}",
+                texto_correo(meta, presentes).encode("utf-8"),
+                "correo",
+            )
+        )
 
 
 def _sin_clasificar(recibido: datetime, identificador: str) -> str:
@@ -250,7 +358,7 @@ def _sin_clasificar(recibido: datetime, identificador: str) -> str:
 
 
 def _archivos_de(asignacion: Asignacion) -> list[Entrada]:
-    return [asignacion.xml, *asignacion.pdfs, *([asignacion.cdr] if asignacion.cdr else [])]
+    return [asignacion.xml, *asignacion.pdfs]
 
 
 def _carpeta_de(asignacion: Asignacion, ruc_empresa: str, plan: PlanCorreo) -> str | None:
@@ -283,7 +391,7 @@ def trozos_para_lotes(
     """Reparte carpetas completas en lotes que no superen los topes del importador.
 
     `carpetas` = `(ruta, [(archivo, bytes)…])`. Una carpeta nunca se parte entre dos lotes:
-    el PDF y el CDR deben viajar con su XML.
+    el PDF debe viajar con su XML.
     """
     lotes: list[list[str]] = []
     actual: list[str] = []
@@ -376,7 +484,8 @@ def _escribir(
         carpeta, _, nombre = c.ruta.rpartition("/")
         if guardar_sin_duplicar(destino / carpeta, nombre, c.datos):
             nuevos += 1
-            if tocadas is not None:
+            # El `correo.txt` es solo evidencia: no hay nada que importar por él.
+            if tocadas is not None and c.origen != "correo":
                 tocadas.add(carpeta)
             informe.bytes_guardados += len(c.datos)
             informe.archivos[extension(nombre) or "(sin extensión)"] += 1
@@ -398,38 +507,26 @@ def unir_sueltos(
     indice: dict[tuple[str, int], list[dict[str, Any]]],
     tocadas: set[str] | None = None,
 ) -> Counter[str]:
-    """Une lo que llegó en otro correo: CDR por su referencia y PDF por la serie-número del nombre.
+    """Une el PDF que llegó en otro correo cuando su nombre lleva la serie-número de la compra.
 
     Solo se une cuando el destino es único (una sola compra con esa serie-número) y todavía no
-    tiene ese tipo de archivo: ante la duda el archivo se queda en `_sin_clasificar`.
+    tiene PDF: ante la duda el archivo se queda en `_sin_clasificar`.
     """
     unidos: Counter[str] = Counter()
     base = destino / "_sin_clasificar"
     if not base.is_dir():
         return unidos
-    for archivo in sorted(p for p in base.rglob("*") if p.is_file()):
-        ext = extension(archivo.name)
-        clave: tuple[str, int] | None = None
-        if ext == "xml" and raiz_xml(archivo.read_bytes()) == "ApplicationResponse":
-            clave, tipo = referencia_cdr(archivo.read_bytes()), "cdr"
-        elif ext == "pdf":
-            clave, tipo = serie_numero_de(archivo.name), "pdf"
-        else:
-            continue
+    for archivo in sorted(p for p in base.rglob("*.pdf") if p.is_file()):
+        clave = serie_numero_de(archivo.name)
         candidatos = [f for f in indice.get(clave, []) if f["empresa"]] if clave else []
         if len(candidatos) != 1:
             continue
         carpeta = destino / candidatos[0]["carpeta"]
-        tiene = any(
-            f.suffix.lower() == (".pdf" if tipo == "pdf" else ".xml")
-            and (tipo == "pdf" or raiz_xml(f.read_bytes()) == "ApplicationResponse")
-            for f in carpeta.glob("*")
-        )
-        if tiene:
+        if any(f.suffix.lower() == ".pdf" for f in carpeta.glob("*")):
             continue
         carpeta.mkdir(parents=True, exist_ok=True)
         shutil.move(str(archivo), str(nombre_libre(carpeta, archivo.name)))
-        unidos[tipo] += 1
+        unidos["pdf"] += 1
         if tocadas is not None:
             tocadas.add(candidatos[0]["carpeta"])
     return unidos
@@ -440,7 +537,11 @@ def crear_paquetes(destino: Path, simular: bool) -> list[Path]:
     carpetas: list[tuple[str, list[tuple[str, int]]]] = []
     for ruta in sorted(destino.glob("[0-9][0-9][0-9][0-9]/[0-9][0-9]/*/*")):
         if ruta.is_dir():
-            archivos = [(f.name, f.stat().st_size) for f in ruta.iterdir() if f.is_file()]
+            archivos = [
+                (f.name, f.stat().st_size)
+                for f in ruta.iterdir()
+                if f.is_file() and extension(f.name) in GUARDAR
+            ]
             if archivos:
                 carpetas.append((ruta.relative_to(destino).as_posix(), archivos))
     lotes = trozos_para_lotes(carpetas)
@@ -454,7 +555,7 @@ def crear_paquetes(destino: Path, simular: bool) -> list[Path]:
         with zipfile.ZipFile(ruta_zip, "w", zipfile.ZIP_DEFLATED) as zf:
             for carpeta in lote:
                 for archivo in sorted((destino / carpeta).iterdir()):
-                    if archivo.is_file():
+                    if archivo.is_file() and extension(archivo.name) in GUARDAR:
                         zf.write(archivo, f"{carpeta}/{archivo.name}")
         creados.append(ruta_zip)
     return creados
@@ -489,6 +590,43 @@ def _cargar_registro(ruta: Path) -> set[str]:
     }
 
 
+def _propiedad(objeto: Any, nombre: str) -> str:
+    """Propiedad MAPI de un correo o adjunto (`0x5D01001F`…); vacío si Outlook no la da."""
+    try:
+        valor = objeto.PropertyAccessor.GetProperty(f"http://schemas.microsoft.com/mapi/proptag/{nombre}")
+    except Exception:
+        return ""
+    return str(valor or "")
+
+
+def _es_incrustada(adjunto: Any) -> bool:
+    """¿La imagen va pegada en el cuerpo (`cid:`)? Así viajan los logos y las firmas."""
+    return bool(_propiedad(adjunto, "0x3712001F"))
+
+
+def meta_de_correo(correo: Any, carpeta: Any, recibido: datetime) -> MetaCorreo:
+    """Asunto, remitente y cuerpo del correo (mejor esfuerzo: Outlook puede no dar alguno)."""
+
+    def texto(atributo: str) -> str:
+        try:
+            return str(getattr(correo, atributo, "") or "")
+        except Exception:
+            return ""
+
+    # `SenderEmailAddress` de Exchange es una ruta interna; la dirección real está en MAPI.
+    direccion = _propiedad(correo, "0x5D01001F") or texto("SenderEmailAddress")
+    nombre = texto("SenderName")
+    remitente = f"{nombre} <{direccion}>" if direccion and direccion != nombre else nombre
+    return MetaCorreo(
+        asunto=texto("Subject"),
+        remitente=remitente,
+        para=texto("To"),
+        recibido=recibido,
+        carpeta_outlook=str(carpeta.Name),
+        cuerpo=texto("Body"),
+    )
+
+
 def _adjuntos_utiles(
     correo: Any, destino: Path, identificador: str, informe: Informe
 ) -> list[tuple[str, bytes, str]]:
@@ -503,7 +641,12 @@ def _adjuntos_utiles(
         ext = extension(original)
         if ext in DE_FIRMA:
             continue
-        if ext not in GUARDAR | ABRIR | APARTE:
+        if ext in IMAGENES and not es_foto_de_documento(
+            original, int(adjunto.Size), _es_incrustada(adjunto)
+        ):
+            informe.omitidos["imagen_de_firma_o_logo"] += 1
+            continue
+        if ext not in GUARDAR | ABRIR | APARTE | IMAGENES:
             informe.omitidos[f"omite_{ext}"] += 1
             continue
         if int(adjunto.Size) > MAX_BYTES_ADJUNTO:
@@ -518,7 +661,7 @@ def _adjuntos_utiles(
         finally:
             temporal.unlink(missing_ok=True)
         nombre = nombre_seguro(original)
-        if ext in GUARDAR:
+        if ext in GUARDAR | IMAGENES:
             resultado.append((nombre, datos, "adjunto"))
         elif ext in ABRIR:
             contenidos, motivos = leer_zip(datos)
@@ -608,13 +751,16 @@ def extraer(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
                     ruc_empresa=args.ruc,
                     recibido=recibido,
                     identificador=identificador,
+                    meta=meta_de_correo(correo, carpeta, recibido),
                 )
                 informe.con_facturas += 1
+                informe.omitidos.update(plan.omitidos)
                 for c in plan.comprobantes:  # sin repetir la factura que llegó en varios correos
                     (vistos_empresa if c.empresa else vistos_otras).add(c.carpeta)
                 informe.sin_clasificar.update(motivo for _, motivo in plan.sin_clasificar)
                 if args.simular:
                     continue
+                meta = meta_de_correo(correo, carpeta, recibido)
                 nuevos = _escribir(destino, plan, informe, tocadas)
                 informe.ya_existian += len(plan.colocaciones) - nuevos
                 _registrar(
@@ -627,6 +773,7 @@ def extraer(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
                     recibido,
                     identificador,
                     plan,
+                    meta,
                 )
             except Exception as exc:
                 informe.errores += 1
@@ -684,6 +831,7 @@ def _registrar(
     recibido: datetime,
     identificador: str,
     plan: PlanCorreo,
+    info: MetaCorreo,
 ) -> None:
     """Deja constancia del correo: de dónde salió cada archivo y qué comprobantes aportó."""
     meta = (
@@ -699,8 +847,9 @@ def _registrar(
                 "id": identificador,
                 "recibido": recibido.isoformat(),
                 "carpeta_correo": str(carpeta.Name),
-                "asunto": str(getattr(correo, "Subject", "") or ""),
-                "remitente": str(getattr(correo, "SenderName", "") or ""),
+                "asunto": info.asunto,
+                "remitente": info.remitente,
+                "para": info.para,
                 "archivos": [
                     {
                         "ruta": c.ruta,

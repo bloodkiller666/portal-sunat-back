@@ -148,6 +148,10 @@ class ComprobanteOut(BaseModel):
     sunat_ambiente: SunatAmbiente
     n_sap: str | None = None
     orden_compra: str | None = None
+    # Correo del buzón de facturas en que llegó la compra (solo compras).
+    correo_asunto: str | None = None
+    correo_remitente: str | None = None
+    correo_recibido_at: datetime | None = None
     cdr_codigo: str | None = None
     cdr_descripcion: str | None = None
     created_at: datetime | None = None

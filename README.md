@@ -436,7 +436,8 @@ SIRE no refleja (o refleja sin XML). Reglas:
   el PDF se une por el nombre o por la serie-número que lleve, y el CDR por su `ReferenceID`.
 - El XML se importa con `origen=recibido` (el adquirente debe ser la empresa) y completa la compra de SIRE
   si ya existe, aunque el portal corra en beta. Un XML repetido no es error: sigue sirviendo para añadir el
-  PDF o el CDR que falte (sin duplicar lo ya archivado).
+  PDF que falte (sin duplicar lo ya archivado). Las compras NO guardan CDR: uno que llegue en el
+  paquete se ignora y se informa (`cdr_ignorado`). Las ventas sí conservan el suyo.
 - Las guías de remisión y los XML no reconocidos se ignoran y se informan (`guia`, `xml_no_reconocido`).
 - Solo `admin`/`emisor`. Tope: 50 MB y 400 archivos por ZIP.
 - La respuesta trae UN resultado por archivo (`tipo`: xml/pdf/cdr; `situacion`: `completada` si SIRE ya traía la
@@ -477,7 +478,10 @@ curl -s -X POST "http://127.0.0.1:8000/api/v1/companies/$RUC/comprobantes/import
 ```
 
 El listado y el detalle de comprobantes traen además `tiene_xml`, `tiene_cdr` y
-`tiene_pdf`: qué respaldos hay archivados para cada uno.
+`tiene_pdf`: qué respaldos hay archivados para cada uno. En las compras, además,
+`correo_asunto`, `correo_remitente` y `correo_recibido_at`: el correo del buzón de facturas en que
+llegó (migración `0014`; lo llena la automatización o `scripts/cargar_correos.py`). La búsqueda `q`
+de Compras también mira el asunto.
 
 ### `POST /api/v1/companies/{ruc}/bizlinks/respaldos/sync`
 

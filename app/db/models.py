@@ -95,6 +95,10 @@ class Comprobante(RowModel):
     sunat_ambiente: SunatAmbiente = SunatAmbiente.beta
     n_sap: str | None = None
     orden_compra: str | None = None
+    # Correo del buzón de facturas en que llegó la compra (solo compras importadas por correo).
+    correo_asunto: str | None = None
+    correo_remitente: str | None = None
+    correo_recibido_at: datetime | None = None
     cdr_codigo: str | None = None
     cdr_descripcion: str | None = None
     cdr_notas: list[str] = []

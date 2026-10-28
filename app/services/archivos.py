@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.core.config import Settings
-from app.core.enums import ROLES_OPERATIVOS, TipoArchivo
+from app.core.enums import ROLES_OPERATIVOS, OrigenComprobante, TipoArchivo
 from app.core.errors import InvalidDocumentError, NotFoundError
 from app.core.security import AuthenticatedUser
 from app.db.models import Archivo
@@ -79,6 +79,10 @@ async def list_archivos(
     await require_membership(uow, user, comprobante.company_id)
 
     archivos = await uow.archivos.list_for_comprobante(comprobante_id)
+    if comprobante.origen is OrigenComprobante.recibido:
+        # Las compras ya no manejan CDR: los que se archivaron antes siguen en el bucket, pero
+        # el portal no los muestra. En las ventas el CDR sigue siendo parte del respaldo.
+        archivos = [a for a in archivos if a.tipo is not TipoArchivo.cdr]
     return ArchivosPage(
         comprobante_id=comprobante_id,
         items=[to_archivo_out(archivo) for archivo in archivos],
@@ -115,6 +119,8 @@ async def subir_archivo(
     )
 
     tipo_efectivo = tipo or inferir_tipo(filename, None)
+    if tipo_efectivo is TipoArchivo.cdr and comprobante.origen is OrigenComprobante.recibido:
+        raise InvalidDocumentError("Las compras no guardan CDR: solo XML y PDF")
     if tipo_efectivo is None:
         raise InvalidDocumentError(
             "No se pudo determinar el tipo de archivo: envíe el parámetro `tipo` "

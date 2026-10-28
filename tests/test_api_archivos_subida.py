@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.core.enums import EstadoArchivo, TipoArchivo
+from app.core.enums import EstadoArchivo, OrigenComprobante, TipoArchivo
 from app.db.models import Company, Comprobante
 from app.services.archivos import TAMANO_MAXIMO_ARCHIVO, inferir_tipo
 from tests.conftest import crear_token
@@ -177,3 +177,102 @@ def test_inferencia_de_tipo() -> None:
     assert inferir_tipo(None, "application/pdf; charset=binary") is TipoArchivo.pdf
     assert inferir_tipo("paquete.zip", "application/zip") is TipoArchivo.zip
     assert inferir_tipo("raro.txt", "text/plain") is None
+
+
+# --------------------------------------------------------------------------- #
+# El CDR es parte del respaldo de las ventas, pero las compras no lo guardan
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def compra(empresa_principal: Company, uow: FakeUnitOfWork) -> Comprobante:
+    creada = construir_comprobante(
+        empresa_principal.id, ruc="20999999999", serie="F010", origen=OrigenComprobante.recibido
+    )
+    uow.comprobantes.comprobantes[creada.id] = creada
+    return creada
+
+
+def _subir_cdr(cliente: TestClient, comprobante: Comprobante, **extra):
+    auth = {"Authorization": f"Bearer {crear_token()}"}
+    return cliente.post(
+        _ruta(comprobante.id),
+        headers=auth,
+        files={"archivo": ("R-20123456789-01-F001-1.zip", b"PK\x03\x04zip", "application/zip")},
+        **extra,
+    )
+
+
+def test_en_ventas_se_puede_subir_un_cdr(
+    cliente_r2: TestClient, comprobante: Comprobante
+) -> None:
+    respuesta = _subir_cdr(cliente_r2, comprobante, data={"tipo": "cdr"})
+
+    assert respuesta.status_code == 201
+    assert respuesta.json()["tipo"] == "cdr"
+
+
+def test_en_ventas_la_extension_cdr_se_reconoce(
+    cliente_r2: TestClient, comprobante: Comprobante
+) -> None:
+    auth = {"Authorization": f"Bearer {crear_token()}"}
+
+    respuesta = cliente_r2.post(
+        _ruta(comprobante.id),
+        headers=auth,
+        files={"archivo": ("R-20123456789-01-F001-1.cdr", b"x", "application/octet-stream")},
+    )
+
+    assert respuesta.status_code == 201
+    assert respuesta.json()["tipo"] == "cdr"
+
+
+def test_en_compras_un_cdr_se_rechaza_por_tipo_y_por_extension(
+    cliente_r2: TestClient, compra: Comprobante
+) -> None:
+    auth = {"Authorization": f"Bearer {crear_token()}"}
+
+    por_tipo = _subir_cdr(cliente_r2, compra, data={"tipo": "cdr"})
+    por_extension = cliente_r2.post(
+        _ruta(compra.id),
+        headers=auth,
+        files={"archivo": ("R-1.cdr", b"x", "application/octet-stream")},
+    )
+
+    assert por_tipo.status_code == 422
+    assert por_extension.status_code == 422
+
+
+def test_en_compras_el_pdf_y_el_xml_siguen_subiendo(
+    cliente_r2: TestClient, compra: Comprobante
+) -> None:
+    auth = {"Authorization": f"Bearer {crear_token()}"}
+
+    pdf = cliente_r2.post(
+        _ruta(compra.id), headers=auth, files={"archivo": ("f.pdf", PDF, "application/pdf")}
+    )
+
+    assert pdf.status_code == 201
+
+
+def test_el_listado_oculta_los_cdr_viejos_de_una_compra_pero_no_los_de_una_venta(
+    cliente_r2: TestClient,
+    uow: FakeUnitOfWork,
+    comprobante: Comprobante,
+    compra: Comprobante,
+) -> None:
+    auth = {"Authorization": f"Bearer {crear_token()}"}
+    for destino in (comprobante, compra):
+        # Se siembra directo: simula un CDR archivado antes de que las compras lo dejaran.
+        cliente_r2.post(
+            _ruta(destino.id),
+            headers=auth,
+            files={"archivo": ("f.pdf", PDF, "application/pdf")},
+        )
+        uow.archivos.archivos.append(
+            uow.archivos.archivos[-1].model_copy(update={"id": uuid4(), "tipo": TipoArchivo.cdr})
+        )
+
+    venta = cliente_r2.get(_ruta(comprobante.id), headers=auth).json()
+    compra_ = cliente_r2.get(_ruta(compra.id), headers=auth).json()
+
+    assert sorted(a["tipo"] for a in venta["items"]) == ["cdr", "pdf"]
+    assert [a["tipo"] for a in compra_["items"]] == ["pdf"]

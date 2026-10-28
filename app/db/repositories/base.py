@@ -167,6 +167,24 @@ class ComprobantesRepository(Protocol):
         self, comprobante_id: UUID, registro: ComprobanteRegistro
     ) -> Comprobante: ...
 
+    async def registrar_correo(
+        self,
+        company_id: UUID,
+        *,
+        ruc_emisor: str,
+        serie: str,
+        correlativo: int,
+        asunto: str,
+        remitente: str | None,
+        recibido_at: datetime,
+    ) -> int:
+        """Anota de qué correo llegó una compra; si ya tenía otro, gana el que llegó primero.
+
+        Devuelve cuántas filas se actualizaron (0 si la compra no existe o ya tenía un correo
+        anterior).
+        """
+        ...
+
     async def actualizar_pago(
         self,
         comprobante_id: UUID,

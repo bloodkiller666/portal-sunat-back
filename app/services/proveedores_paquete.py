@@ -6,10 +6,10 @@ acepta un ZIP plano. A diferencia de `paquetes.py` (que empareja el PDF por el m
 el XML y solo sirve para ventas), aquí los archivos se agrupan por carpeta:
 
 * El XML de la factura/nota se importa con `origen=recibido` y completa la compra de SIRE si ya
-  existe. Un XML repetido no es un error: sigue sirviendo para añadir el PDF o el CDR que falte.
-* Con UN solo comprobante en la carpeta, todos los PDF y el CDR de esa carpeta son suyos. Con
-  varios (ZIP plano), el PDF se une por el nombre o por la serie-número que lleve, y el CDR por
-  la referencia que trae dentro.
+  existe. Un XML repetido no es un error: sigue sirviendo para añadir el PDF que falte.
+* Con UN solo comprobante en la carpeta, todos los PDF de esa carpeta son suyos. Con varios
+  (ZIP plano), el PDF se une por el nombre o por la serie-número que lleve.
+* El portal solo guarda XML y PDF: un CDR (`ApplicationResponse`) se ignora y se informa.
 * Las guías de remisión y los XML no reconocidos se ignoran y se informan.
 
 Las reglas de agrupación son puras (`agrupar`) y se prueban sin base de datos.
@@ -36,12 +36,10 @@ from app.core.redaction import redact
 from app.core.security import AuthenticatedUser
 from app.db.models import Archivo, CompanyMember, Comprobante
 from app.db.repositories.base import UnitOfWork
-from app.services.cdr_paquete import leer_cdr
-from app.services.comprobantes import import_comprobante_xml, siguiente_estado
+from app.services.comprobantes import import_comprobante_xml
 from app.services.pdf_identificar import candidatos_de_pdf
 from app.services.results import PaqueteItemOut, PaqueteOut
 from app.services.store import guardar_archivo_sin_fallar
-from app.sunat.states import map_cdr_a_estado
 from app.sunat.ubl import parse_comprobante_ubl
 
 logger = get_logger(__name__)
@@ -84,7 +82,6 @@ class Asignacion:
 
     xml: Entrada
     pdfs: list[Entrada] = field(default_factory=list)
-    cdr: Entrada | None = None
 
 
 @dataclass
@@ -101,18 +98,6 @@ def raiz_xml(contenido: bytes) -> str | None:
         return etree.QName(etree.fromstring(contenido, _PARSER_SEGURO).tag).localname
     except (etree.XMLSyntaxError, ValueError):
         return None
-
-
-def referencia_cdr(contenido: bytes) -> tuple[str, int] | None:
-    """`(serie, correlativo)` del comprobante al que responde un CDR en XML."""
-    try:
-        root = etree.fromstring(contenido, _PARSER_SEGURO)
-    except etree.XMLSyntaxError:
-        return None
-    for elemento in root.iter():
-        if isinstance(elemento.tag, str) and etree.QName(elemento.tag).localname == "ReferenceID":
-            return serie_numero_de(elemento.text or "")
-    return None
 
 
 def serie_numero_de(texto: str) -> tuple[str, int] | None:
@@ -133,7 +118,6 @@ def agrupar(entradas: list[Entrada]) -> Agrupacion:
 
     for archivos in carpetas.values():
         comprobantes: list[Entrada] = []
-        cdrs: list[Entrada] = []
         pdfs: list[Entrada] = []
         for archivo in archivos:
             if archivo.extension == "pdf":
@@ -143,39 +127,26 @@ def agrupar(entradas: list[Entrada]) -> Agrupacion:
                 if raiz in _RAICES_COMPROBANTE:
                     comprobantes.append(archivo)
                 elif raiz == "ApplicationResponse":
-                    cdrs.append(archivo)
+                    resultado.ignorados.append(
+                        (archivo, "cdr_ignorado", "El portal no guarda CDR: solo XML y PDF")
+                    )
                 elif raiz == "DespatchAdvice":
                     resultado.ignorados.append(
                         (archivo, "guia", "Guía de remisión: no se registra como compra")
                     )
                 else:
                     resultado.ignorados.append(
-                        (archivo, "xml_no_reconocido", "El XML no es un comprobante ni un CDR")
+                        (archivo, "xml_no_reconocido", "El XML no es un comprobante")
                     )
             else:
                 resultado.ignorados.append((archivo, "tipo_no_soportado", "Solo XML y PDF"))
-        _repartir(comprobantes, pdfs, cdrs, resultado)
+        _repartir(comprobantes, pdfs, resultado)
     return resultado
 
 
-def _repartir(
-    comprobantes: list[Entrada], pdfs: list[Entrada], cdrs: list[Entrada], salida: Agrupacion
-) -> None:
+def _repartir(comprobantes: list[Entrada], pdfs: list[Entrada], salida: Agrupacion) -> None:
     if len(comprobantes) == 1:
-        asignacion = Asignacion(xml=comprobantes[0], pdfs=list(pdfs))
-        referencia = serie_numero_de(comprobantes[0].nombre)
-        asignacion.cdr = next(
-            (
-                c
-                for c in cdrs
-                if referencia is None or referencia_cdr(c.contenido) in (None, referencia)
-            ),
-            cdrs[0] if cdrs else None,
-        )
-        salida.asignaciones.append(asignacion)
-        for sobrante in cdrs:
-            if sobrante is not asignacion.cdr:
-                salida.ignorados.append((sobrante, "cdr_repetido", "Ya hay otro CDR en la carpeta"))
+        salida.asignaciones.append(Asignacion(xml=comprobantes[0], pdfs=list(pdfs)))
         return
 
     asignaciones = {c.ruta: Asignacion(xml=c) for c in comprobantes}
@@ -188,17 +159,6 @@ def _repartir(
             )
         else:
             asignaciones[destino.ruta].pdfs.append(pdf)
-    for cdr in cdrs:
-        referencia = referencia_cdr(cdr.contenido)
-        destino = next(
-            (c for c in comprobantes if referencia and claves[c.ruta] == referencia), None
-        )
-        if destino is None or asignaciones[destino.ruta].cdr is not None:
-            salida.ignorados.append(
-                (cdr, "cdr_sin_comprobante", "El CDR no corresponde a un comprobante de la carpeta")
-            )
-        else:
-            asignaciones[destino.ruta].cdr = cdr
     salida.asignaciones.extend(asignaciones.values())
 
 
@@ -236,8 +196,7 @@ _INFORMATIVOS = frozenset(
         "conflict",
         "sin_xml",
         "guia",
-        "cdr_sin_comprobante",
-        "cdr_repetido",
+        "cdr_ignorado",
         "xml_no_reconocido",
         "tipo_no_soportado",
         "sin_comprobante",
@@ -289,7 +248,7 @@ async def importar_paquete_proveedores(
     access: CompanyMember,
     paquete: bytes,
 ) -> PaqueteOut:
-    """Importa las compras del ZIP (XML + PDF + CDR por carpeta) y devuelve el resultado."""
+    """Importa las compras del ZIP (XML + PDF por carpeta) y devuelve el resultado."""
     entradas = _leer_zip(paquete)
     if not any(e.extension in ("xml", "pdf") for e in entradas):
         raise InvalidDocumentError("El paquete no contiene ningún archivo XML ni PDF")
@@ -339,7 +298,6 @@ async def procesar_entradas(
         nuevas=sum(1 for i in xmls if i.ok and i.situacion == NUEVA),
         completadas=sum(1 for i in xmls if i.ok and i.situacion == COMPLETADA),
         con_pdf=sum(1 for i in items if i.tipo == "pdf" and i.ok),
-        con_cdr=sum(1 for i in items if i.tipo == "cdr" and i.ok),
         duplicados=sum(1 for i in xmls if i.situacion == REPETIDA),
         con_error=sum(1 for i in items if not i.ok and i.code not in _INFORMATIVOS),
         sin_xml=sum(1 for i in items if i.code == "sin_xml"),
@@ -380,13 +338,13 @@ async def _importar(
     user: AuthenticatedUser,
     access: CompanyMember,
 ) -> list[PaqueteItemOut]:
-    """Importa una compra y devuelve su XML, cada PDF y su CDR como resultados separados."""
+    """Importa una compra y devuelve su XML y cada PDF como resultados separados."""
     previo = await _previo(uow, settings, access, asignacion.xml)
     item = PaqueteItemOut(archivo=asignacion.xml.nombre, tipo="xml")
     if previo is not None and previo.fuente != "sire":
         # Ya tiene su XML: NO se vuelve a insertar. En Postgres un INSERT duplicado aborta la
-        # transacción entera y las consultas siguientes (PDF, CDR, otras compras) fallarían con
-        # un 500. Se informa como repetida y se completa con el PDF/CDR que falten.
+        # transacción entera y las consultas siguientes (PDF, otras compras) fallarían con
+        # un 500. Se informa como repetida y se completa con el PDF que falte.
         item.code, item.situacion = "conflict", REPETIDA
         item.mensaje = "Ya estaba registrada con su XML"
         comprobante_id = previo.id
@@ -414,7 +372,7 @@ async def _importar(
                     code="xml_con_error",
                     mensaje="No se procesó porque el XML de la compra tiene un error",
                 )
-                for a in (*asignacion.pdfs, *([asignacion.cdr] if asignacion.cdr else []))
+                for a in asignacion.pdfs
             ]
             return [item, *sin_xml]
         comprobante_id = comprobante.id
@@ -435,13 +393,6 @@ async def _importar(
             await _guardar_pdf(uow, settings, comprobante_id, numero, pdf, archivados)
         )
     item.pdf = any(r.ok for r in resultados if r.tipo == "pdf")
-
-    if asignacion.cdr is not None:
-        resultado = await _guardar_cdr(
-            uow, settings, comprobante_id, numero, asignacion.cdr, archivados
-        )
-        resultados.append(resultado)
-        item.cdr = resultado.ok
     return resultados
 
 
@@ -474,50 +425,6 @@ async def _guardar_pdf(
         item.mensaje = "No se pudo guardar el PDF en el almacenamiento"
     else:
         item.situacion, item.mensaje = situacion, f"PDF guardado en {numero}"
-    return item
-
-
-async def _guardar_cdr(
-    uow: UnitOfWork,
-    settings: Settings,
-    comprobante_id: UUID,
-    numero: str,
-    entrada: Entrada,
-    archivados: list[Archivo],
-) -> PaqueteItemOut:
-    item = PaqueteItemOut(
-        archivo=entrada.nombre, tipo="cdr", comprobante_id=comprobante_id, numero=numero
-    )
-    if any(a.tipo is TipoArchivo.cdr for a in archivados):
-        item.situacion, item.mensaje = "ya_estaba", "El comprobante ya tenía su CDR"
-        return item
-    try:
-        cdr, zip_bytes = leer_cdr(entrada.contenido, "xml")
-    except AppError as exc:
-        item.ok, item.code, item.mensaje = False, exc.code, redact(exc.message)
-        return item
-    guardado = await guardar_archivo_sin_fallar(
-        uow=uow,
-        settings=settings,
-        comprobante_id=comprobante_id,
-        tipo=TipoArchivo.cdr,
-        file_bytes=zip_bytes,
-        filename=f"{_nombre_sin_extension(entrada.nombre)}.zip",
-    )
-    if guardado is None:  # sin archivo en R2 no hay evidencia: no se toca el estado
-        item.ok, item.code = False, "no_archivado"
-        item.mensaje = "No se pudo guardar el CDR en el almacenamiento"
-        return item
-    comprobante = await uow.comprobantes.get(comprobante_id)
-    if comprobante is not None:
-        await uow.comprobantes.update_sunat_state(
-            comprobante_id,
-            estado=siguiente_estado(comprobante.estado, map_cdr_a_estado(cdr)),
-            cdr_codigo=cdr.codigo,
-            cdr_descripcion=cdr.descripcion,
-            cdr_notas=cdr.notas,
-        )
-    item.situacion, item.mensaje = "guardado", f"CDR guardado en {numero}"
     return item
 
 
@@ -560,7 +467,7 @@ async def importar_archivos_proveedores(
     access: CompanyMember,
     archivos: list[tuple[str, bytes]],
 ) -> PaqueteOut:
-    """Importa un grupo de archivos sueltos (normalmente UNA compra con su PDF y su CDR).
+    """Importa un grupo de archivos sueltos (normalmente UNA compra con su XML y su PDF).
 
     El portal los manda de a uno por compra para poder mostrar el avance en tiempo real: cada
     llamada se confirma sola, así que un error en una compra no deshace las anteriores.

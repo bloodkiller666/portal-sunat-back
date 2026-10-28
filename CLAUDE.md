@@ -412,3 +412,30 @@ lo ya archivado se sigue descargando igual.
 `scripts/reorganizar_r2.py` lleva los objetos viejos (los que estaban en la carpeta del mes) al
 esquema nuevo: simula por defecto, con `--aplicar` copia y actualiza `archivos.storage_key`, y
 `--borrar-originales` elimina la ruta vieja solo después. Es idempotente.
+
+### P17 — Compras: solo XML y PDF; columna Correo; descarga masiva (2026-10-28)
+
+- **Las COMPRAS ya no guardan CDR; las VENTAS lo conservan** (XML + CDR, Bizlinks, `import-cdr`,
+  `refresh-cdr`). En compras: el importador de proveedores (`proveedores_paquete.py`) ignora el CDR
+  (`cdr_ignorado`, informativo), el extractor del correo lo descarta (`omitidos.cdr_ignorado`), subir
+  un `.cdr`/`tipo=cdr` a una compra da 422 y `GET /comprobantes/{id}/archivos` oculta los CDR viejos
+  de una compra (siguen en R2). El frontend no muestra CDR en Compras.
+- **Columna «Correo» (migración `0014`, aplicar ANTES de desplegar)**: `comprobantes.correo_asunto/
+  correo_remitente/correo_recibido_at`. La automatización lee `_correos/**/*.json` (los deja el
+  extractor) y, al importar la carpeta de cada compra, anota el correo (`app/services/correo_compras.py`;
+  si llegó en varios correos gana el primero). `scripts/cargar_correos.py [--aplicar]` hace lo mismo
+  con lo ya importado. El frontend la muestra solo en Compras (xl+) y en el detalle; `q` busca por asunto.
+- **Extractor**: `correo.txt` en cada carpeta (asunto, remitente, adjuntos con SHA-256, cuerpo; solo
+  evidencia local, no se importa); `_correos/*.json` ahora guarda el remitente con su dirección.
+  **Fotos de documentos**: antes TODA imagen adjunta se descartaba; `es_foto_de_documento` conserva las
+  que no parecen logo/firma (van con la factura si el correo trae una sola, si no a `_sin_clasificar`
+  como `imagen`). No hay OCR.
+- **Descargar todo** (frontend, `lib/lote.ts` → `descargarTodoPorPartes`): ZIP de ≤100 comprobantes
+  por parte con `AAAA/MM/RUC/SERIE-NÚMERO/` (ventas: XML+CDR; compras: XML+PDF) y LEEME/manifiesto con
+  SHA-256 por parte; se descomprimen todas en la misma carpeta. Usa la selección o todo lo filtrado
+  (hasta 20 000). Cancelable.
+- **Datos**: el 2026-10-28 se borraron de `comprobantes` las compras anteriores a agosto de 2026 (450:
+  junio 2, julio 448; respaldo en `var/respaldo_compras_borradas_*.json`). Sus objetos en R2 NO se
+  borraron. La automatización solo sincroniza SIRE del mes actual y el anterior, así que no vuelven.
+- `registrar_tarea_windows.ps1 -Destino <carpeta>` fija dónde queda lo extraído (la PC de Miguel usa
+  `C:\Users\majco\Downloads\FacturasProovedores`; `LOCAL_PROVEEDORES_DIR` debe apuntar a la misma).
