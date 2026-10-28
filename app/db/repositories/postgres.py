@@ -130,6 +130,14 @@ def _donde(company_id: UUID, filtros: FiltrosListado) -> tuple[str, list[object]
         condiciones.append("not c.tiene_cdr")
     elif filtros.respaldo is RespaldoFiltro.completo:
         condiciones.append("c.tiene_xml and c.tiene_cdr")
+    elif filtros.respaldo is RespaldoFiltro.solo_xml:
+        condiciones.append("c.tiene_xml and not c.tiene_pdf")
+    elif filtros.respaldo is RespaldoFiltro.solo_pdf:
+        condiciones.append("c.tiene_pdf and not c.tiene_xml")
+    elif filtros.respaldo is RespaldoFiltro.xml_pdf:
+        condiciones.append("c.tiene_xml and c.tiene_pdf")
+    elif filtros.respaldo is RespaldoFiltro.ninguno:
+        condiciones.append("not c.tiene_xml and not c.tiene_pdf")
     return " and ".join(condiciones), parametros
 
 

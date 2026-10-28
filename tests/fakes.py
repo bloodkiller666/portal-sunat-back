@@ -281,6 +281,15 @@ class InMemoryComprobantesRepository:
                 TipoArchivo.xml in tipos and TipoArchivo.cdr in tipos
             ):
                 continue
+            xml, pdf = TipoArchivo.xml in tipos, TipoArchivo.pdf in tipos
+            combinacion = {
+                RespaldoFiltro.solo_xml: xml and not pdf,
+                RespaldoFiltro.solo_pdf: pdf and not xml,
+                RespaldoFiltro.xml_pdf: xml and pdf,
+                RespaldoFiltro.ninguno: not xml and not pdf,
+            }
+            if f.respaldo in combinacion and not combinacion[f.respaldo]:
+                continue
             resultado.append(c)
         return resultado
 

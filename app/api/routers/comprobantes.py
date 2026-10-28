@@ -99,7 +99,7 @@ class FiltrosComprobantes(BaseModel):
     vencimiento_hasta: date | None = Field(default=None, description="Vencimiento máximo")
     moneda: str | None = Field(default=None, pattern=r"^[A-Z]{3}$", description="PEN, USD…")
     respaldo: RespaldoFiltro | None = Field(
-        default=None, description="Cobertura de respaldo: sin_xml, sin_cdr o completo"
+        default=None, description="Cobertura de respaldo (XML/CDR en ventas; XML/PDF en compras)"
     )
     orden: CampoOrden = Field(default=CampoOrden.fecha, description="Columna de orden")
     direccion: DireccionOrden = Field(default=DireccionOrden.desc)

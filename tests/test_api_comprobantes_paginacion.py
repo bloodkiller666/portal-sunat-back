@@ -200,6 +200,31 @@ def test_filtra_por_respaldo(
     assert numeros("sin_xml") == [3]
 
 
+def test_filtra_compras_por_combinacion_de_xml_y_pdf(
+    client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
+) -> None:
+    ambos = _agregar(uow, empresa_principal, correlativo=1)
+    solo_xml = _agregar(uow, empresa_principal, correlativo=2)
+    solo_pdf = _agregar(uow, empresa_principal, correlativo=3)
+    _agregar(uow, empresa_principal, correlativo=4)
+    _con_archivo(uow, empresa_principal, ambos, TipoArchivo.xml)
+    _con_archivo(uow, empresa_principal, ambos, TipoArchivo.pdf)
+    _con_archivo(uow, empresa_principal, solo_xml, TipoArchivo.xml)
+    _con_archivo(uow, empresa_principal, solo_pdf, TipoArchivo.pdf)
+
+    def numeros(respaldo: str) -> list[int]:
+        cuerpo = client.get(
+            LISTA, headers=auth,
+            params={"respaldo": respaldo, "orden": "numero", "direccion": "asc"},
+        ).json()
+        return [i["correlativo"] for i in cuerpo["items"]]
+
+    assert numeros("xml_pdf") == [1]
+    assert numeros("solo_xml") == [2]
+    assert numeros("solo_pdf") == [3]
+    assert numeros("ninguno") == [4]
+
+
 def test_resumen_calcula_estados_neto_y_cobertura(
     client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
 ) -> None:

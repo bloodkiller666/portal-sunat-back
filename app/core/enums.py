@@ -99,6 +99,11 @@ class RespaldoFiltro(StrEnum):
     sin_xml = "sin_xml"
     sin_cdr = "sin_cdr"
     completo = "completo"
+    # Compras (XML + PDF, sin CDR): qué combinación de los dos archivos tiene la compra.
+    solo_xml = "solo_xml"
+    solo_pdf = "solo_pdf"
+    xml_pdf = "xml_pdf"
+    ninguno = "ninguno"
 
 
 class CampoOrden(StrEnum):

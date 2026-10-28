@@ -450,8 +450,8 @@ esquema nuevo: simula por defecto, con `--aplicar` copia y actualiza `archivos.s
 
 ### P18 — Estado correo y fallos del portal en Logs (2026-10-28)
 
-- **Columna «Estado correo»** (solo Compras, frontend `lib/correo.ts`): `SUBIDO` (verde) si la compra tiene
-  `correo_asunto` guardado; `NO ENCONTRADO` (rojo) si no lo tiene (nunca vino por el buzón o aún no se vincula).
+- **Columna «Estado correo»** (solo Compras, frontend `lib/correo.ts`): `Correo enviado` (verde) si la compra tiene
+  `correo_asunto` guardado; `Correo no enviado` (rojo) si no lo tiene (nunca vino por el buzón o aún no se vincula).
   No hay campo nuevo en la API: se deriva de `correo`.
 - **Fallos del portal en «Logs»**: todo `aviso.error(...)` del frontend se muestra (9 s en pantalla) y se envía a
   `POST /companies/{ruc}/portal/fallos` (`{accion, mensaje, codigo?, contexto?}`), que lo guarda en
@@ -461,3 +461,8 @@ esquema nuevo: simula por defecto, con `--aplicar` copia y actualiza `archivos.s
   orientan (sin filas para exportar, la web no puede abrir carpetas locales) pasan `{ registrar: false }`.
 - Límite conocido: la RLS de `automatizacion_logs` solo deja insertar a admin/emisor, así que el fallo de un
   `lector` se muestra pero responde `registrado=false` y no queda en Logs (cambiarlo requiere una migración).
+- **Filtro «Respaldo» en Compras** (`GET .../comprobantes?respaldo=`): además de `sin_xml/sin_cdr/completo` (ventas),
+  acepta `solo_xml`, `solo_pdf`, `xml_pdf` y `ninguno`, calculados con `tiene_xml/tiene_pdf` (migración 0008).
+- **Previsualización** (menú «⋯» de la fila, frontend `dialogo-previsualizar.tsx`): lista los PDF y XML archivados del
+  comprobante (`GET /comprobantes/{id}/archivos`), baja cada uno con su URL firmada solo al mostrarlo (PDF en el visor
+  del navegador, XML como texto respetando su codificación) y pasa de uno a otro con Anterior/Siguiente.
