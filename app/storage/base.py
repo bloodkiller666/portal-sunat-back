@@ -47,6 +47,10 @@ class StorageProvider(Protocol):
         """URL firmada y temporal para descargar `file_key` (bucket privado)."""
         ...
 
+    async def get_object_bytes(self, file_key: str) -> bytes:
+        """Contenido del objeto `file_key` (para copiarlo a la carpeta local del usuario)."""
+        ...
+
 
 def sanear_componente(valor: str) -> str:
     """Normaliza un fragmento de la ruta para que sea seguro como clave S3.

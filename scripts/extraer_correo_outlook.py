@@ -10,6 +10,7 @@ y lo que no se puede ubicar se aparta para revisarlo a mano:
     {destino}/_otras_empresas/{RUC adquirente}/AAAA/MM/RUC/SERIE-NÚMERO/    facturas a otro RUC
     {destino}/_sin_clasificar/AAAA-MM/{correo}/        PDF sin XML, fotos de documentos…
     {destino}/_correos/AAAA-MM/{correo}.json        de qué correo salió cada archivo (auditoría)
+    {destino}/_correos/AAAA-MM/{correo}.msg         el correo original (prueba si lo borran)
     {destino}/_paquetes_importar/{fecha}/lote-NNN.zip    ZIP para el botón «Importar» (Compras)
     {destino}/registro_correos.jsonl, indice_comprobantes.jsonl, informe.json
 
@@ -821,6 +822,28 @@ def ejecutar(args: argparse.Namespace) -> int:
     return extraer(args)[0]
 
 
+def _guardar_mensaje_original(correo: Any, ruta: Path, destino: Path) -> dict[str, Any] | None:
+    """Guarda el correo tal cual (`.msg`, formato 3 de Outlook): la prueba de que sí llegó.
+
+    Si luego lo borran del buzón, el `.msg` conserva cabeceras, cuerpo y adjuntos originales; su
+    SHA-256 queda en el JSON de auditoría. Es de mejor esfuerzo: un fallo no impide registrar las
+    facturas (devuelve `None` y el JSON conserva asunto, remitente y huellas de los adjuntos).
+    """
+    try:
+        if not ruta.exists():
+            correo.SaveAs(str(ruta), 3)
+        datos = ruta.read_bytes()
+    except Exception as exc:
+        print(f"    no se pudo guardar el correo original: {type(exc).__name__}", file=sys.stderr)
+        ruta.unlink(missing_ok=True)
+        return None
+    return {
+        "ruta": ruta.relative_to(destino).as_posix(),
+        "sha256": sha256(datos),
+        "bytes": len(datos),
+    }
+
+
 def _registrar(
     destino: Path,
     ruta_registro: Path,
@@ -841,6 +864,7 @@ def _registrar(
         / f"{recibido:%Y%m%d-%H%M%S}_{identificador[:6]}.json"
     )
     meta.parent.mkdir(parents=True, exist_ok=True)
+    mensaje = _guardar_mensaje_original(correo, meta.with_suffix(".msg"), destino)
     meta.write_text(
         json.dumps(
             {
@@ -850,6 +874,7 @@ def _registrar(
                 "asunto": info.asunto,
                 "remitente": info.remitente,
                 "para": info.para,
+                "mensaje_original": mensaje,
                 "archivos": [
                     {
                         "ruta": c.ruta,

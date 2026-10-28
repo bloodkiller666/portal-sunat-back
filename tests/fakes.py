@@ -794,11 +794,16 @@ class FakeStorageProvider:
         self.upload: dict[str, str] | None = None
         self.firmas: list[tuple[str, int | None]] = []
         self.subidas: list[dict[str, str]] = []
+        self.objetos: dict[str, bytes] = {}
+
+    async def get_object_bytes(self, file_key: str) -> bytes:
+        return self.objetos[file_key]
 
     async def upload_file(
         self, file_bytes: bytes, filename: str, content_type: str, folder_path: str
     ) -> FileUploadResult:
         self.subidas.append({"nombre": filename, "carpeta": folder_path})
+        self.objetos[f"{folder_path}/{filename}"] = file_bytes
         self.upload = {
             "nombre": filename,
             "content_type": content_type,

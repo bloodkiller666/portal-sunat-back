@@ -43,6 +43,7 @@ def test_docs_y_openapi_disponibles(client: TestClient) -> None:
         "/api/v1/companies/{ruc}/comprobantes/import-sap",
         "/api/v1/comprobantes/{comprobante_id}",
         "/api/v1/carpeta-local/abrir",
+        "/api/v1/carpeta-local/restaurar-y-abrir",
         "/api/v1/comprobantes/{comprobante_id}/refresh-cdr",
         "/api/v1/comprobantes/{comprobante_id}/envios",
         "/api/v1/comprobantes/{comprobante_id}/archivos",

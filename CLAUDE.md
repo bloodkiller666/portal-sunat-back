@@ -327,6 +327,14 @@ base de datos (la apertura es inmediata): solo valida el JWT, limpia cada parte 
 caracteres reservados, la confina a la carpeta base y abre únicamente una carpeta que ya exista.
 Desplegado en un servidor responde 409 y el portal copia la ruta al portapapeles.
 
+Actualización (2026-10-28): cada apartado mira solo su carpeta (`origen` en `/carpeta-local/abrir`:
+Ventas `LOCAL_DESCARGAS_DIR`, p. ej. `Downloads\SIRE`; Compras `LOCAL_PROVEEDORES_DIR`, p. ej.
+`Downloads\FacturasProveedores`; sin `origen` se buscan ambas). Si la carpeta no existe (404), el frontend
+llama a `POST /carpeta-local/restaurar-y-abrir {comprobante_id}`, que copia de R2 los XML/PDF/CDR que falten
+(compras: sin CDR; nunca pisa un archivo existente), con la ruta sacada de la base y no del cliente, y la abre.
+Antes fallaba en las compras cuyo PDF se unió a SIRE sin pasar por el correo (91 en esa fecha) y en las ventas
+nunca guardadas con «Guardar en mi PC».
+
 ### P14 — Compras a proveedores desde SIRE (RCE) (2026-10-21)
 
 Sección «Compras» separada de «Ventas» (el frontend manda `origen=emitido|recibido`; el estado

@@ -108,6 +108,24 @@ class CloudflareR2StorageProvider(StorageProvider):
             ) from exc
         return url
 
+    async def get_object_bytes(self, file_key: str) -> bytes:
+        """Descarga el objeto completo del bucket privado."""
+        try:
+            clave = normalizar_clave(file_key)
+        except ValueError as exc:
+            raise StorageError("La clave del archivo no es válida") from exc
+        try:
+            async with self._client() as client:
+                respuesta = await client.get_object(Bucket=self._bucket, Key=clave)
+                async with respuesta["Body"] as cuerpo:
+                    return await cuerpo.read()
+        except Exception as exc:
+            logger.warning("Fallo al leer un archivo de R2 (%s)", type(exc).__name__)
+            raise StorageError(
+                "No se pudo leer el archivo del almacenamiento",
+                details={"detalle": type(exc).__name__},
+            ) from exc
+
     # ------------------------------------------------------------------ #
     # Internos
     # ------------------------------------------------------------------ #

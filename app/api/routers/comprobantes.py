@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, File, Form, Path, Query, UploadFile, status
@@ -28,7 +28,7 @@ from app.core.enums import (
 )
 from app.core.errors import FileTooLargeError
 from app.db.repositories.base import FiltrosListado
-from app.services.carpeta_local import abrir_carpeta
+from app.services.carpeta_local import abrir_carpeta, restaurar_y_abrir_carpeta
 from app.services.cdr_paquete import TAMANO_MAXIMO_PAQUETE as TAMANO_MAXIMO_CDR
 from app.services.cdr_paquete import importar_cdrs
 from app.services.comprobantes import (
@@ -374,6 +374,10 @@ class CarpetaLocalIn(BaseModel):
         max_length=4,
         description="Año, mes, RUC de la contraparte y SERIE-NÚMERO (la carpeta del comprobante)",
     )
+    origen: Literal["emitido", "recibido"] | None = Field(
+        default=None,
+        description="Apartado: Ventas (emitido) o Compras (recibido); sin él se buscan ambas",
+    )
 
 
 class CarpetaLocalOut(BaseModel):
@@ -392,7 +396,31 @@ async def post_abrir_carpeta(
 
     No usa la base de datos: solo valida el token y abre una carpeta existente bajo la base.
     """
-    return CarpetaLocalOut(ruta=abrir_carpeta(settings=settings, partes=datos.partes))
+    ruta = abrir_carpeta(settings=settings, partes=datos.partes, origen=datos.origen)
+    return CarpetaLocalOut(ruta=ruta)
+
+
+class RestaurarCarpetaIn(BaseModel):
+    comprobante_id: UUID = Field(description="Comprobante cuya carpeta se reconstruye y abre")
+
+
+@router.post(
+    "/carpeta-local/restaurar-y-abrir",
+    response_model=CarpetaLocalOut,
+    summary="Copia del bucket a la PC los archivos que falten del comprobante y abre su carpeta",
+)
+async def post_restaurar_y_abrir_carpeta(
+    user: CurrentUserDep, settings: SettingsDep, uow: UowDep, datos: RestaurarCarpetaIn
+) -> CarpetaLocalOut:
+    """Para cuando `carpeta-local/abrir` dice que la carpeta no existe en esta PC.
+
+    Cualquier miembro de la empresa. 409 si el backend no corre en la PC del usuario; 404 si el
+    comprobante no tiene archivos guardados.
+    """
+    ruta = await restaurar_y_abrir_carpeta(
+        uow=uow, settings=settings, user=user, comprobante_id=datos.comprobante_id
+    )
+    return CarpetaLocalOut(ruta=ruta)
 
 
 class ActualizarSapIn(BaseModel):
