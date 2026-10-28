@@ -294,9 +294,19 @@ class AutomatizacionLogsRepository(Protocol):
     async def registrar(self, registro: AutomatizacionLogRegistro) -> AutomatizacionLog: ...
 
     async def listar(
-        self, company_id: UUID, *, resultado: str | None, limit: int, offset: int
+        self,
+        company_id: UUID,
+        *,
+        resultado: str | None,
+        limit: int,
+        offset: int,
+        origen: str | None = None,
     ) -> tuple[list[AutomatizacionLog], int]:
-        """Las más recientes primero, con el total del conjunto filtrado."""
+        """Las más recientes primero, con el total del conjunto filtrado.
+
+        `origen`: `portal` (fallos que vio el usuario) o `automatizacion` (corridas); sin valor,
+        ambos.
+        """
         ...
 
 

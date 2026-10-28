@@ -916,6 +916,71 @@ def _registrar(
         )
 
 
+def respaldar_mensajes(args: argparse.Namespace) -> int:
+    """Guarda el `.msg` original de los correos que ya se extrajeron y aún no lo tienen.
+
+    Los correos procesados antes de existir el respaldo solo dejaron un JSON (asunto, remitente,
+    huellas de los adjuntos). Aquí se recorre el buzón (solo lectura) y, para cada correo con JSON
+    en `_correos/` sin `mensaje_original`, se guarda su `.msg` y se anota su ruta y SHA-256. Es la
+    prueba de que el correo existió tal como llegó, aunque luego se borre del buzón.
+    """
+    try:
+        import win32com.client  # type: ignore[import-not-found]
+    except ImportError:
+        print("Falta pywin32: ejecute con `uv run --with pywin32 python -m ...`")
+        return 2
+
+    destino = Path(args.destino).expanduser().resolve()
+    nombres = {n.strip().lower() for n in args.carpetas.split(",") if n.strip()}
+    espacio = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
+    buzones = [b for b in espacio.Folders if args.buzon.lower() in str(b.Name).lower()]
+    if len(buzones) != 1:
+        print(f"Se esperaba 1 buzón con «{args.buzon}» y hay {len(buzones)}.")
+        return 2
+
+    pendientes: dict[str, tuple[Path, dict[str, Any]]] = {}
+    for ruta in sorted((destino / "_correos").rglob("*.json")):
+        try:
+            datos = json.loads(ruta.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not datos.get("mensaje_original"):
+            pendientes[str(datos["id"])] = (ruta, datos)
+    print(f"Correos sin respaldo .msg: {len(pendientes)}")
+    guardados = errores = 0
+    for carpeta in _carpetas(buzones[0], nombres):
+        items = carpeta.Items
+        for posicion in range(1, items.Count + 1):
+            if not pendientes:
+                break
+            try:
+                correo = items.Item(posicion)
+                if correo.Class != OL_MAIL:
+                    continue
+                identificador = id_correo(str(correo.EntryID))
+                if identificador not in pendientes:
+                    continue
+                ruta_json, datos = pendientes[identificador]
+                mensaje = _guardar_mensaje_original(correo, ruta_json.with_suffix(".msg"), destino)
+                if mensaje is None:
+                    errores += 1
+                    continue
+                datos["mensaje_original"] = mensaje
+                ruta_json.write_text(
+                    json.dumps(datos, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                del pendientes[identificador]
+                guardados += 1
+            except Exception as exc:
+                errores += 1
+                print(f"    correo {posicion}: {type(exc).__name__}", file=sys.stderr)
+    print(
+        f"Respaldados: {guardados} | con error: {errores} | "
+        f"no encontrados en el buzón (borrados o movidos): {len(pendientes)}"
+    )
+    return 1 if errores else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Extrae facturas de Outlook (solo lectura)")
     parser.add_argument("--buzon", required=True, help="Parte del nombre del buzón en Outlook")
@@ -933,7 +998,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sin-paquetes", action="store_true", help="No crear los ZIP de importación"
     )
-    return ejecutar(parser.parse_args(argv))
+    parser.add_argument(
+        "--respaldar-mensajes",
+        action="store_true",
+        help="Solo guarda el .msg original de los correos ya extraídos que no lo tienen",
+    )
+    args = parser.parse_args(argv)
+    return respaldar_mensajes(args) if args.respaldar_mensajes else ejecutar(args)
 
 
 if __name__ == "__main__":

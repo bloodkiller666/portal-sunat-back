@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
+from asyncpg.exceptions import CharacterNotInRepertoireError
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -147,6 +148,24 @@ def _registrar_manejadores(app: FastAPI) -> None:
                     "code": "validation_error",
                     "message": "La petición no cumple el formato esperado",
                     "details": {"errores": errores},
+                    "request_id": get_request_id(),
+                }
+            },
+        )
+
+    @app.exception_handler(CharacterNotInRepertoireError)
+    async def _texto_invalido(_request: Request, _exc: Exception) -> JSONResponse:
+        """Un texto con `\\x00` u otro byte que Postgres no admite es un dato inválido.
+
+        Llega, por ejemplo, desde el buscador (`q=a%00b`): antes respondía 500.
+        """
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "validation_error",
+                    "message": "El texto contiene caracteres no válidos",
+                    "details": {},
                     "request_id": get_request_id(),
                 }
             },

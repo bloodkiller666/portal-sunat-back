@@ -6,6 +6,7 @@ claims del usuario y el rol `authenticated`.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -61,6 +62,12 @@ _COLUMNAS_COMPROBANTE_C = ", ".join(
 )
 
 
+# Serie (4 caracteres) y número, con guion corto o largo y ceros opcionales: `E001-278`.
+_SERIE_NUMERO_BUSCADO = re.compile(
+    r"^\s*([A-Za-z][A-Za-z0-9]{3})\s*[-" + chr(0x2013) + r"]\s*0*(\d{1,8})\s*$"
+)
+
+
 def _donde(company_id: UUID, filtros: FiltrosListado) -> tuple[str, list[object]]:
     """Cláusula `where` (alias `c`) y sus parámetros; compartida por página y resumen."""
     parametros: list[object] = [company_id]
@@ -103,6 +110,12 @@ def _donde(company_id: UUID, filtros: FiltrosListado) -> tuple[str, list[object]
             f"c.ruc_receptor ilike ${n} escape '\\'",
             f"c.orden_compra ilike ${n} escape '\\'",
         ]
+        # «E001-278» (como lo escribe un proveedor, sin ceros) debe hallar E001-00000278: se
+        # compara serie y correlativo exactos, que además usa el índice de la empresa.
+        documento = _SERIE_NUMERO_BUSCADO.match(filtros.q)
+        if documento:
+            parametros += [documento.group(1).upper(), int(documento.group(2))]
+            brazos.append(f"(c.serie = ${n + 1} and c.correlativo = ${n + 2})")
         if filtros.origen is OrigenComprobante.recibido:
             brazos += [
                 f"c.razon_social_emisor ilike ${n} escape '\\'",
@@ -909,13 +922,20 @@ class PostgresAutomatizacionLogsRepository:
         return AutomatizacionLog.model_validate(data)
 
     async def listar(
-        self, company_id: UUID, *, resultado: str | None, limit: int, offset: int
+        self,
+        company_id: UUID,
+        *,
+        resultado: str | None,
+        limit: int,
+        offset: int,
+        origen: str | None = None,
     ) -> tuple[list[AutomatizacionLog], int]:
         registros = await self._connection.fetch(
             f"""
             select {self._COLUMNAS}, count(*) over() as total
               from public.automatizacion_logs
              where company_id = $1 and ($2::text is null or resultado = $2)
+               and ($5::text is null or ($5 = 'portal') = ('portal' = any(tareas)))
              order by created_at desc, id desc
              limit $3 offset $4
             """,
@@ -923,6 +943,7 @@ class PostgresAutomatizacionLogsRepository:
             resultado,
             limit,
             offset,
+            origen,
         )
         total = int(registros[0]["total"]) if registros else 0
         items = [AutomatizacionLog.model_validate(_row(r)) for r in registros]

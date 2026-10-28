@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -12,6 +15,8 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.core.enums import EstadoArchivo, OrigenComprobante, TipoArchivo
 from app.db.models import Archivo, Company, Comprobante
+from app.services.correo_compras import texto_correo_de_compra
+from app.services.evidencia_correos import completar_evidencia_de_correos
 from tests.fakes import FakeStorageProvider, FakeUnitOfWork, construir_comprobante
 
 PARTES = ["2026", "09", "20100000001", "FF01-00000123"]
@@ -303,3 +308,244 @@ def test_restaurar_deshabilitado_devuelve_409(
 
 def test_restaurar_exige_autenticacion(client: TestClient) -> None:
     assert client.post(RESTAURAR, json={"comprobante_id": str(uuid4())}).status_code == 401
+
+
+# --------------------------------------------------------------------------- #
+# correo.txt: la constancia de que la compra llegó por el buzón
+# --------------------------------------------------------------------------- #
+RECIBIDO = datetime(2026, 10, 25, 12, 57, 48, tzinfo=UTC)  # 07:57 en Lima
+
+
+def _con_correo(compra: Comprobante) -> Comprobante:
+    return compra.model_copy(
+        update={
+            "correo_asunto": "TRANSPORTE GRUPO AR&J FACTURA E001-278",
+            "correo_remitente": "Jenifer Jimena",
+            "correo_recibido_at": RECIBIDO,
+        }
+    )
+
+
+def _carpeta_278(base: Path) -> Path:
+    return base / "FacturasProveedores" / "2026" / "10" / "20612414328" / "E001-00000278"
+
+
+def test_el_texto_del_correo_trae_asunto_remitente_hora_de_lima_y_huellas(
+    uow: FakeUnitOfWork, empresa_principal: Company, almacenamiento: FakeStorageProvider
+) -> None:
+    compra = _con_correo(_compra_con_archivos(uow, empresa_principal, almacenamiento))
+
+    texto = texto_correo_de_compra(compra, uow.archivos.archivos, mensaje_original="_correos/x.msg")
+
+    assert texto is not None
+    assert "Asunto:    TRANSPORTE GRUPO AR&J FACTURA E001-278" in texto
+    assert "De:        Jenifer Jimena" in texto
+    assert "Recibido:  2026-10-25 07:57:48 (hora de Lima)" in texto
+    assert "doc.pdf (10 bytes, sha256 aaaaaaaaaaaaaaaa…)" in texto
+    assert "Correo completo (.msg): _correos/x.msg" in texto
+
+
+def test_sin_correo_no_hay_texto(
+    uow: FakeUnitOfWork, empresa_principal: Company, almacenamiento: FakeStorageProvider
+) -> None:
+    compra = _compra_con_archivos(uow, empresa_principal, almacenamiento)
+
+    assert texto_correo_de_compra(compra, []) is None
+
+
+def test_al_abrir_una_compra_con_correo_se_escribe_su_correo_txt(
+    client: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+    almacenamiento: FakeStorageProvider,
+    restauracion: Path,
+    abiertas: list[Path],
+) -> None:
+    compra = _con_correo(_compra_con_archivos(uow, empresa_principal, almacenamiento))
+    uow.comprobantes.comprobantes[compra.id] = compra
+
+    r = client.post(RESTAURAR, headers=auth, json={"comprobante_id": str(compra.id)})
+
+    assert r.status_code == 200
+    texto = (_carpeta_278(restauracion) / "correo.txt").read_text(encoding="utf-8")
+    assert "FACTURA E001-278" in texto and "doc.pdf" in texto
+
+
+def test_no_se_pisa_un_correo_txt_existente_del_extractor(
+    client: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+    almacenamiento: FakeStorageProvider,
+    restauracion: Path,
+    abiertas: list[Path],
+) -> None:
+    compra = _con_correo(_compra_con_archivos(uow, empresa_principal, almacenamiento))
+    uow.comprobantes.comprobantes[compra.id] = compra
+    carpeta = _carpeta_278(restauracion)
+    carpeta.mkdir(parents=True)
+    (carpeta / "correo.txt").write_text("con el cuerpo del correo", encoding="utf-8")
+
+    client.post(RESTAURAR, headers=auth, json={"comprobante_id": str(compra.id)})
+
+    assert (carpeta / "correo.txt").read_text(encoding="utf-8") == "con el cuerpo del correo"
+
+
+def test_una_venta_no_recibe_correo_txt(
+    client: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+    almacenamiento: FakeStorageProvider,
+    restauracion: Path,
+    abiertas: list[Path],
+) -> None:
+    compra = _con_correo(_compra_con_archivos(uow, empresa_principal, almacenamiento))
+    venta = compra.model_copy(update={"origen": OrigenComprobante.emitido})
+    uow.comprobantes.comprobantes[venta.id] = venta
+
+    r = client.post(RESTAURAR, headers=auth, json={"comprobante_id": str(venta.id)})
+
+    assert r.status_code == 200
+    assert not list(restauracion.rglob("correo.txt"))
+
+
+# --------------------------------------------------------------------------- #
+# Paso masivo: toda compra con correo deja carpeta + correo.txt
+# --------------------------------------------------------------------------- #
+def _fabrica(uow: FakeUnitOfWork):
+    @asynccontextmanager
+    async def fabrica(_claims):
+        yield uow
+
+    return fabrica
+
+
+def _completar(uow, empresa, settings, almacenamiento, **extra):
+    return asyncio.run(
+        completar_evidencia_de_correos(
+            uow_factory=_fabrica(uow),
+            claims={},
+            company_id=empresa.id,
+            settings=settings,
+            storage_provider=almacenamiento,
+            **extra,
+        )
+    )
+
+
+def test_el_paso_masivo_completa_las_compras_con_correo_y_es_idempotente(
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+    settings: Settings,
+    almacenamiento: FakeStorageProvider,
+    tmp_path: Path,
+) -> None:
+    settings.local_proveedores_dir = tmp_path / "FacturasProveedores"
+    compra = _con_correo(_compra_con_archivos(uow, empresa_principal, almacenamiento))
+    uow.comprobantes.comprobantes[compra.id] = compra
+    # Una compra sin correo (SIRE solamente) no se toca.
+    otra = construir_comprobante(
+        empresa_principal.id, serie="F001", correlativo=9, origen=OrigenComprobante.recibido
+    )
+    uow.comprobantes.comprobantes[otra.id] = otra
+
+    simulado = _completar(uow, empresa_principal, settings, almacenamiento, simular=True)
+    assert (simulado["compras_con_correo"], simulado["pendientes"]) == (1, 1)
+    assert not list(tmp_path.rglob("*.txt"))
+
+    primero = _completar(uow, empresa_principal, settings, almacenamiento)
+    segundo = _completar(uow, empresa_principal, settings, almacenamiento)
+
+    assert primero["completadas"] == 1 and primero["errores"] == []
+    assert (_carpeta_278(tmp_path) / "doc.pdf").is_file()
+    assert (_carpeta_278(tmp_path) / "correo.txt").is_file()
+    assert (segundo["ya_completas"], segundo["completadas"]) == (1, 0)
+
+
+def test_un_fallo_del_bucket_se_informa_y_no_frena_el_resto(
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+    settings: Settings,
+    almacenamiento: FakeStorageProvider,
+    tmp_path: Path,
+) -> None:
+    settings.local_proveedores_dir = tmp_path / "FacturasProveedores"
+    compra = _con_correo(_compra_con_archivos(uow, empresa_principal, almacenamiento))
+    uow.comprobantes.comprobantes[compra.id] = compra
+    almacenamiento.objetos.clear()  # el bucket ya no tiene el objeto
+
+    informe = _completar(uow, empresa_principal, settings, almacenamiento)
+
+    assert informe["completadas"] == 0
+    assert informe["errores"] == ["E001-00000278: KeyError"]
+
+
+def test_el_correo_txt_del_portal_se_actualiza_cuando_se_respalda_el_msg(
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+    settings: Settings,
+    almacenamiento: FakeStorageProvider,
+    tmp_path: Path,
+) -> None:
+    settings.local_proveedores_dir = tmp_path / "FacturasProveedores"
+    compra = _con_correo(_compra_con_archivos(uow, empresa_principal, almacenamiento))
+    uow.comprobantes.comprobantes[compra.id] = compra
+    _completar(uow, empresa_principal, settings, almacenamiento)
+    txt = _carpeta_278(tmp_path) / "correo.txt"
+    assert "(.msg)" not in txt.read_text(encoding="utf-8")
+
+    # Luego el extractor respalda el correo: JSON con su .msg (hora local de Lima, sin zona).
+    destino = tmp_path / "FacturasProveedores"
+    (destino / "_correos" / "2026-10").mkdir(parents=True)
+    (destino / "_correos" / "2026-10" / "a.msg").write_bytes(b"msg")
+    (destino / "_correos" / "2026-10" / "a.json").write_text(
+        json.dumps(
+            {
+                "recibido": "2026-10-25T07:57:48",
+                "asunto": "TRANSPORTE  GRUPO AR&J FACTURA E001-278",
+                "mensaje_original": {"ruta": "_correos/2026-10/a.msg"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    informe = _completar(uow, empresa_principal, settings, almacenamiento)
+
+    assert informe["completadas"] == 1
+    assert "Correo completo (.msg): _correos/2026-10/a.msg" in txt.read_text(encoding="utf-8")
+    assert _completar(uow, empresa_principal, settings, almacenamiento)["completadas"] == 0
+
+
+def test_un_correo_txt_del_extractor_con_cuerpo_nunca_se_reemplaza_por_el_del_portal(
+    uow: FakeUnitOfWork,
+    empresa_principal: Company,
+    settings: Settings,
+    almacenamiento: FakeStorageProvider,
+    tmp_path: Path,
+) -> None:
+    settings.local_proveedores_dir = tmp_path / "FacturasProveedores"
+    compra = _con_correo(_compra_con_archivos(uow, empresa_principal, almacenamiento))
+    uow.comprobantes.comprobantes[compra.id] = compra
+    carpeta = _carpeta_278(tmp_path)
+    carpeta.mkdir(parents=True)
+    (carpeta / "correo.txt").write_text("Asunto: x\n\nCuerpo:\nhola", encoding="utf-8")
+    destino = tmp_path / "FacturasProveedores"
+    (destino / "_correos").mkdir()
+    (destino / "_correos" / "a.msg").write_bytes(b"msg")
+    (destino / "_correos" / "a.json").write_text(
+        json.dumps(
+            {
+                "recibido": "2026-10-25T07:57:48",
+                "asunto": "TRANSPORTE GRUPO AR&J FACTURA E001-278",
+                "mensaje_original": {"ruta": "_correos/a.msg"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    informe = _completar(uow, empresa_principal, settings, almacenamiento)
+
+    assert informe["pendientes"] == 0
+    assert (carpeta / "correo.txt").read_text(encoding="utf-8").endswith("hola")

@@ -46,7 +46,11 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from scripts.cargar_correos import leer_registro_correos
+from scripts.cargar_correos import (
+    CorreoDePdfSuelto,
+    leer_correos_de_pdf_sueltos,
+    leer_registro_correos,
+)
 
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
@@ -59,7 +63,11 @@ from app.main import crear_cliente_sire
 from app.secrets.factory import build_secrets_provider
 from app.services.companies import resolve_company_access
 from app.services.correo_compras import CorreoDeCompra, clave_de_carpeta, registrar_correos
-from app.services.proveedores_paquete import importar_archivos_proveedores
+from app.services.evidencia_correos import completar_evidencia_de_correos
+from app.services.proveedores_paquete import (
+    identificar_compra_de_pdf,
+    importar_archivos_proveedores,
+)
 from app.services.sire import sincronizar_compras, sincronizar_ventas
 
 # Cortes de conexión con la base (el pooler cierra las conexiones inactivas, p. ej. mientras se
@@ -329,6 +337,92 @@ async def _anotar_correo_de_carpeta(
         return 0
 
 
+async def _anotar_correo_de_pdf(
+    uow_factory: Any,
+    usuario: AuthenticatedUser,
+    acceso: CompanyMember,
+    contenido: bytes,
+    correo: CorreoDePdfSuelto,
+) -> int:
+    """Identifica la compra de un PDF por su texto y le anota el correo (una transacción)."""
+    async with uow_factory(usuario.claims_para_rls) as uow:
+        compra = await identificar_compra_de_pdf(
+            contenido, uow=uow, company_id=acceso.company_id
+        )
+        if compra is None:
+            return 0
+        return await registrar_correos(
+            uow=uow,
+            access=acceso,
+            correos=[
+                CorreoDeCompra(
+                    compra.ruc_emisor,
+                    compra.serie,
+                    compra.correlativo,
+                    correo.asunto,
+                    correo.remitente,
+                    correo.recibido_at,
+                )
+            ],
+        )
+
+
+async def anotar_correos_de_pdf_sueltos(
+    uow_factory: Any,
+    usuario: AuthenticatedUser,
+    acceso: CompanyMember,
+    destino: Path,
+    correos: list[CorreoDePdfSuelto],
+    informe: dict[str, Any],
+    espera: float = ESPERA_REINTENTO_SEGUNDOS,
+) -> int:
+    """Anota el correo en las compras cuyo PDF llegó SIN XML.
+
+    Esos PDF no tienen carpeta de compra (quedan en `_sin_clasificar`), así que su correo no se
+    vinculaba y la compra salía sin «Correo» aunque sí vino del buzón. Se identifica la compra por
+    el texto del PDF (RUC y serie-número exactos); si no se identifica, no se anota nada. Si la
+    compra ya tenía correo, gana el más antiguo (`registrar_correo`).
+    """
+    anotadas = 0
+    for correo in correos:
+        if not correo.asunto.strip():
+            continue
+        archivo = destino / correo.ruta
+        if not archivo.is_file():
+            continue
+        try:
+            contenido = await asyncio.to_thread(archivo.read_bytes)
+            anotadas += await con_reintentos(
+                partial(_anotar_correo_de_pdf, uow_factory, usuario, acceso, contenido, correo),
+                espera=espera,
+            )
+        except Exception as exc:
+            informe["errores"].append(f"{correo.ruta}/correo: {describir_error(exc)}")
+    return anotadas
+
+
+async def completar_evidencia(
+    uow_factory: Any,
+    settings: Settings,
+    usuario: AuthenticatedUser,
+    acceso: CompanyMember,
+    destino: Path,
+    *,
+    simular: bool = False,
+    espera: float = ESPERA_REINTENTO_SEGUNDOS,
+) -> dict[str, Any]:
+    """Carpeta + `correo.txt` de cada compra con correo (en `destino`, la carpeta de compras)."""
+    ajustes = settings.model_copy(update={"local_proveedores_dir": destino})
+    return await completar_evidencia_de_correos(
+        uow_factory=uow_factory,
+        claims=usuario.claims_para_rls,
+        company_id=acceso.company_id,
+        settings=ajustes,
+        simular=simular,
+        reintentar=lambda operacion: con_reintentos(operacion, espera=espera),
+    )
+
+
 async def importar_pendientes(
     uow_factory: Any,
     settings: Settings,
@@ -421,6 +515,14 @@ async def importar_pendientes(
                 1 for i in r.items if i.ok and i.situacion == "unido"
             )
     _escribir_json(rutas.sueltos_intentados, sorted(intentados))
+    # El correo de un PDF sin XML no se vincula por carpeta: se anota por la compra que su texto da.
+    if sueltas:
+        sueltos_con_correo = await asyncio.to_thread(
+            leer_correos_de_pdf_sueltos, destino, set(sueltas)
+        )
+        informe["correos_registrados"] += await anotar_correos_de_pdf_sueltos(
+            uow_factory, usuario, acceso, destino, sueltos_con_correo, informe, espera
+        )
     _escribir_json(rutas.pendientes, {"carpetas": quedan_carpetas, "sin_clasificar": []})
     return informe
 
@@ -690,6 +792,14 @@ async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[st
             resumen["novedades"]["compras con su correo anotado"] = imp["correos_registrados"]
             if toca_sueltos:
                 estado["ultimo_reintento_sueltos"] = ahora.isoformat(timespec="seconds")
+            if args.aplicar:
+                # Toda compra con correo deja su carpeta y su correo.txt en la PC (constancia).
+                evidencia = await completar_evidencia(
+                    uow_factory, settings, usuario, acceso, destino
+                )
+                resumen["evidencia"] = evidencia
+                resumen["errores"] += [f"evidencia {e}" for e in evidencia["errores"]]
+                resumen["novedades"]["compras con correo.txt completado"] = evidencia["completadas"]
         if args.aplicar:
             _escribir_json(rutas.estado, estado)
             try:

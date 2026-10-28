@@ -26,6 +26,7 @@ from app.core.security import AuthenticatedUser
 from app.db.models import Comprobante
 from app.db.repositories.base import UnitOfWork
 from app.services.companies import require_membership
+from app.services.correo_compras import NOMBRE_CORREO_TXT, texto_correo_de_compra
 from app.services.store import documento_del_comprobante
 from app.storage.base import StorageProvider
 from app.storage.factory import get_storage_provider
@@ -123,6 +124,64 @@ def partes_del_comprobante(comprobante: Comprobante) -> list[str]:
     ]
 
 
+async def restaurar_carpeta(
+    *,
+    uow: UnitOfWork,
+    settings: Settings,
+    comprobante: Comprobante,
+    storage_provider: StorageProvider | None = None,
+    mensaje_original: str | None = None,
+) -> Path | None:
+    """Deja en la PC la carpeta del comprobante: archivos del bucket y, en compras, `correo.txt`.
+
+    Copia solo lo que falta (nunca pisa un archivo existente, ni un `correo.txt` hecho por el
+    extractor, que además trae el cuerpo del correo). El `correo.txt` sale de lo que Supabase guarda
+    del correo: es la constancia, junto a los archivos, de que la factura llegó por el buzón. Si se
+    conoce la ruta del correo completo (`mensaje_original`, un `.msg`), se anota en el texto y se
+    actualiza un `correo.txt` del portal que aún no la traía.
+    Devuelve la carpeta, o `None` si no hay nada que dejar (sin archivos ni correo y sin carpeta).
+    """
+    es_compra = comprobante.origen is OrigenComprobante.recibido
+    base = carpetas_base(settings, "recibido" if es_compra else "emitido")[0]
+    destino = base.joinpath(*partes_del_comprobante(comprobante)).resolve()
+    if not destino.is_relative_to(base):  # defensa en profundidad: las partes ya están limpias
+        raise NotFoundError("La carpeta del comprobante no es válida")
+
+    archivos = [
+        a
+        for a in await uow.archivos.list_for_comprobante(comprobante.id)
+        if a.storage_key
+        and a.tipo in (TipoArchivo.xml, TipoArchivo.pdf, TipoArchivo.cdr)
+        and not (es_compra and a.tipo is TipoArchivo.cdr)  # las compras no guardan CDR
+    ]
+    texto_correo = (
+        texto_correo_de_compra(comprobante, archivos, mensaje_original=mensaje_original)
+        if es_compra
+        else None
+    )
+    if not archivos and not destino.is_dir():
+        return None
+
+    proveedor = storage_provider or get_storage_provider(settings)
+    copiados = 0
+    for archivo in archivos:
+        ruta = destino / _limpio(archivo.nombre, f"{archivo.tipo.value}")
+        if ruta.exists():
+            continue
+        datos = await proveedor.get_object_bytes(archivo.storage_key or "")
+        await asyncio.to_thread(_escribir, ruta, datos)
+        copiados += 1
+    ruta_correo = destino / NOMBRE_CORREO_TXT
+    if texto_correo is not None and (
+        not ruta_correo.exists()
+        or (mensaje_original and correo_txt_del_portal_sin_msg(ruta_correo))
+    ):
+        await asyncio.to_thread(_escribir, ruta_correo, texto_correo.encode("utf-8"))
+        copiados += 1
+    logger.info("Carpeta local restaurada desde el bucket: %s (%d archivos)", destino, copiados)
+    return destino
+
+
 async def restaurar_y_abrir_carpeta(
     *,
     uow: UnitOfWork,
@@ -136,8 +195,8 @@ async def restaurar_y_abrir_carpeta(
     La carpeta local solo existe si el extractor del correo o «Guardar en mi PC» la crearon; un
     comprobante cuyo XML o PDF entró de otra forma (SIRE + PDF unido, otra PC, importación manual)
     tiene sus archivos en el bucket pero no en esta PC, y «Abrir carpeta» fallaba. Aquí se copian
-    los que falten (nunca se pisa uno existente) y se abre. La ruta sale del comprobante en la
-    base de datos (con RLS), no de lo que mande el cliente.
+    los que falten y se abre. La ruta sale del comprobante en la base de datos (con RLS), no de lo
+    que mande el cliente.
     """
     _exigir_habilitado(settings)
     comprobante = await uow.comprobantes.get(comprobante_id)
@@ -145,37 +204,29 @@ async def restaurar_y_abrir_carpeta(
         raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
     await require_membership(uow, user, comprobante.company_id)
 
-    es_compra = comprobante.origen is OrigenComprobante.recibido
-    base = carpetas_base(settings, "recibido" if es_compra else "emitido")[0]
-    destino = base.joinpath(*partes_del_comprobante(comprobante)).resolve()
-    if not destino.is_relative_to(base):  # defensa en profundidad: las partes ya están limpias
-        raise NotFoundError("La carpeta del comprobante no es válida")
-
-    archivos = [
-        a
-        for a in await uow.archivos.list_for_comprobante(comprobante_id)
-        if a.storage_key
-        and a.tipo in (TipoArchivo.xml, TipoArchivo.pdf, TipoArchivo.cdr)
-        and not (es_compra and a.tipo is TipoArchivo.cdr)  # las compras no guardan CDR
-    ]
-    if not archivos and not destino.is_dir():
+    destino = await restaurar_carpeta(
+        uow=uow, settings=settings, comprobante=comprobante, storage_provider=storage_provider
+    )
+    if destino is None:
         raise NotFoundError(
             "Este comprobante no tiene archivos guardados que copiar a la PC.",
             details={"motivo": "sin_archivos"},
         )
-
-    proveedor = storage_provider or get_storage_provider(settings)
-    copiados = 0
-    for archivo in archivos:
-        ruta = destino / _limpio(archivo.nombre, f"{archivo.tipo.value}")
-        if ruta.exists():
-            continue
-        datos = await proveedor.get_object_bytes(archivo.storage_key or "")
-        await asyncio.to_thread(_escribir, ruta, datos)
-        copiados += 1
-    logger.info("Carpeta local restaurada desde el bucket: %s (%d archivos)", destino, copiados)
     _abrir_en_explorador(destino)
     return str(destino)
+
+
+def correo_txt_del_portal_sin_msg(ruta: Path) -> bool:
+    """¿Es un `correo.txt` armado por el portal (sin cuerpo) que aún no indica su `.msg`?
+
+    El del extractor trae «Cuerpo:» y nunca se reemplaza: tiene más información.
+    """
+    try:
+        texto = ruta.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    del_portal = "Buzón:     recepcionfacturas" in texto and "Cuerpo:" not in texto
+    return del_portal and "(.msg)" not in texto
 
 
 def _escribir(ruta: Path, datos: bytes) -> None:

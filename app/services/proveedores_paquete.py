@@ -428,18 +428,37 @@ async def _guardar_pdf(
     return item
 
 
-async def _unir_pdf_suelto(
-    pdf: Entrada, *, uow: UnitOfWork, settings: Settings, access: CompanyMember
-) -> PaqueteItemOut:
-    """PDF sin XML: se une a una compra YA registrada si su texto da RUC y serie-número exactos."""
-    rucs, series = await run_blocking(candidatos_de_pdf, pdf.contenido)
+async def _compras_del_pdf(
+    contenido: bytes, *, uow: UnitOfWork, company_id: UUID
+) -> dict[UUID, Comprobante]:
+    """Compras registradas cuyo RUC y serie-número aparecen EXACTOS en el texto del PDF."""
+    rucs, series = await run_blocking(candidatos_de_pdf, contenido)
     encontradas: dict[UUID, Comprobante] = {}
     for ruc in rucs:
         for serie, correlativo in series:
             for c in await uow.comprobantes.find_recibidas(
-                access.company_id, ruc_emisor=ruc, serie=serie, correlativo=correlativo
+                company_id, ruc_emisor=ruc, serie=serie, correlativo=correlativo
             ):
                 encontradas[c.id] = c
+    return encontradas
+
+
+async def identificar_compra_de_pdf(
+    contenido: bytes, *, uow: UnitOfWork, company_id: UUID
+) -> Comprobante | None:
+    """La compra de un PDF suelto, solo si el texto la identifica sin ambigüedad (si no, `None`).
+
+    Sirve para saber a qué compra anotar el correo de un PDF que llegó sin XML.
+    """
+    encontradas = await _compras_del_pdf(contenido, uow=uow, company_id=company_id)
+    return next(iter(encontradas.values())) if len(encontradas) == 1 else None
+
+
+async def _unir_pdf_suelto(
+    pdf: Entrada, *, uow: UnitOfWork, settings: Settings, access: CompanyMember
+) -> PaqueteItemOut:
+    """PDF sin XML: se une a una compra YA registrada si su texto da RUC y serie-número exactos."""
+    encontradas = await _compras_del_pdf(pdf.contenido, uow=uow, company_id=access.company_id)
     base = PaqueteItemOut(archivo=pdf.nombre, tipo="pdf", ok=False)
     if len(encontradas) != 1:
         base.situacion = "omitido"

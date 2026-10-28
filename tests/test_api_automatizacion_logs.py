@@ -135,3 +135,72 @@ def test_exige_token_y_valida_los_parametros(client: TestClient, auth: dict[str,
     assert client.get(RUTA).status_code == 401
     assert client.get(RUTA, headers=auth, params={"resultado": "otro"}).status_code == 422
     assert client.get(RUTA, headers=auth, params={"limit": 0}).status_code == 422
+
+
+RUTA_FALLOS = f"/api/v1/companies/{RUC_PRINCIPAL}/portal/fallos"
+
+
+def test_un_fallo_del_portal_queda_en_logs_sin_tapar_el_estado_de_la_automatizacion(
+    client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
+) -> None:
+    import asyncio
+
+    asyncio.run(
+        _corrida(uow, empresa_principal, "ok", 0, estado={"ultima_sire_ok": "2026-10-22T09:00:00"})
+    )
+
+    respuesta = client.post(
+        RUTA_FALLOS,
+        headers=auth,
+        json={
+            "accion": "Abrir carpeta",
+            "mensaje": "Esa carpeta aún no existe  en la PC",
+            "codigo": "not_found",
+            "contexto": {"documento": "E001-00000278"},
+        },
+    )
+
+    assert respuesta.status_code == 202 and respuesta.json() == {"registrado": True}
+    todos = client.get(RUTA, headers=auth).json()
+    portal = client.get(RUTA, headers=auth, params={"origen": "portal"}).json()
+    corridas = client.get(RUTA, headers=auth, params={"origen": "automatizacion"}).json()
+    assert todos["total"] == 2 and portal["total"] == 1 and corridas["total"] == 1
+    fallo = portal["items"][0]
+    assert fallo["tareas"] == ["portal"] and fallo["resultado"] == "con_errores"
+    assert fallo["errores"] == ["Abrir carpeta: Esa carpeta aún no existe en la PC"]
+    assert fallo["detalle"]["portal"]["contexto"] == {"documento": "E001-00000278"}
+    # El fallo es el más reciente, pero el estado sigue siendo el de la última corrida real.
+    assert todos["estado"]["ultima_sire_ok"] == "2026-10-22T09:00:00"
+
+
+def test_el_fallo_del_portal_oculta_secretos(
+    client: TestClient, auth: dict[str, str], empresa_principal: Company
+) -> None:
+    client.post(
+        RUTA_FALLOS,
+        headers=auth,
+        json={"accion": "Importar", "mensaje": "falló con Bearer abc.def.ghi" + "x" * 300},
+    )
+
+    error = client.get(RUTA, headers=auth).json()["items"][0]["errores"][0]
+
+    assert "abc.def.ghi" not in error and len(error) <= 520
+
+
+def test_un_lector_no_escribe_en_logs_pero_no_recibe_error(
+    client: TestClient, auth_lector: dict[str, str], empresa_principal: Company
+) -> None:
+    respuesta = client.post(
+        RUTA_FALLOS, headers=auth_lector, json={"accion": "Exportar", "mensaje": "falló"}
+    )
+
+    assert respuesta.status_code == 202 and respuesta.json() == {"registrado": False}
+    assert client.get(RUTA, headers=auth_lector).json()["total"] == 0
+
+
+def test_valida_el_fallo_del_portal(client: TestClient, auth: dict[str, str]) -> None:
+    assert client.post(RUTA_FALLOS, json={"accion": "a", "mensaje": "b"}).status_code == 401
+    sin_accion = {"accion": "", "mensaje": "b"}
+    muy_largo = {"accion": "a", "mensaje": "x" * 501}
+    assert client.post(RUTA_FALLOS, headers=auth, json=sin_accion).status_code == 422
+    assert client.post(RUTA_FALLOS, headers=auth, json=muy_largo).status_code == 422

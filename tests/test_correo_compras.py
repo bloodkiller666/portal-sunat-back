@@ -13,7 +13,11 @@ import pytest
 from fastapi.testclient import TestClient
 from scripts import automatizar as au
 from scripts.automatizar import Rutas
-from scripts.cargar_correos import leer_registro_correos
+from scripts.cargar_correos import (
+    CorreoDePdfSuelto,
+    leer_correos_de_pdf_sueltos,
+    leer_registro_correos,
+)
 
 from app.core.config import Settings
 from app.core.enums import OrigenComprobante, RolEmpresa, SunatAmbiente
@@ -22,6 +26,7 @@ from app.db.models import Company, CompanyMember
 from app.services.correo_compras import CorreoDeCompra, clave_de_carpeta, registrar_correos
 from tests.conftest import RUC_PRINCIPAL
 from tests.fakes import FakeUnitOfWork, construir_comprobante
+from tests.test_api_proveedores_paquete import _pdf_con_texto
 
 UBL = Path(__file__).parent / "fixtures" / "ubl"
 FACTURA = (UBL / "factura_recibida.xml").read_bytes()  # F010-00000456 de 20999999999
@@ -350,3 +355,136 @@ def test_un_fallo_al_anotar_el_correo_se_informa_pero_la_compra_queda_importada(
 
     assert any("correo" in e for e in informe["errores"])
     assert len(uow.comprobantes.comprobantes) == 1
+
+
+# --------------------------------------------------------------------------- #
+# PDF que llegó SIN XML: queda en `_sin_clasificar`, su compra se identifica por el texto
+# --------------------------------------------------------------------------- #
+SUELTO = "_sin_clasificar/2026-10/20261025-075748_179ed5"
+
+
+def _escribir_pdf_suelto(destino: Path, nombre: str, texto: str) -> str:
+    ruta = destino / SUELTO / nombre
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_bytes(_pdf_con_texto(texto))
+    return f"{SUELTO}/{nombre}"
+
+
+def _anotar_sueltos(entorno, correos: list[CorreoDePdfSuelto]) -> tuple[int, dict]:
+    informe: dict = {"errores": []}
+    anotadas = asyncio.run(
+        au.anotar_correos_de_pdf_sueltos(
+            entorno["fabrica"],
+            entorno["usuario"],
+            entorno["acceso"],
+            entorno["destino"],
+            correos,
+            informe,
+        )
+    )
+    return anotadas, informe
+
+
+def test_se_leen_solo_los_pdf_sin_clasificar_con_su_correo(tmp_path: Path) -> None:
+    _registro(
+        tmp_path,
+        "a",
+        PRIMERO,
+        "TRANSPORTE FACTURA E001-278",
+        [f"{SUELTO}/GRUPO.pdf", f"{SUELTO}/foto.png", f"{CARPETA}/f.pdf", "_otras_empresas/x.pdf"],
+    )
+
+    (suelto,) = leer_correos_de_pdf_sueltos(tmp_path)
+
+    assert suelto.ruta == f"{SUELTO}/GRUPO.pdf"
+    assert (suelto.asunto, suelto.recibido_at) == ("TRANSPORTE FACTURA E001-278", PRIMERO)
+    assert leer_correos_de_pdf_sueltos(tmp_path, {"_sin_clasificar/otra"}) == []
+
+
+def test_el_pdf_sin_xml_anota_el_correo_en_la_compra_que_su_texto_identifica(
+    entorno, uow: FakeUnitOfWork, empresa_principal: Company
+) -> None:
+    compra = _compra(uow, empresa_principal)
+    ruta = _escribir_pdf_suelto(
+        entorno["destino"], "f.pdf", "Proveedor RUC 20999999999 FACTURA F010-00000456"
+    )
+    _registro(entorno["destino"], "a", PRIMERO, "Factura F010-456", [ruta])
+
+    anotadas, informe = _anotar_sueltos(entorno, leer_correos_de_pdf_sueltos(entorno["destino"]))
+
+    assert anotadas == 1 and informe["errores"] == []
+    actualizada = uow.comprobantes.comprobantes[compra.id]
+    assert actualizada.correo_asunto == "Factura F010-456"
+    assert actualizada.correo_recibido_at == PRIMERO
+
+
+def test_un_pdf_que_no_se_identifica_o_es_ambiguo_no_anota_nada(
+    entorno, uow: FakeUnitOfWork, empresa_principal: Company
+) -> None:
+    uno = _compra(uow, empresa_principal)
+    _compra(uow, empresa_principal, ruc="20888888888")  # misma serie-número, otro proveedor
+    rutas = [
+        _escribir_pdf_suelto(entorno["destino"], "orden.pdf", "Orden de compra 4500055493"),
+        _escribir_pdf_suelto(
+            entorno["destino"],
+            "ambiguo.pdf",
+            "RUC 20999999999 RUC 20888888888 FACTURA F010-00000456",
+        ),
+    ]
+    _registro(entorno["destino"], "a", PRIMERO, "Facturas", rutas)
+
+    anotadas, informe = _anotar_sueltos(entorno, leer_correos_de_pdf_sueltos(entorno["destino"]))
+
+    assert anotadas == 0 and informe["errores"] == []
+    assert uow.comprobantes.comprobantes[uno.id].correo_asunto is None
+
+
+def test_un_pdf_borrado_o_con_correo_sin_asunto_se_salta(
+    entorno, uow: FakeUnitOfWork, empresa_principal: Company
+) -> None:
+    compra = _compra(uow, empresa_principal)
+    texto = "RUC 20999999999 FACTURA F010-00000456"
+    sin_asunto = _escribir_pdf_suelto(entorno["destino"], "a.pdf", texto)
+    _registro(entorno["destino"], "a", PRIMERO, "  ", [sin_asunto])
+    _registro(entorno["destino"], "b", PRIMERO, "Factura", [f"{SUELTO}/no_existe.pdf"])
+
+    anotadas, informe = _anotar_sueltos(entorno, leer_correos_de_pdf_sueltos(entorno["destino"]))
+
+    assert anotadas == 0 and informe["errores"] == []
+    assert uow.comprobantes.comprobantes[compra.id].correo_asunto is None
+
+
+def test_un_fallo_al_anotar_un_pdf_se_informa_y_sigue_con_los_demas(
+    entorno, uow: FakeUnitOfWork, empresa_principal: Company, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _compra(uow, empresa_principal)
+    ruta = _escribir_pdf_suelto(
+        entorno["destino"], "f.pdf", "RUC 20999999999 FACTURA F010-00000456"
+    )
+    _registro(entorno["destino"], "a", PRIMERO, "Factura", [ruta])
+
+    async def falla(*_a, **_k):
+        raise ValueError("base caída")
+
+    monkeypatch.setattr(uow.comprobantes, "registrar_correo", falla)
+
+    anotadas, informe = _anotar_sueltos(entorno, leer_correos_de_pdf_sueltos(entorno["destino"]))
+
+    assert anotadas == 0
+    assert any("correo" in e for e in informe["errores"])
+
+
+def test_al_importar_los_pdf_sueltos_pendientes_se_anota_su_correo(
+    entorno, uow: FakeUnitOfWork, empresa_principal: Company
+) -> None:
+    compra = _compra(uow, empresa_principal)
+    ruta = _escribir_pdf_suelto(
+        entorno["destino"], "f.pdf", "RUC 20999999999 FACTURA F010-00000456"
+    )
+    _registro(entorno["destino"], "a", PRIMERO, "Factura F010-456", [ruta])
+    au._escribir_json(entorno["rutas"].pendientes, {"carpetas": [], "sin_clasificar": [SUELTO]})
+
+    informe = _importar(entorno)
+
+    assert informe["errores"] == [] and informe["correos_registrados"] == 1
+    assert uow.comprobantes.comprobantes[compra.id].correo_asunto == "Factura F010-456"

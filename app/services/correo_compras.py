@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
-from app.db.models import CompanyMember
+from app.db.models import Archivo, CompanyMember, Comprobante
 from app.db.repositories.base import UnitOfWork
 
 _CARPETA_DE_COMPRA = re.compile(r"^\d{4}/\d{2}/(\d{11})/([A-Z0-9]{4})-(\d{1,8})$", re.IGNORECASE)
@@ -45,6 +45,52 @@ def clave_de_carpeta(carpeta: str) -> tuple[str, str, int] | None:
 
 def _limpio(texto: str | None, maximo: int) -> str:
     return " ".join((texto or "").split())[:maximo]
+
+
+NOMBRE_CORREO_TXT = "correo.txt"
+_LIMA = timezone(timedelta(hours=-5))  # Perú no usa horario de verano
+
+
+def _a_hora_de_lima(momento: datetime) -> datetime:
+    """La base guarda la recepción en UTC; el buzón y el usuario la ven en hora de Lima."""
+    if momento.tzinfo is None:  # naive: ya viene en hora local
+        return momento
+    return momento.astimezone(_LIMA)
+
+
+def texto_correo_de_compra(
+    comprobante: Comprobante,
+    archivos: list[Archivo],
+    *,
+    mensaje_original: str | None = None,
+) -> str | None:
+    """`correo.txt` de una compra, armado con lo que Supabase guarda de su correo.
+
+    Es la constancia, junto a los archivos, de que la factura llegó por el buzón: asunto,
+    remitente, fecha de recepción y los adjuntos con su SHA-256 (el mismo que está en `archivos`).
+    El cuerpo no se guarda en la base; si se respaldó el correo completo (`.msg`), se indica dónde.
+    Devuelve `None` si la compra no tiene correo anotado.
+    """
+    if not comprobante.correo_asunto or comprobante.correo_recibido_at is None:
+        return None
+    recibido = _a_hora_de_lima(comprobante.correo_recibido_at)
+    lineas = [
+        f"Asunto:    {comprobante.correo_asunto}",
+        f"De:        {comprobante.correo_remitente or '(desconocido)'}",
+        f"Recibido:  {recibido:%Y-%m-%d %H:%M:%S} (hora de Lima)",
+        "Buzón:     recepcionfacturas",
+        "",
+        f"Comprobante: {comprobante.serie}-{comprobante.numero} de {comprobante.ruc_emisor}",
+        "",
+        "Archivos de este comprobante (huella SHA-256 registrada en el portal):",
+        *[
+            f"  - {a.nombre} ({a.size_bytes} bytes, sha256 {(a.hash_sha256 or '')[:16]}…)"
+            for a in archivos
+        ],
+    ]
+    if mensaje_original:
+        lineas += ["", f"Correo completo (.msg): {mensaje_original}"]
+    return "\n".join(lineas) + "\n"
 
 
 async def registrar_correos(

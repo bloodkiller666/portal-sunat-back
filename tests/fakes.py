@@ -629,12 +629,20 @@ class InMemoryAutomatizacionLogsRepository:
         return log
 
     async def listar(
-        self, company_id: UUID, *, resultado: str | None, limit: int, offset: int
+        self,
+        company_id: UUID,
+        *,
+        resultado: str | None,
+        limit: int,
+        offset: int,
+        origen: str | None = None,
     ) -> tuple[list[AutomatizacionLog], int]:
         filas = [
             log
             for log in self.logs
-            if log.company_id == company_id and (resultado is None or log.resultado == resultado)
+            if log.company_id == company_id
+            and (resultado is None or log.resultado == resultado)
+            and (origen is None or (origen == "portal") == ("portal" in log.tareas))
         ]
         filas.sort(key=lambda log: log.created_at or datetime.min.replace(tzinfo=UTC), reverse=True)
         return filas[offset : offset + limit], len(filas)

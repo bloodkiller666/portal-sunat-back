@@ -72,6 +72,32 @@ def test_la_busqueda_cubre_documento_cliente_ruc_y_orden_de_compra() -> None:
     assert "razon_social_emisor" not in donde
 
 
+@pytest.mark.parametrize(
+    ("texto", "serie", "correlativo"),
+    [
+        ("E001-278", "E001", 278),
+        ("e001-00000278", "E001", 278),
+        ("  F001 - 1620 ", "F001", 1620),
+        ("FF04" + chr(0x2013) + "600", "FF04", 600),
+        ("E001-0", "E001", 0),
+    ],
+)
+def test_buscar_serie_numero_sin_ceros_compara_serie_y_correlativo(
+    texto: str, serie: str, correlativo: int
+) -> None:
+    donde, parametros = _donde(uuid4(), FiltrosListado(q=texto))
+    assert parametros[-2:] == [serie, correlativo]
+    assert "c.serie = $3 and c.correlativo = $4" in donde
+    assert parametros[1] == _patron_like(texto)  # y sigue buscando el texto tal cual
+
+
+@pytest.mark.parametrize("texto", ["andes", "E001", "E001-", "E001-abc", "20999999999", "AB-12"])
+def test_lo_que_no_parece_serie_numero_no_agrega_el_brazo_exacto(texto: str) -> None:
+    donde, parametros = _donde(uuid4(), FiltrosListado(q=texto))
+    assert "c.correlativo =" not in donde
+    assert len(parametros) == 2
+
+
 def test_en_compras_la_busqueda_incluye_al_proveedor() -> None:
     donde, _ = _donde(
         uuid4(), FiltrosListado(q="proveedor", origen=OrigenComprobante.recibido)

@@ -44,6 +44,7 @@ def test_docs_y_openapi_disponibles(client: TestClient) -> None:
         "/api/v1/comprobantes/{comprobante_id}",
         "/api/v1/carpeta-local/abrir",
         "/api/v1/carpeta-local/restaurar-y-abrir",
+        "/api/v1/companies/{ruc}/portal/fallos",
         "/api/v1/comprobantes/{comprobante_id}/refresh-cdr",
         "/api/v1/comprobantes/{comprobante_id}/envios",
         "/api/v1/comprobantes/{comprobante_id}/archivos",
@@ -70,3 +71,24 @@ def test_cors_responde_al_origen_configurado(client: TestClient) -> None:
 def test_se_incluye_el_identificador_de_peticion(client: TestClient) -> None:
     respuesta = client.get("/health", headers={"X-Request-Id": "abc-123"})
     assert respuesta.headers["X-Request-Id"] == "abc-123"
+
+
+def test_un_texto_con_caracter_nulo_es_un_422_no_un_500(
+    client, auth, uow, monkeypatch
+) -> None:
+    """Postgres no admite `\x00`: el buscador (`q=a%00b`) respondía 500 en vez de 422."""
+    from asyncpg.exceptions import CharacterNotInRepertoireError
+
+    from tests.conftest import RUC_PRINCIPAL
+
+    async def falla(*_a, **_k):
+        raise CharacterNotInRepertoireError('invalid byte sequence for encoding "UTF8": 0x00')
+
+    monkeypatch.setattr(uow.comprobantes, "list_for_company", falla)
+
+    r = client.get(
+        f"/api/v1/companies/{RUC_PRINCIPAL}/comprobantes", headers=auth, params={"q": "a\x00b"}
+    )
+
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "validation_error"

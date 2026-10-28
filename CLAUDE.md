@@ -447,3 +447,17 @@ esquema nuevo: simula por defecto, con `--aplicar` copia y actualiza `archivos.s
   borraron. La automatización solo sincroniza SIRE del mes actual y el anterior, así que no vuelven.
 - `registrar_tarea_windows.ps1 -Destino <carpeta>` fija dónde queda lo extraído (la PC de Miguel usa
   `C:\Users\majco\Downloads\FacturasProovedores`; `LOCAL_PROVEEDORES_DIR` debe apuntar a la misma).
+
+### P18 — Estado correo y fallos del portal en Logs (2026-10-28)
+
+- **Columna «Estado correo»** (solo Compras, frontend `lib/correo.ts`): `SUBIDO` (verde) si la compra tiene
+  `correo_asunto` guardado; `NO ENCONTRADO` (rojo) si no lo tiene (nunca vino por el buzón o aún no se vincula).
+  No hay campo nuevo en la API: se deriva de `correo`.
+- **Fallos del portal en «Logs»**: todo `aviso.error(...)` del frontend se muestra (9 s en pantalla) y se envía a
+  `POST /companies/{ruc}/portal/fallos` (`{accion, mensaje, codigo?, contexto?}`), que lo guarda en
+  `automatizacion_logs` con `tareas=['portal']`, `resultado='con_errores'` (sin migración nueva). Los mensajes pasan
+  por `redact()` y se truncan. `GET .../automatizacion/logs?origen=portal|automatizacion` los separa; el `estado` del
+  apartado sale solo de las corridas de la automatización, un fallo del portal no lo tapa. Los avisos que solo
+  orientan (sin filas para exportar, la web no puede abrir carpetas locales) pasan `{ registrar: false }`.
+- Límite conocido: la RLS de `automatizacion_logs` solo deja insertar a admin/emisor, así que el fallo de un
+  `lector` se muestra pero responde `registrado=false` y no queda en Logs (cambiarlo requiere una migración).
