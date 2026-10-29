@@ -692,3 +692,28 @@ def test_mensajes_a_carpetas_copia_el_msg_a_cada_factura(tmp_path: Path) -> None
     copias = sorted(p.parent.name for p in tmp_path.glob("2026/*/*/*/correo_a.msg"))
     assert copias == ["F001-00000001", "F001-00000002", "F001-00000003"]
     assert (correos / "a.msg").exists()
+
+
+class _CarpetaFalsa:
+    def __init__(self, nombre: str, tipo: int = 0, hijas: tuple[_CarpetaFalsa, ...] = ()) -> None:
+        self.Name = nombre
+        self.DefaultItemType = tipo
+        self.Folders = list(hijas)
+
+
+def test_sin_lista_se_leen_todas_las_carpetas_de_correo_menos_las_del_sistema() -> None:
+    """Una carpeta nueva de un proveedor (regla de Outlook) se lee sin tener que agregarla."""
+    raiz = _CarpetaFalsa(
+        "buzon",
+        hijas=(
+            _CarpetaFalsa("Bandeja de entrada", hijas=(_CarpetaFalsa("TRANSMIDAL"),)),
+            _CarpetaFalsa("GRUPO AR&J"),
+            _CarpetaFalsa("Elementos enviados"),
+            _CarpetaFalsa("Problemas de sincronización"),
+            _CarpetaFalsa("Calendario", tipo=1),
+        ),
+    )
+
+    leidas = [c.Name for c in ex._carpetas(raiz, {ex.TODAS_LAS_CARPETAS})]
+    assert leidas == ["Bandeja de entrada", "TRANSMIDAL", "GRUPO AR&J"]
+    assert [c.Name for c in ex._carpetas(raiz, {"grupo ar&j"})] == ["GRUPO AR&J"]

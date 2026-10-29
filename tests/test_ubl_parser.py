@@ -92,3 +92,27 @@ def test_un_codigo_de_tipo_no_reconocido_vuelve_a_la_serie() -> None:
     )
 
     assert parse_comprobante_ubl(xml).tipo_documento == "01"
+
+
+def test_xml_facele_se_lee_como_un_comprobante_normal() -> None:
+    """El esquema `facele.pe` (`Comprobante/cpe`) de algunos proveedores también se importa."""
+    dato = parse_comprobante_ubl(_leer("factura_facele.xml"))
+
+    assert (dato.tipo_documento, dato.serie, dato.correlativo) == ("01", "FL50", 4650)
+    assert dato.nombre_archivo == "20123456786-01-FL50-00004650"
+    assert dato.ruc_emisor == "20123456786"
+    assert dato.ruc_receptor == "20514831620"
+    assert dato.fecha_emision.isoformat() == "2026-10-28"
+    assert dato.fecha_vencimiento.isoformat() == "2026-11-27"
+    assert dato.forma_pago == "Crédito 30 días"
+    assert dato.moneda == "PEN"
+    assert dato.monto_total == Decimal("459.02")
+    assert [(i.cantidad, i.precio_unitario, i.igv) for i in dato.items] == [
+        (Decimal("3.0000"), Decimal("50.7400"), Decimal("23.22")),
+        (Decimal("4.0000"), Decimal("76.7000"), Decimal("46.80")),
+    ]
+
+
+def test_xml_facele_de_otro_ruc_se_rechaza_si_se_pide_ruc() -> None:
+    with pytest.raises(InvalidDocumentError):
+        parse_comprobante_ubl(_leer("factura_facele.xml"), ruc_esperado="20999999999")

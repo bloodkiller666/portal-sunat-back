@@ -92,7 +92,31 @@ _NOMBRE_DE_DOCUMENTO = re.compile(
 MAX_CUERPO_CORREO = 20_000  # caracteres del cuerpo que se guardan en `correo.txt`
 NOMBRE_CORREO = "correo.txt"
 
-CARPETAS_POR_DEFECTO = "Bandeja de entrada,MEGA GAS,TEMPO TOURS,TRANSPORTES CIMSA"
+# «*» = todas las carpetas de correo del buzón. Los proveedores tienen reglas de Outlook que mueven
+# sus correos a una carpeta propia (MEGA GAS, TRANSMIDAL, GRUPO AR&J…): con una lista fija, cada
+# carpeta nueva quedaba sin leer hasta que alguien la agregaba.
+CARPETAS_POR_DEFECTO = "*"
+TODAS_LAS_CARPETAS = "*"
+# Carpetas de correo que no reciben facturas de proveedores (lo enviado, lo borrado, el sistema).
+CARPETAS_IGNORADAS = frozenset(
+    {
+        "elementos enviados",
+        "elementos eliminados",
+        "borradores",
+        "bandeja de salida",
+        "correo no deseado",
+        "problemas de sincronización",
+        "conflictos",
+        "errores locales",
+        "errores del servidor",
+        "historial de conversaciones",
+        "chat de equipo",
+        "procesados",
+        "configuración de pasos rápidos",
+        "conversation action settings",
+    }
+)
+OL_CARPETA_DE_CORREO = 0  # Folder.DefaultItemType de una carpeta de mensajes
 RUC_EMPRESA_POR_DEFECTO = "20514831620"
 # Topes contra ZIP maliciosos o corruptos (el contenido viene de correos externos).
 MAX_ENTRADAS_ZIP = 200
@@ -609,10 +633,26 @@ def _fecha(valor: Any) -> datetime | None:
         return None
 
 
+def _es_carpeta_de_correo(carpeta: Any) -> bool:
+    """Carpeta de mensajes que puede recibir facturas (no calendario, contactos ni sistema)."""
+    try:
+        return (
+            carpeta.DefaultItemType == OL_CARPETA_DE_CORREO
+            and str(carpeta.Name).lower() not in CARPETAS_IGNORADAS
+        )
+    except Exception:
+        return False
+
+
 def _carpetas(raiz: Any, nombres: set[str]) -> list[Any]:
+    """Las carpetas pedidas por nombre o, con «*», todas las de correo del buzón."""
+    todas = TODAS_LAS_CARPETAS in nombres
     encontradas: list[Any] = []
     for carpeta in raiz.Folders:
-        if str(carpeta.Name).lower() in nombres:
+        if todas:
+            if _es_carpeta_de_correo(carpeta):
+                encontradas.append(carpeta)
+        elif str(carpeta.Name).lower() in nombres:
             encontradas.append(carpeta)
         encontradas.extend(_carpetas(carpeta, nombres))
     return encontradas

@@ -508,3 +508,13 @@ esquema nuevo: simula por defecto, con `--aplicar` copia y actualiza `archivos.s
 - **Abrir carpeta**: en Windows 11 el título del Explorador es «CARPETA - Explorador de archivos»; se busca por
   clase `CabinetWClass` y título que empiece así, y se restaura/enfoca siempre (`carpeta_local._traer_al_frente`).
 - `scripts/indice_sueltos.py` arma `_sin_clasificar/INDICE.html` con enlaces a los PDF sueltos (solo lectura).
+
+### P22 — Todas las carpetas del buzón y XML `facele.pe` (2026-10-29)
+
+- **Carpetas**: el extractor lee TODAS las carpetas de correo del buzón (`CARPETAS_POR_DEFECTO = "*"`), menos las del
+  sistema (`CARPETAS_IGNORADAS`: enviados, eliminados, borradores, problemas de sincronización…). Las reglas de Outlook
+  mueven los correos de cada proveedor a una carpeta propia (TRANSMIDAL, GRUPO AR&J, MEGA GAS…) y con una lista fija las
+  nuevas quedaban sin leer. `--carpetas "A,B"` sigue permitiendo una lista.
+- **XML `facele.pe`** (`<Comprobante><cpe>…`, OSE Facele): `parse_comprobante_ubl` lo lee (`_parse_facele`) y devuelve lo
+  mismo que un UBL (tipos 01/03/07/08, ítems, vencimiento, forma de pago). Antes daba `InvalidDocumentError` y la factura
+  caía en `_sin_clasificar` como `xml_no_reconocido`.

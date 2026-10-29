@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Comprobante xmlns="http://facele.pe/docele/schemas/v11/Comprobante">
+    <cpe>
+        <tipoComprobante>01</tipoComprobante>
+        <serie>FL50</serie>
+        <correlativo>4650</correlativo>
+        <emisor>
+            <ruc>20123456786</ruc>
+            <razonSocial>PROVEEDOR DE PRUEBA S.A.C.</razonSocial>
+        </emisor>
+        <adquiriente>
+            <tipoIdentificacion>6</tipoIdentificacion>
+            <numeroIdentificacion>20514831620</numeroIdentificacion>
+            <nombre>EMPRESA COMPRADORA DE PRUEBA S.A.C.</nombre>
+        </adquiriente>
+        <condiciones>
+            <fechaEmision>2026-10-28</fechaEmision>
+            <fechaVencimiento>2026-11-27</fechaVencimiento>
+            <moneda>PEN</moneda>
+            <formaPago tipo="CREDITO">
+                <montoNeto>459.02</montoNeto>
+            </formaPago>
+        </condiciones>
+        <detalle>
+            <unidadMedida>NIU</unidadMedida>
+            <cantidadUnidades>3.0000</cantidadUnidades>
+            <codigo>COD001</codigo>
+            <descripcion>Producto de prueba A</descripcion>
+            <valorUnitario>43.0000</valorUnitario>
+            <precioUnitario>50.7400</precioUnitario>
+            <IgvMonto>23.22</IgvMonto>
+            <IgvTipo>10</IgvTipo>
+            <valorItem>129.00</valorItem>
+        </detalle>
+        <detalle>
+            <unidadMedida>NIU</unidadMedida>
+            <cantidadUnidades>4.0000</cantidadUnidades>
+            <codigo>COD002</codigo>
+            <descripcion>Producto de prueba B</descripcion>
+            <valorUnitario>65.0000</valorUnitario>
+            <precioUnitario>76.7000</precioUnitario>
+            <IgvMonto>46.80</IgvMonto>
+            <IgvTipo>10</IgvTipo>
+            <valorItem>260.00</valorItem>
+        </detalle>
+        <totales>
+            <subTotal>389.00</subTotal>
+            <importeTotal>459.02</importeTotal>
+        </totales>
+    </cpe>
+    <uuid>AAAAAAAAAAAAAAAAAAAAAAAAAAAA</uuid>
+</Comprobante>

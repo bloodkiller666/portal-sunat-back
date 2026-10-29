@@ -26,6 +26,11 @@ _TIPOS_POR_RAIZ = {
     "DebitNote": "08",
 }
 
+# Algunos proveedores (OSE Facele) entregan su propio esquema y no UBL: `<Comprobante><cpe>…`.
+# Lleva los mismos datos; se lee para no dejar la compra sin su XML.
+_RAIZ_FACELE = "Comprobante"
+_TIPOS_FACELE = frozenset({"01", "03", "07", "08"})
+
 _PREFIJO_TIPO = {"F": "01", "B": "03"}
 _TIPOS_FACTURA = frozenset({"01", "03"})
 
@@ -137,6 +142,8 @@ def parse_comprobante_ubl(xml: bytes, *, ruc_esperado: str | None = None) -> Com
         ) from exc
 
     raiz = _localname(root)
+    if raiz == _RAIZ_FACELE:
+        return _parse_facele(root, ruc_esperado)
     if raiz not in _TIPOS_POR_RAIZ:
         raise InvalidDocumentError(
             "El XML no es un comprobante UBL (se esperaba Invoice, CreditNote o DebitNote)",
@@ -197,6 +204,93 @@ def parse_comprobante_ubl(xml: bytes, *, ruc_esperado: str | None = None) -> Com
         razon_social_receptor=_razon_social(receptor),
         items=_parse_items(root, raiz),
     )
+
+
+def _texto_facele(elemento: etree._Element | None, nombre: str) -> str | None:
+    return None if elemento is None else _texto_en(elemento, nombre)
+
+
+def _parse_facele(root: etree._Element, ruc_esperado: str | None) -> ComprobanteUbl:
+    """Lee el XML `facele.pe` (`Comprobante/cpe`) con el mismo resultado que uno UBL."""
+    cpe = _hijo(root, "cpe")
+    if cpe is None:
+        raise InvalidDocumentError(
+            "El XML no es un comprobante UBL (se esperaba Invoice, CreditNote o DebitNote)",
+            details={"raiz": _RAIZ_FACELE},
+        )
+    tipo = (_texto_en(cpe, "tipoComprobante") or "").strip()
+    serie = (_texto_en(cpe, "serie") or "").upper()
+    correlativo_txt = (_texto_en(cpe, "correlativo") or "").strip()
+    if tipo not in _TIPOS_FACELE or not serie or not correlativo_txt.isdigit():
+        raise InvalidDocumentError(
+            "El comprobante no tiene un identificador válido ({SERIE}-{CORRELATIVO})",
+            details={"tipo": tipo, "serie": serie, "correlativo": correlativo_txt},
+        )
+    emisor = _hijo(cpe, "emisor")
+    ruc_emisor = _texto_facele(emisor, "ruc")
+    if ruc_emisor is None or not re.fullmatch(r"[0-9]{11}", ruc_emisor):
+        raise InvalidDocumentError(
+            "El XML no tiene un RUC de emisor válido", details={"ruc": ruc_emisor}
+        )
+    if ruc_esperado is not None and ruc_emisor != ruc_esperado:
+        raise InvalidDocumentError(
+            "El comprobante pertenece a otro RUC y no puede importarse en esta empresa",
+            details={"ruc_emisor": ruc_emisor, "ruc_empresa": ruc_esperado},
+        )
+    condiciones = _hijo(cpe, "condiciones")
+    adquiriente = _hijo(cpe, "adquiriente")
+    emision = _fecha_iso(_texto_facele(condiciones, "fechaEmision"))
+    vencimiento = _fecha_iso(_texto_facele(condiciones, "fechaVencimiento"))
+    receptor_doc = _texto_facele(adquiriente, "numeroIdentificacion")
+    forma = _hijo(condiciones, "formaPago") if condiciones is not None else None
+    forma_pago = None
+    if forma is not None:
+        clase = (forma.get("tipo") or "").upper()
+        if clase == "CONTADO":
+            forma_pago = "Contado"
+        elif clase == "CREDITO":
+            dias = (vencimiento - emision).days if emision and vencimiento else 0
+            forma_pago = f"Crédito {dias} días" if dias > 0 else "Crédito"
+    return ComprobanteUbl(
+        tipo_documento=tipo,
+        serie=serie,
+        correlativo=int(correlativo_txt),
+        ruc_emisor=ruc_emisor,
+        fecha_emision=emision,
+        fecha_vencimiento=vencimiento,
+        forma_pago=forma_pago,
+        moneda=(_texto_facele(condiciones, "moneda") or "PEN").upper()[:3],
+        monto_total=_decimal(_texto_facele(_hijo(cpe, "totales"), "importeTotal")),
+        razon_social_emisor=_texto_facele(emisor, "razonSocial"),
+        receptor_doc=receptor_doc,
+        ruc_receptor=_ruc_de_documento(receptor_doc),
+        razon_social_receptor=_texto_facele(adquiriente, "nombre"),
+        items=_items_facele(cpe),
+    )
+
+
+def _items_facele(cpe: etree._Element) -> tuple[ItemUbl, ...]:
+    items: list[ItemUbl] = []
+    for n, detalle in enumerate(_hijos(cpe, "detalle")[:_MAX_ITEMS], start=1):
+        cantidad = _decimal(_texto_en(detalle, "cantidadUnidades"))
+        descripcion = _texto_en(detalle, "descripcion")
+        if cantidad is None or not descripcion:
+            continue
+        items.append(
+            ItemUbl(
+                item_nro=n,
+                descripcion=descripcion,
+                cantidad=cantidad,
+                unidad_medida=_texto_en(detalle, "unidadMedida"),
+                codigo=_texto_en(detalle, "codigo"),
+                valor_unitario=_decimal(_texto_en(detalle, "valorUnitario")),
+                precio_unitario=_decimal(_texto_en(detalle, "precioUnitario")),
+                igv=_decimal(_texto_en(detalle, "IgvMonto")) or Decimal("0"),
+                tip_afectacion_igv=_texto_en(detalle, "IgvTipo"),
+                total=_decimal(_texto_en(detalle, "valorItem")),
+            )
+        )
+    return tuple(items)
 
 
 def _ruc_emisor(root: etree._Element) -> str | None:
@@ -267,9 +361,7 @@ def _fecha_iso(valor: str | None) -> date | None:
 
 
 def _hijos(elemento: etree._Element, nombre: str) -> list[etree._Element]:
-    return [
-        hijo for hijo in elemento if isinstance(hijo.tag, str) and _localname(hijo) == nombre
-    ]
+    return [hijo for hijo in elemento if isinstance(hijo.tag, str) and _localname(hijo) == nombre]
 
 
 def _vencimiento(root: etree._Element) -> date | None:
@@ -295,9 +387,7 @@ def _vencimiento(root: etree._Element) -> date | None:
     return max(fechas) if fechas else None
 
 
-def _forma_pago(
-    root: etree._Element, emision: date | None, vencimiento: date | None
-) -> str | None:
+def _forma_pago(root: etree._Element, emision: date | None, vencimiento: date | None) -> str | None:
     """`Contado`, `Crédito` o `Crédito N días`; `None` si el XML no la declara.
 
     SUNAT la informa en `PaymentTerms` (`PaymentMeansID` = Contado/Credito, y
