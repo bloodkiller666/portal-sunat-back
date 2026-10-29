@@ -351,7 +351,9 @@ class PostgresComprobantesRepository:
                 count(*) filter (where c.estado <> 'anulado') as exigibles,
                 count(*) filter (where c.estado <> 'anulado' and c.tiene_xml) as con_xml,
                 count(*) filter (where c.estado <> 'anulado' and c.tiene_cdr) as con_cdr,
-                count(*) filter (where c.estado <> 'anulado' and c.tiene_pdf) as con_pdf
+                count(*) filter (where c.estado <> 'anulado' and c.tiene_pdf) as con_pdf,
+                count(*) filter (where nullif(btrim(c.correo_asunto), '') is not null)
+                    as correos_enviados
             from public.comprobantes c
             where {donde}
             """,
@@ -380,6 +382,7 @@ class PostgresComprobantesRepository:
             con_xml=fila["con_xml"],
             con_cdr=fila["con_cdr"],
             con_pdf=fila["con_pdf"],
+            correos_enviados=fila["correos_enviados"],
         )
 
     async def create(self, registro: ComprobanteRegistro) -> Comprobante:

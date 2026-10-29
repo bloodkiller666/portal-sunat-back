@@ -45,6 +45,7 @@ from app.services.results import (
     ComprobanteDetalleOut,
     ComprobanteOut,
     ComprobantesPage,
+    CorreosOut,
     EnviosResponse,
     IntentoOut,
     ItemOut,
@@ -429,6 +430,7 @@ async def resumen_comprobantes(
         cobertura=CoberturaOut(
             exigibles=r.exigibles, con_xml=r.con_xml, con_cdr=r.con_cdr, con_pdf=r.con_pdf
         ),
+        correos=CorreosOut(enviados=r.correos_enviados, no_enviados=r.total - r.correos_enviados),
     )
 
 

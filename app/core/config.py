@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     local_abrir_carpeta: bool = False
     local_descargas_dir: Path | None = None
     # Donde `scripts/extraer_correo_outlook.py` deja las facturas de proveedores (mismo esquema
-    # AAAA/MM/RUC/SERIE-NÚMERO); por defecto `~/Downloads/FacturasProveedores`.
+    # AAAA/MES/RUC/SERIE-NÚMERO); por defecto `~/Downloads/FacturasProveedores`.
     local_proveedores_dir: Path | None = None
 
     # ---------------- Supabase ----------------

@@ -1,4 +1,4 @@
-"""Carpeta local de respaldo: `Descargas/AAAA/MM/RUC/SERIE-NÚMERO`.
+"""Carpeta local de respaldo: `Descargas/AAAA/MES/RUC/SERIE-NÚMERO`.
 
 El navegador guarda ahí el XML y el CDR (ver el frontend). Este módulo, cuando el backend corre
 en la MISMA PC del usuario, pide al sistema operativo abrirla. Por seguridad nunca recibe una
@@ -22,6 +22,7 @@ from app.core.config import Settings
 from app.core.enums import OrigenComprobante, TipoArchivo
 from app.core.errors import ConflictError, NotFoundError
 from app.core.logging import get_logger
+from app.core.meses import mes_numerico, nombre_mes
 from app.core.security import AuthenticatedUser
 from app.db.models import Comprobante
 from app.db.repositories.base import UnitOfWork
@@ -106,7 +107,7 @@ def _exigir_habilitado(settings: Settings) -> None:
 
 
 def partes_del_comprobante(comprobante: Comprobante) -> list[str]:
-    """`año/mes/RUC/SERIE-NÚMERO`, igual que arma la carpeta el frontend y el extractor.
+    """`año/MES/RUC/SERIE-NÚMERO` (mes en letras), como la arman el frontend y el extractor.
 
     La contraparte es el proveedor en una compra y el cliente (RUC o, si no tiene, su documento)
     en una venta.
@@ -118,7 +119,7 @@ def partes_del_comprobante(comprobante: Comprobante) -> list[str]:
         contraparte = comprobante.ruc_receptor or (comprobante.receptor_doc or "").strip()
     return [
         _limpio(str(fecha.year) if fecha else "", "sin-fecha"),
-        _limpio(f"{fecha.month:02d}" if fecha else "", "sin-fecha"),
+        _limpio(nombre_mes(fecha.month) if fecha else "", "sin-fecha"),
         _limpio(contraparte or "", "sin-ruc"),
         _limpio(documento_del_comprobante(comprobante), "sin-numero"),
     ]
@@ -236,6 +237,15 @@ def _escribir(ruta: Path, datos: bytes) -> None:
     temporal.replace(ruta)  # nunca queda un archivo a medio escribir con el nombre final
 
 
+def _variantes_de_mes(partes: list[str]) -> list[list[str]]:
+    """La ruta con el mes en letras y, si existe en ese formato, la de antes (`2026/10`).
+
+    Las carpetas guardadas antes del cambio a nombres de mes siguen abriéndose.
+    """
+    numerico = mes_numerico(partes[1]) if len(partes) > 1 else None
+    return [partes, [partes[0], numerico, *partes[2:]]] if numerico else [partes]
+
+
 def abrir_carpeta(*, settings: Settings, partes: list[str], origen: str | None = None) -> str:
     """Abre en el explorador la carpeta `año/mes/RUC/documento` y devuelve su ruta completa.
 
@@ -247,11 +257,14 @@ def abrir_carpeta(*, settings: Settings, partes: list[str], origen: str | None =
     limpias = [_limpio(parte, "sin-dato") for parte in partes]
     ruta: Path | None = None
     for base in carpetas_base(settings, origen):
-        candidata = base.joinpath(*limpias).resolve()
-        if not candidata.is_relative_to(base):  # defensa en profundidad: ya están limpios
-            raise NotFoundError("La carpeta del comprobante no es válida")
-        if candidata.is_dir():
-            ruta = candidata
+        for variante in _variantes_de_mes(limpias):
+            candidata = base.joinpath(*variante).resolve()
+            if not candidata.is_relative_to(base):  # defensa en profundidad: ya están limpios
+                raise NotFoundError("La carpeta del comprobante no es válida")
+            if candidata.is_dir():
+                ruta = candidata
+                break
+        if ruta is not None:
             break
     if ruta is None:
         raise NotFoundError(

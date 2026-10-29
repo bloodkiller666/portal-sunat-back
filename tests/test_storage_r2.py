@@ -215,7 +215,7 @@ async def test_xml_y_cdr_quedan_juntos_en_la_carpeta_del_documento() -> None:
             storage_provider=proveedor,
         )
 
-    carpeta = f"comprobantes/{RUC_PRINCIPAL}/2026/10/F001-00000007"
+    carpeta = f"comprobantes/{RUC_PRINCIPAL}/2026/OCTUBRE/F001-00000007"
     assert [subida["carpeta"] for subida in proveedor.subidas] == [carpeta, carpeta]
     assert [archivo.storage_key for archivo in uow.archivos.archivos] == [
         f"{carpeta}/{comprobante.nombre_archivo}.xml",
@@ -229,7 +229,7 @@ def test_un_comprobante_sin_serie_ni_numero_no_deja_la_ruta_vacia() -> None:
     comprobante = construir_comprobante(empresa.id, fecha_emision=date(2026, 1, 5))
     incompleto = comprobante.model_copy(update={"serie": "", "numero": "", "nombre_archivo": ""})
 
-    assert carpeta_del_comprobante(incompleto) == f"comprobantes/{RUC_PRINCIPAL}/2026/01/archivo"
+    assert carpeta_del_comprobante(incompleto) == f"comprobantes/{RUC_PRINCIPAL}/2026/ENERO/archivo"
     assert construir_clave(carpeta_del_comprobante(incompleto), "a.xml").endswith("/archivo/a.xml")
 
 

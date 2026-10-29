@@ -392,7 +392,7 @@ class CarpetaLocalOut(BaseModel):
 async def post_abrir_carpeta(
     _user: CurrentUserDep, settings: SettingsDep, datos: CarpetaLocalIn
 ) -> CarpetaLocalOut:
-    """`Descargas/AAAA/MM/RUC/SERIE-NÚMERO`. 409 si el backend no corre en la PC del usuario.
+    """`Descargas/AAAA/MES/RUC/SERIE-NÚMERO`. 409 si el backend no corre en la PC del usuario.
 
     No usa la base de datos: solo valida el token y abre una carpeta existente bajo la base.
     """

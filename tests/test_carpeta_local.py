@@ -19,7 +19,7 @@ from app.services.correo_compras import texto_correo_de_compra
 from app.services.evidencia_correos import completar_evidencia_de_correos
 from tests.fakes import FakeStorageProvider, FakeUnitOfWork, construir_comprobante
 
-PARTES = ["2026", "09", "20100000001", "FF01-00000123"]
+PARTES = ["2026", "SETIEMBRE", "20100000001", "FF01-00000123"]
 URL = "/api/v1/carpeta-local/abrir"
 
 
@@ -238,7 +238,9 @@ def test_restaura_la_carpeta_de_una_compra_desde_el_bucket(
 
     r = client.post(RESTAURAR, headers=auth, json={"comprobante_id": str(compra.id)})
 
-    destino = restauracion / "FacturasProveedores" / "2026" / "10" / "20612414328" / "E001-00000278"
+    destino = (
+        restauracion / "FacturasProveedores" / "2026" / "OCTUBRE" / "20612414328" / "E001-00000278"
+    )
     assert r.status_code == 200
     assert Path(r.json()["ruta"]) == destino.resolve()
     assert (destino / "doc.pdf").read_bytes() == b"contenido pdf"
@@ -258,7 +260,9 @@ def test_restaurar_no_pisa_lo_que_ya_hay_ni_copia_el_cdr_de_una_compra(
     compra = _compra_con_archivos(
         uow, empresa_principal, almacenamiento, (TipoArchivo.pdf, TipoArchivo.xml, TipoArchivo.cdr)
     )
-    destino = restauracion / "FacturasProveedores" / "2026" / "10" / "20612414328" / "E001-00000278"
+    destino = (
+        restauracion / "FacturasProveedores" / "2026" / "OCTUBRE" / "20612414328" / "E001-00000278"
+    )
     destino.mkdir(parents=True)
     (destino / "doc.pdf").write_bytes(b"version local")
 
@@ -327,7 +331,7 @@ def _con_correo(compra: Comprobante) -> Comprobante:
 
 
 def _carpeta_278(base: Path) -> Path:
-    return base / "FacturasProveedores" / "2026" / "10" / "20612414328" / "E001-00000278"
+    return base / "FacturasProveedores" / "2026" / "OCTUBRE" / "20612414328" / "E001-00000278"
 
 
 def test_el_texto_del_correo_trae_asunto_remitente_hora_de_lima_y_huellas(

@@ -39,7 +39,7 @@ def _archivo(comprobante: Comprobante, *, tipo: TipoArchivo = TipoArchivo.xml) -
         storage_provider="r2",
         storage_bucket="bucket-privado",
         storage_key=(
-            f"comprobantes/{RUC_PRINCIPAL}/2026/10/{comprobante.serie}-{comprobante.numero}"
+            f"comprobantes/{RUC_PRINCIPAL}/2026/OCTUBRE/{comprobante.serie}-{comprobante.numero}"
             f"/{comprobante.nombre_archivo}.xml"
         ),
         estado=EstadoArchivo.subido,
@@ -185,7 +185,7 @@ def test_la_importacion_archiva_el_xml(
     assert guardados[0].nombre == f"{RUC_PRINCIPAL}-01-F001-00000001.xml"
     # Ruta pedida: AÑO/MES/N° DOCUMENTO, con el XML dentro de la carpeta del documento.
     assert re.fullmatch(
-        rf"comprobantes/{RUC_PRINCIPAL}/\d{{4}}/\d{{2}}/F001-00000001/"
+        rf"comprobantes/{RUC_PRINCIPAL}/\d{{4}}/[A-Z]+/F001-00000001/"
         rf"{RUC_PRINCIPAL}-01-F001-00000001\.xml",
         guardados[0].storage_key,
     ), guardados[0].storage_key

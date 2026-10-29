@@ -1,7 +1,7 @@
 """Deja en la carpeta local de cada compra la constancia de que llegó por el correo.
 
 Para cada compra con correo anotado (la columna «Correo» del portal, guardada en Supabase) y con al
-menos un archivo (XML o PDF), asegura en `LOCAL_PROVEEDORES_DIR/AAAA/MM/RUC/SERIE-NÚMERO/`:
+menos un archivo (XML o PDF), asegura en `LOCAL_PROVEEDORES_DIR/AAAA/MES/RUC/SERIE-NÚMERO/`:
 
 * sus archivos del bucket (copia solo los que falten), y
 * un `correo.txt` con asunto, remitente, fecha de recepción y la huella SHA-256 de cada adjunto.

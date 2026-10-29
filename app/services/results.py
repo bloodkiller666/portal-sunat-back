@@ -176,6 +176,13 @@ class CoberturaOut(BaseModel):
     con_pdf: int
 
 
+class CorreosOut(BaseModel):
+    """Compras del conjunto filtrado según su «Estado correo» (solo tiene sentido en Compras)."""
+
+    enviados: int
+    no_enviados: int
+
+
 class ResumenOut(BaseModel):
     """Indicadores del conjunto filtrado, calculados en la base de datos."""
 
@@ -184,6 +191,7 @@ class ResumenOut(BaseModel):
     # Neto por moneda (`PEN`, `USD`): las notas de crédito restan; sin anulados ni rechazados.
     facturado_neto: dict[str, Decimal]
     cobertura: CoberturaOut
+    correos: CorreosOut
 
 
 class ItemOut(BaseModel):

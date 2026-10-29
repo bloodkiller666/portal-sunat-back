@@ -19,6 +19,7 @@ from app.core.errors import (
     StorageNotConfiguredError,
 )
 from app.core.logging import get_logger
+from app.core.meses import nombre_mes
 from app.db.models import Archivo, ArchivoRegistro, Comprobante
 from app.db.repositories.base import UnitOfWork
 from app.storage.base import StorageProvider
@@ -199,7 +200,8 @@ async def url_descarga(
 
 
 def carpeta_del_comprobante(comprobante: Comprobante) -> str:
-    """Carpeta del comprobante: `comprobantes/{ruc}/{año}/{mes}/{serie}-{número}`.
+    """Carpeta del comprobante: `comprobantes/{ruc}/{año}/{MES}/{serie}-{número}`
+    (el mes va en letras, p. ej. `OCTUBRE`).
 
     Cada documento tiene su propia carpeta para que el XML y el CDR viajen
     juntos al revisar el bucket. El RUC emisor se conserva delante porque el
@@ -208,7 +210,7 @@ def carpeta_del_comprobante(comprobante: Comprobante) -> str:
     """
     fecha = comprobante.fecha_emision or datetime.now(tz=UTC).date()
     return (
-        f"comprobantes/{comprobante.ruc_emisor}/{fecha.year}/{fecha.month:02d}"
+        f"comprobantes/{comprobante.ruc_emisor}/{fecha.year}/{nombre_mes(fecha.month)}"
         f"/{documento_del_comprobante(comprobante)}"
     )
 

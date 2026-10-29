@@ -1,7 +1,7 @@
 """Anota en cada compra de qué correo llegó (asunto, remitente y fecha de recepción).
 
 El extractor del buzón de facturas deja, por cada correo, un registro con sus archivos
-(`_correos/AAAA-MM/….json`); la carpeta de cada archivo (`AAAA/MM/RUC/SERIE-NÚMERO`) identifica
+(`_correos/AAAA-MES/….json`); la carpeta de cada archivo (`AAAA/MES/RUC/SERIE-NÚMERO`) identifica
 la compra. Aquí solo se aplica ese dato a la base: sin leer el disco ni Outlook.
 
 Si la misma factura llegó en varios correos se conserva el primero (el de fecha más antigua), de
@@ -17,7 +17,10 @@ from datetime import datetime, timedelta, timezone
 from app.db.models import Archivo, CompanyMember, Comprobante
 from app.db.repositories.base import UnitOfWork
 
-_CARPETA_DE_COMPRA = re.compile(r"^\d{4}/\d{2}/(\d{11})/([A-Z0-9]{4})-(\d{1,8})$", re.IGNORECASE)
+# El mes es el nombre (`OCTUBRE`) o, en carpetas anteriores, el número (`10`).
+_CARPETA_DE_COMPRA = re.compile(
+    r"^\d{4}/(?:\d{2}|[A-ZÁÉÍÓÚ]{4,10})/(\d{11})/([A-Z0-9]{4})-(\d{1,8})$", re.IGNORECASE
+)
 MAX_ASUNTO = 500
 MAX_REMITENTE = 300
 
@@ -35,7 +38,7 @@ class CorreoDeCompra:
 
 
 def clave_de_carpeta(carpeta: str) -> tuple[str, str, int] | None:
-    """`AAAA/MM/RUC/SERIE-NÚMERO` → `(ruc, serie, correlativo)`; `None` si no es una compra."""
+    """`AAAA/MES/RUC/SERIE-NÚMERO` → `(ruc, serie, correlativo)`; `None` si no es una compra."""
     coincidencia = _CARPETA_DE_COMPRA.match(carpeta.replace("\\", "/").strip("/"))
     if not coincidencia:
         return None

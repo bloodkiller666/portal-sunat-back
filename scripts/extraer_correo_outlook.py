@@ -2,15 +2,16 @@
 
 SOLO LECTURA sobre el buzón: no borra, mueve ni marca ningún correo. Cada comprobante queda en
 
-    {destino}/AAAA/MM/RUC/SERIE-NÚMERO/        XML y PDF de ESA factura + `correo.txt`
-        (AAAA/MM = fecha de emisión; RUC = el del proveedor; el nombre es serie-número de 8 dígitos)
+    {destino}/AAAA/MES/RUC/SERIE-NÚMERO/        XML y PDF de ESA factura + `correo.txt`
+        (AAAA/MES = fecha de emisión, con el mes en letras; RUC = el del proveedor; serie-número
+        de 8 dígitos)
 
 y lo que no se puede ubicar se aparta para revisarlo a mano:
 
-    {destino}/_otras_empresas/{RUC adquirente}/AAAA/MM/RUC/SERIE-NÚMERO/    facturas a otro RUC
-    {destino}/_sin_clasificar/AAAA-MM/{correo}/        PDF sin XML, fotos de documentos…
-    {destino}/_correos/AAAA-MM/{correo}.json        de qué correo salió cada archivo (auditoría)
-    {destino}/_correos/AAAA-MM/{correo}.msg         el correo original (prueba si lo borran)
+    {destino}/_otras_empresas/{RUC adquirente}/AAAA/MES/RUC/SERIE-NÚMERO/    facturas a otro RUC
+    {destino}/_sin_clasificar/AAAA-MES/{correo}/        PDF sin XML, fotos de documentos…
+    {destino}/_correos/AAAA-MES/{correo}.json        de qué correo salió cada archivo (auditoría)
+    {destino}/_correos/AAAA-MES/{correo}.msg         el correo original (prueba si lo borran)
     {destino}/_paquetes_importar/{fecha}/lote-NNN.zip    ZIP para el botón «Importar» (Compras)
     {destino}/registro_correos.jsonl, indice_comprobantes.jsonl, informe.json
 
@@ -58,6 +59,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.core.errors import AppError
+from app.core.meses import nombre_mes, periodo_carpeta
+from app.services.pdf_identificar import candidatos_de_pdf
 from app.services.proveedores_paquete import (
     Asignacion,
     Entrada,
@@ -122,7 +125,7 @@ def id_correo(entry_id: str) -> str:
 
 
 def carpeta_de_correo(destino: Path, recibido: datetime, identificador: str) -> Path:
-    return destino / f"{recibido:%Y-%m}" / f"{recibido:%Y%m%d-%H%M%S}_{identificador[:6]}"
+    return destino / periodo_carpeta(recibido) / f"{recibido:%Y%m%d-%H%M%S}_{identificador[:6]}"
 
 
 def nombre_libre(carpeta: Path, nombre: str) -> Path:
@@ -258,8 +261,10 @@ def carpeta_de_comprobante(
     adquirente: str | None,
     ruc_empresa: str,
 ) -> str:
-    """`AAAA/MM/RUC/SERIE-NÚMERO` (o bajo `_otras_empresas/{RUC}` si compra otro RUC)."""
-    anio, mes = (f"{emision.year:04d}", f"{emision.month:02d}") if emision else ("sin-fecha",) * 2
+    """`AAAA/MES/RUC/SERIE-NÚMERO` (o bajo `_otras_empresas/{RUC}` si compra otro RUC)."""
+    anio, mes = ("sin-fecha",) * 2
+    if emision:
+        anio, mes = f"{emision.year:04d}", nombre_mes(emision.month)
     base = f"{anio}/{mes}/{ruc_emisor}/{serie}-{correlativo:08d}"
     if adquirente and adquirente != ruc_empresa:
         return f"_otras_empresas/{adquirente}/{base}"
@@ -285,7 +290,10 @@ def planificar_correo(
     for nombre, datos, origen in archivos:
         if origen == "zip_original":
             # El ZIP se conserva aparte: su contenido ya se reparte con los demás adjuntos.
-            ruta = f"_originales_zip/{recibido:%Y-%m}/{recibido:%Y%m%d-%H%M%S}_{identificador[:6]}"
+            ruta = (
+                f"_originales_zip/{periodo_carpeta(recibido)}/"
+                f"{recibido:%Y%m%d-%H%M%S}_{identificador[:6]}"
+            )
             plan.colocaciones.append(Colocacion(f"{ruta}/{nombre}", datos, origen))
             continue
         unico, contador = nombre, 2
@@ -299,10 +307,13 @@ def planificar_correo(
 
     agrupacion = agrupar(entradas)
     destino_unico: str | None = None
+    destinos: list[tuple[str, str, str, int]] = []  # (carpeta, RUC, serie, número) de cada factura
     for asignacion in agrupacion.asignaciones:
         destino = _carpeta_de(asignacion, ruc_empresa, plan)
         if destino is not None:
             destino_unico = destino if len(agrupacion.asignaciones) == 1 else None
+            c = plan.comprobantes[-1]
+            destinos.append((destino, c.ruc_emisor, c.serie, c.correlativo))
         for archivo in _archivos_de(asignacion):
             ruta = destino if destino is not None else _sin_clasificar(recibido, identificador)
             plan.colocaciones.append(
@@ -319,6 +330,18 @@ def planificar_correo(
             # Una foto de factura o de guía se reconoce por su extensión; el resto (RAR, archivos
             # sin extensión…) se aparta para revisarlo a mano.
             codigo = "imagen" if archivo.extension in IMAGENES else "revisar_a_mano"
+        if codigo == "sin_xml" and archivo.extension == "pdf" and destinos:
+            # PDF que no es el de una factura (guía de remisión, nota de crédito, orden…): se
+            # conserva TAL CUAL, sin renombrarlo ni mezclarlo, en la factura a la que se refiere
+            # o, si no se sabe cuál, en todas las del correo para que llegue a Cloudflare y al
+            # portal.
+            for carpeta in _carpetas_del_pdf(archivo.contenido, destinos):
+                plan.colocaciones.append(
+                    Colocacion(
+                        f"{carpeta}/{archivo.nombre}", archivo.contenido, origenes[archivo.nombre]
+                    )
+                )
+            continue
         # Con una sola factura en el correo, su guía de remisión o su foto van con ella.
         ruta = destino_unico if codigo in ("guia", "imagen") and destino_unico else None
         ruta = ruta or _sin_clasificar(recibido, identificador)
@@ -330,6 +353,18 @@ def planificar_correo(
     if meta is not None:
         _agregar_texto_correo(plan, meta)
     return plan
+
+
+def _carpetas_del_pdf(contenido: bytes, destinos: list[tuple[str, str, str, int]]) -> list[str]:
+    """Carpetas de factura donde va un PDF que el nombre no une a ninguna.
+
+    Si su texto cita el RUC y la serie-número de una o más facturas del correo, va a esas. Si no
+    (escaneo, guía sin la factura citada, orden de compra…), va a todas las del correo: nada se
+    pierde y cada factura conserva el adjunto completo de su correo.
+    """
+    rucs, series = candidatos_de_pdf(contenido)
+    citadas = [d for d in destinos if d[1] in rucs and (d[2].upper(), d[3]) in series]
+    return list(dict.fromkeys(d[0] for d in (citadas or destinos)))
 
 
 def _agregar_texto_correo(plan: PlanCorreo, meta: MetaCorreo) -> None:
@@ -355,7 +390,9 @@ def _agregar_texto_correo(plan: PlanCorreo, meta: MetaCorreo) -> None:
 
 
 def _sin_clasificar(recibido: datetime, identificador: str) -> str:
-    return f"_sin_clasificar/{recibido:%Y-%m}/{recibido:%Y%m%d-%H%M%S}_{identificador[:6]}"
+    return (
+        f"_sin_clasificar/{periodo_carpeta(recibido)}/{recibido:%Y%m%d-%H%M%S}_{identificador[:6]}"
+    )
 
 
 def _archivos_de(asignacion: Asignacion) -> list[Entrada]:
@@ -536,7 +573,7 @@ def unir_sueltos(
 def crear_paquetes(destino: Path, simular: bool) -> list[Path]:
     """ZIP con las carpetas de compras de la empresa, listos para el botón «Importar»."""
     carpetas: list[tuple[str, list[tuple[str, int]]]] = []
-    for ruta in sorted(destino.glob("[0-9][0-9][0-9][0-9]/[0-9][0-9]/*/*")):
+    for ruta in sorted(destino.glob("[0-9][0-9][0-9][0-9]/*/*/*")):
         if ruta.is_dir():
             archivos = [
                 (f.name, f.stat().st_size)
@@ -860,7 +897,7 @@ def _registrar(
     meta = (
         destino
         / "_correos"
-        / f"{recibido:%Y-%m}"
+        / periodo_carpeta(recibido)
         / f"{recibido:%Y%m%d-%H%M%S}_{identificador[:6]}.json"
     )
     meta.parent.mkdir(parents=True, exist_ok=True)

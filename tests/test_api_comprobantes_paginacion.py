@@ -257,6 +257,21 @@ def test_resumen_calcula_estados_neto_y_cobertura(
     assert cuerpo["cobertura"] == {"exigibles": 3, "con_xml": 1, "con_cdr": 0, "con_pdf": 0}
 
 
+def test_resumen_cuenta_correos_enviados_y_no_enviados(
+    client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
+) -> None:
+    # Un asunto en blanco no cuenta como correo enviado.
+    for correlativo, asunto in ((1, "FACTURA F001-1"), (2, "   "), (3, None)):
+        c = _agregar(uow, empresa_principal, correlativo=correlativo)
+        uow.comprobantes.comprobantes[next(
+            k for k, v in uow.comprobantes.comprobantes.items() if v is c
+        )] = c.model_copy(update={"correo_asunto": asunto})
+
+    cuerpo = client.get(RESUMEN, headers=auth).json()
+
+    assert cuerpo["correos"] == {"enviados": 1, "no_enviados": 2}
+
+
 def test_resumen_respeta_el_rango_de_fechas(
     client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
 ) -> None:

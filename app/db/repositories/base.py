@@ -94,6 +94,8 @@ class ResumenComprobantes:
     con_xml: int = 0
     con_cdr: int = 0
     con_pdf: int = 0
+    # Compras: cuántas del conjunto filtrado tienen guardado el asunto de su correo.
+    correos_enviados: int = 0
 
 
 @runtime_checkable

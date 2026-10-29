@@ -466,3 +466,17 @@ esquema nuevo: simula por defecto, con `--aplicar` copia y actualiza `archivos.s
 - **Previsualización** (menú «⋯» de la fila, frontend `dialogo-previsualizar.tsx`): lista los PDF y XML archivados del
   comprobante (`GET /comprobantes/{id}/archivos`), baja cada uno con su URL firmada solo al mostrarlo (PDF en el visor
   del navegador, XML como texto respetando su codificación) y pasa de uno a otro con Anterior/Siguiente.
+
+### P19 — Todos los PDF del correo y meses en letras (2026-10-29)
+
+- **PDF adicionales** (guía de remisión, nota de crédito, orden…): el extractor ya no los aparta cuando el
+  correo trae facturas. Se guardan TAL CUAL (nombre y bytes originales) en la carpeta de la factura que su texto
+  cita (RUC + serie-número exactos; si cita varias, en esas) y, si no citan ninguna, en TODAS las facturas del
+  correo (`_carpetas_del_pdf`). Así la separación por RUC + serie-número se mantiene y el PDF llega a R2 y al
+  portal al importar. Un PDF de un correo SIN ninguna factura (sin XML) sigue en `_sin_clasificar`, solo local.
+  El frontend baja todos los PDF de una compra (menú «Descargar PDF», «Guardar en mi PC» y el lote ZIP).
+- **Meses en letras** (`app/core/meses.py`, `lib/calendario.ts` + `lib/carpeta-local.ts`): las carpetas son
+  `AAAA/OCTUBRE/RUC/SERIE-NÚMERO` (local y clave de R2 de lo que se suba desde ahora), y las de auditoría
+  `_correos/2026-OCTUBRE/…`. «Abrir carpeta» prueba el nombre y, si no existe, el número de antes (`2026/10`).
+  Los objetos de R2 que ya estaban (ventas) conservan su ruta numérica: `archivos.storage_key` guarda la ruta
+  real, así que se siguen descargando. `correo_compras._CARPETA_DE_COMPRA` acepta ambos formatos.

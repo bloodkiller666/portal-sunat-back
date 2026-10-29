@@ -341,6 +341,7 @@ class InMemoryComprobantesRepository:
             con_xml=sum(1 for c in exigibles if TipoArchivo.xml in self._tipos(c)),
             con_cdr=sum(1 for c in exigibles if TipoArchivo.cdr in self._tipos(c)),
             con_pdf=sum(1 for c in exigibles if TipoArchivo.pdf in self._tipos(c)),
+            correos_enviados=sum(1 for c in filas if (c.correo_asunto or "").strip()),
         )
 
     async def create(self, registro: ComprobanteRegistro) -> Comprobante:
