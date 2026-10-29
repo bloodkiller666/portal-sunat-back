@@ -43,8 +43,14 @@ class StorageProvider(Protocol):
         """Sube `file_bytes` a `folder_path/filename` y devuelve su referencia."""
         ...
 
-    async def get_download_url(self, file_key: str, *, expires_in: int | None = None) -> str:
-        """URL firmada y temporal para descargar `file_key` (bucket privado)."""
+    async def get_download_url(
+        self, file_key: str, *, expires_in: int | None = None, inline_mime: str | None = None
+    ) -> str:
+        """URL firmada y temporal para descargar `file_key` (bucket privado).
+
+        Con `inline_mime` la respuesta pide al navegador MOSTRAR el archivo (no bajarlo) con ese
+        tipo: sirve para verlo en un `<iframe>` (previsualización).
+        """
         ...
 
     async def get_object_bytes(self, file_key: str) -> bytes:

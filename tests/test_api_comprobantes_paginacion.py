@@ -288,3 +288,24 @@ def test_resumen_respeta_el_rango_de_fechas(
 def test_resumen_de_empresa_ajena_se_deniega(client: TestClient, auth: dict[str, str]) -> None:
     respuesta = client.get("/api/v1/companies/20111111111/comprobantes/resumen", headers=auth)
     assert respuesta.status_code in (403, 404)
+
+
+def test_filtra_por_estado_correo(
+    client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
+) -> None:
+    for correlativo, asunto in ((1, "FACTURA F001-1"), (2, "   "), (3, None), (4, "Otra")):
+        c = _agregar(uow, empresa_principal, correlativo=correlativo)
+        llave = next(k for k, v in uow.comprobantes.comprobantes.items() if v is c)
+        uow.comprobantes.comprobantes[llave] = c.model_copy(update={"correo_asunto": asunto})
+
+    def numeros(correo: str) -> list[int]:
+        cuerpo = client.get(
+            LISTA, headers=auth, params={"correo": correo, "orden": "numero", "direccion": "asc"}
+        ).json()
+        return [i["correlativo"] for i in cuerpo["items"]]
+
+    assert numeros("enviado") == [1, 4]
+    assert numeros("no_enviado") == [2, 3]  # un asunto en blanco no cuenta como enviado
+    resumen = client.get(RESUMEN, headers=auth, params={"correo": "enviado"}).json()
+    assert resumen["total"] == 2
+    assert resumen["correos"] == {"enviados": 2, "no_enviados": 0}

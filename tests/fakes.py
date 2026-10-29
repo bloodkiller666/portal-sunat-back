@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 
 from app.core.enums import (
     CampoOrden,
+    CorreoFiltro,
     DireccionOrden,
     EstadoComprobante,
     OrigenComprobante,
@@ -289,6 +290,11 @@ class InMemoryComprobantesRepository:
                 RespaldoFiltro.ninguno: not xml and not pdf,
             }
             if f.respaldo in combinacion and not combinacion[f.respaldo]:
+                continue
+            enviado = bool((c.correo_asunto or "").strip())
+            if f.correo is CorreoFiltro.enviado and not enviado:
+                continue
+            if f.correo is CorreoFiltro.no_enviado and enviado:
                 continue
             resultado.append(c)
         return resultado
@@ -834,9 +840,11 @@ class FakeStorageProvider:
             hash_sha256=hashlib.sha256(file_bytes).hexdigest(),
         )
 
-    async def get_download_url(self, file_key: str, *, expires_in: int | None = None) -> str:
+    async def get_download_url(
+        self, file_key: str, *, expires_in: int | None = None, inline_mime: str | None = None
+    ) -> str:
         self.firmas.append((file_key, expires_in))
-        return f"https://firmada/{file_key}"
+        return f"https://firmada/{file_key}" + (f"?inline={inline_mime}" if inline_mime else "")
 
 
 @dataclass

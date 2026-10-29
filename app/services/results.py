@@ -345,6 +345,24 @@ class ArchivosPage(BaseModel):
     total: int
 
 
+class PrevisualizacionItemOut(BaseModel):
+    """Un PDF o XML del comprobante con su URL firmada para verlo directamente."""
+
+    id: UUID
+    tipo: str
+    nombre: str
+    size_bytes: int | None
+    url: str
+
+
+class PrevisualizacionOut(BaseModel):
+    """Todo lo necesario para previsualizar un comprobante en UNA sola petición."""
+
+    comprobante_id: UUID
+    items: list[PrevisualizacionItemOut]
+    expires_in: int
+
+
 class DescargaOut(BaseModel):
     """URL firmada y temporal para descargar un archivo (bucket privado)."""
 

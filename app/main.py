@@ -29,6 +29,7 @@ from app.core.security import JwtVerifier
 from app.db.pool import Database
 from app.db.uow import build_uow_factory
 from app.secrets.factory import build_secrets_provider
+from app.storage.factory import get_storage_provider
 from app.sunat.bizlinks import BizlinksClient
 from app.sunat.bizlinks_portal import BizlinksPortalClient
 from app.sunat.consult import SunatConsultClient
@@ -187,6 +188,16 @@ def _registrar_manejadores(app: FastAPI) -> None:
         )
 
 
+async def precalentar_r2(settings: Settings) -> None:
+    """Firma una URL de prueba al arrancar: la primera firma del proceso tarda ~1 s (carga los
+    modelos de botocore) y, sin esto, la pagaba el primer usuario que abriera una previsualización.
+    No toca la red ni el bucket; si falla, no importa: se hará en la primera petición."""
+    try:
+        await get_storage_provider(settings).get_download_url("precalentamiento")
+    except Exception:
+        logger.warning("No se pudo precalentar la firma de R2; se hará en la primera petición")
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Construye la aplicación. `settings` se inyecta en las pruebas."""
     settings = settings or get_settings()
@@ -205,6 +216,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.exception(
                     "No se pudo conectar a Supabase; los endpoints con datos responderán 503"
                 )
+        if settings.r2_configured:
+            await precalentar_r2(settings)
         yield
         await database.close()
 

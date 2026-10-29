@@ -21,6 +21,7 @@ from app.api.deps import (
 from app.api.uploads import leer_con_limite
 from app.core.enums import (
     CampoOrden,
+    CorreoFiltro,
     DireccionOrden,
     EstadoComprobante,
     OrigenComprobante,
@@ -101,6 +102,9 @@ class FiltrosComprobantes(BaseModel):
     respaldo: RespaldoFiltro | None = Field(
         default=None, description="Cobertura de respaldo (XML/CDR en ventas; XML/PDF en compras)"
     )
+    correo: CorreoFiltro | None = Field(
+        default=None, description="Estado correo de las compras: enviado o no_enviado"
+    )
     orden: CampoOrden = Field(default=CampoOrden.fecha, description="Columna de orden")
     direccion: DireccionOrden = Field(default=DireccionOrden.desc)
     limit: int = Field(default=50, ge=1, le=MAX_COMPROBANTES_PAGINA)
@@ -136,6 +140,7 @@ class FiltrosComprobantes(BaseModel):
             vencimiento_hasta=self.vencimiento_hasta,
             moneda=self.moneda,
             respaldo=self.respaldo,
+            correo=self.correo,
             orden=self.orden,
             direccion=self.direccion,
         )

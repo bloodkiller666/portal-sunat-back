@@ -106,6 +106,13 @@ class RespaldoFiltro(StrEnum):
     ninguno = "ninguno"
 
 
+class CorreoFiltro(StrEnum):
+    """«Estado correo» de una compra: con el asunto de su correo cargado o sin él."""
+
+    enviado = "enviado"
+    no_enviado = "no_enviado"
+
+
 class CampoOrden(StrEnum):
     """Columnas por las que se puede ordenar el listado (lista blanca contra SQL injection)."""
 

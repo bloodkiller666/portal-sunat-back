@@ -191,12 +191,15 @@ async def url_descarga(
     archivo: Archivo,
     storage_provider: StorageProvider | None = None,
     expires_in: int | None = None,
+    inline_mime: str | None = None,
 ) -> str:
-    """URL firmada temporal (bucket privado) para descargar un archivo."""
+    """URL firmada temporal (bucket privado) para bajar un archivo o, con `inline_mime`, verlo."""
     if not archivo.storage_key:
         raise StorageError("El archivo no tiene una clave de almacenamiento registrada")
     proveedor = storage_provider or get_storage_provider(settings)
-    return await proveedor.get_download_url(archivo.storage_key, expires_in=expires_in)
+    return await proveedor.get_download_url(
+        archivo.storage_key, expires_in=expires_in, inline_mime=inline_mime
+    )
 
 
 def carpeta_del_comprobante(comprobante: Comprobante) -> str:

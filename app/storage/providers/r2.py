@@ -28,6 +28,22 @@ logger = get_logger(__name__)
 
 _REGION_R2 = "auto"
 
+_SESION: object | None = None
+
+
+def _sesion_compartida():
+    """Una sola sesión de aioboto3 para todo el proceso.
+
+    Crear una sesión carga los modelos de servicio de botocore (~0,8 s); como el proveedor se arma
+    en cada petición, una sesión por proveedor retrasaba cada firma o descarga casi un segundo.
+    """
+    global _SESION
+    if _SESION is None:
+        import aioboto3
+
+        _SESION = aioboto3.Session()
+    return _SESION
+
 
 class CloudflareR2StorageProvider(StorageProvider):
     """Guarda los archivos en Cloudflare R2 mediante la API S3 compatible."""
@@ -47,7 +63,6 @@ class CloudflareR2StorageProvider(StorageProvider):
         self._access_key_id = settings.r2_access_key_id
         self._secret_access_key = settings.r2_secret_access_key
         self._expires_in = settings.r2_signed_url_expires_seconds
-        self._session: object | None = None
 
         # Regla 2: que las credenciales de R2 nunca aparezcan en los logs.
         register_secret_values(self._access_key_id, self._secret_access_key)
@@ -86,7 +101,9 @@ class CloudflareR2StorageProvider(StorageProvider):
             hash_sha256=hashlib.sha256(file_bytes).hexdigest(),
         )
 
-    async def get_download_url(self, file_key: str, *, expires_in: int | None = None) -> str:
+    async def get_download_url(
+        self, file_key: str, *, expires_in: int | None = None, inline_mime: str | None = None
+    ) -> str:
         """Firma una URL `GET` temporal para el objeto (bucket privado)."""
         expiracion = expires_in or self._expires_in
         try:
@@ -95,10 +112,12 @@ class CloudflareR2StorageProvider(StorageProvider):
             raise StorageError("La clave del archivo no es válida") from exc
         try:
             async with self._client() as client:
+                parametros = {"Bucket": self._bucket, "Key": clave}
+                if inline_mime:
+                    parametros["ResponseContentType"] = inline_mime
+                    parametros["ResponseContentDisposition"] = "inline"
                 url = await client.generate_presigned_url(
-                    "get_object",
-                    Params={"Bucket": self._bucket, "Key": clave},
-                    ExpiresIn=expiracion,
+                    "get_object", Params=parametros, ExpiresIn=expiracion
                 )
         except Exception as exc:
             logger.warning("Fallo al firmar una URL de R2 (%s)", type(exc).__name__)
@@ -131,11 +150,7 @@ class CloudflareR2StorageProvider(StorageProvider):
     # ------------------------------------------------------------------ #
     def _client(self):
         """Cliente S3 de aioboto3 (context manager asíncrono)."""
-        if self._session is None:
-            import aioboto3
-
-            self._session = aioboto3.Session()
-        return self._session.client(
+        return _sesion_compartida().client(
             "s3",
             endpoint_url=self._endpoint,
             aws_access_key_id=(

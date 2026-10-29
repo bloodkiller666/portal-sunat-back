@@ -16,6 +16,7 @@ import asyncpg
 
 from app.core.enums import (
     CampoOrden,
+    CorreoFiltro,
     EstadoComprobante,
     OrigenComprobante,
     RespaldoFiltro,
@@ -138,6 +139,11 @@ def _donde(company_id: UUID, filtros: FiltrosListado) -> tuple[str, list[object]
         condiciones.append("c.tiene_xml and c.tiene_pdf")
     elif filtros.respaldo is RespaldoFiltro.ninguno:
         condiciones.append("not c.tiene_xml and not c.tiene_pdf")
+    # «Estado correo»: el asunto cargado cuenta como correo enviado; uno en blanco no.
+    if filtros.correo is CorreoFiltro.enviado:
+        condiciones.append("nullif(btrim(c.correo_asunto), '') is not null")
+    elif filtros.correo is CorreoFiltro.no_enviado:
+        condiciones.append("nullif(btrim(c.correo_asunto), '') is null")
     return " and ".join(condiciones), parametros
 
 

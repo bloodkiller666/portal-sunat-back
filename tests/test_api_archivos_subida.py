@@ -276,3 +276,40 @@ def test_el_listado_oculta_los_cdr_viejos_de_una_compra_pero_no_los_de_una_venta
 
     assert sorted(a["tipo"] for a in venta["items"]) == ["cdr", "pdf"]
     assert [a["tipo"] for a in compra_["items"]] == ["pdf"]
+
+
+def test_la_previsualizacion_trae_pdf_y_xml_con_su_url_en_una_sola_peticion(
+    cliente_r2: TestClient, comprobante: Comprobante
+) -> None:
+    auth = {"Authorization": f"Bearer {crear_token()}"}
+    xml = b"<Invoice/>"
+    for nombre, datos, mime in (
+        ("b-guia.pdf", PDF, "application/pdf"),
+        ("a-factura.pdf", PDF + b"x", "application/pdf"),
+        ("f.xml", xml, "application/xml"),
+        ("R-f.zip", b"PK\x03\x04", "application/zip"),  # el ZIP no se previsualiza
+    ):
+        respuesta = cliente_r2.post(
+            _ruta(comprobante.id), headers=auth, files={"archivo": (nombre, datos, mime)}
+        )
+        assert respuesta.status_code == 201
+
+    respuesta = cliente_r2.get(
+        f"/api/v1/comprobantes/{comprobante.id}/previsualizacion", headers=auth
+    )
+
+    assert respuesta.status_code == 200
+    items = respuesta.json()["items"]
+    # Primero los PDF por nombre y después los XML.
+    assert [i["nombre"] for i in items] == ["a-factura.pdf", "b-guia.pdf", "f.xml"]
+    # La URL viene lista para mostrarse en línea, sin pedir otra al servidor.
+    assert items[0]["url"].endswith("?inline=application/pdf")
+    assert items[2]["url"].endswith("?inline=application/xml")
+
+
+def test_la_previsualizacion_de_un_comprobante_ajeno_da_404(cliente_r2: TestClient) -> None:
+    auth = {"Authorization": f"Bearer {crear_token()}"}
+
+    respuesta = cliente_r2.get(f"/api/v1/comprobantes/{uuid4()}/previsualizacion", headers=auth)
+
+    assert respuesta.status_code == 404

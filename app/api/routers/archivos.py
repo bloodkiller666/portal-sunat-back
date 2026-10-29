@@ -19,9 +19,10 @@ from app.services.archivos import (
     TAMANO_MAXIMO_ARCHIVO,
     firmar_descarga,
     list_archivos,
+    previsualizar_comprobante,
     subir_archivo,
 )
-from app.services.results import ArchivoOut, ArchivosPage, DescargaOut
+from app.services.results import ArchivoOut, ArchivosPage, DescargaOut, PrevisualizacionOut
 
 router = APIRouter(tags=["archivos"])
 
@@ -38,6 +39,23 @@ async def get_archivos(
 ) -> ArchivosPage:
     """Devuelve XML, PDF y CDR del comprobante; cualquier miembro de la empresa."""
     return await list_archivos(uow=uow, user=user, comprobante_id=comprobante_id)
+
+
+@router.get(
+    "/comprobantes/{comprobante_id}/previsualizacion",
+    response_model=PrevisualizacionOut,
+    summary="PDF y XML del comprobante con su URL firmada, en una sola petición",
+)
+async def get_previsualizacion(
+    user: CurrentUserDep,
+    uow: UowDep,
+    settings: SettingsDep,
+    comprobante_id: UUID = Path(description="Identificador del comprobante"),
+) -> PrevisualizacionOut:
+    """Para la ventana de previsualización: lista y firma de una vez (cualquier miembro)."""
+    return await previsualizar_comprobante(
+        uow=uow, settings=settings, user=user, comprobante_id=comprobante_id
+    )
 
 
 @router.post(

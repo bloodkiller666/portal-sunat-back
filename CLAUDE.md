@@ -480,3 +480,20 @@ esquema nuevo: simula por defecto, con `--aplicar` copia y actualiza `archivos.s
   `_correos/2026-OCTUBRE/…`. «Abrir carpeta» prueba el nombre y, si no existe, el número de antes (`2026/10`).
   Los objetos de R2 que ya estaban (ventas) conservan su ruta numérica: `archivos.storage_key` guarda la ruta
   real, así que se siguen descargando. `correo_compras._CARPETA_DE_COMPRA` acepta ambos formatos.
+
+### P20 — Previsualización rápida, filtro Estado correo y avisos por gravedad (2026-10-29)
+
+- **Previsualización**: los archivos salen del bucket R2 (Cloudflare) por URL firmada temporal. `GET /comprobantes/{id}/
+  previsualizacion` devuelve los PDF y XML ya firmados en UNA petición (`app/services/archivos.py::previsualizar_comprobante`;
+  la URL pide `Content-Disposition: inline` y el tipo MIME para verla en un `<iframe>`). Antes eran «lista» + «una URL por
+  archivo» (~4 s la primera, ~2 s cada siguiente); ahora ~1 s y los siguientes son instantáneos. La sesión de aioboto3 se
+  comparte entre peticiones (`_sesion_compartida`: crearla cuesta ~0,8 s) y se precalienta al arrancar. El frontend precarga
+  al abrir el menú «⋯» y guarda el resultado 5 min (`lib/api.ts::apiPrevisualizacion`).
+- **Filtro Estado correo**: `GET .../comprobantes?correo=enviado|no_enviado` (asunto no vacío = enviado), solo Compras.
+- **PDF sueltos** (`_sin_clasificar`): se analizó por texto con RUC + serie-número exactos. De 663: 107 ya estaban en el portal,
+  168 son escaneos sin texto, 162 son órdenes de compra sin serie-número, 201 son guías o facturas de otra empresa del grupo
+  que no están en el portal y 25 serían uniones dudosas (estados de cuenta, misma numeración de otra empresa). No se une nada
+  sin certeza: la regla de «RUC + serie-número exactos» es la correcta.
+- **Avisos** (`lib/avisos.ts`): `aviso.error` = rojo (algo falló, va a «Logs»; con `gravedad: gravedadDe(error)` un 4xx pasa a
+  naranja), `aviso.advertencia` = naranja (orienta, no es fallo). «Abrir carpeta» abre una ventana (`dialogo-carpeta.tsx`) con
+  la ruta, «Copiar ruta», «Abrir carpeta» (reintento con un clic) y «Guardar en mi PC» cuando no se pudo abrir solo.

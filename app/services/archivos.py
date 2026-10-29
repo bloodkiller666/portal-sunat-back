@@ -17,7 +17,13 @@ from app.core.security import AuthenticatedUser
 from app.db.models import Archivo
 from app.db.repositories.base import UnitOfWork
 from app.services.companies import require_membership
-from app.services.results import ArchivoOut, ArchivosPage, DescargaOut
+from app.services.results import (
+    ArchivoOut,
+    ArchivosPage,
+    DescargaOut,
+    PrevisualizacionItemOut,
+    PrevisualizacionOut,
+)
 from app.services.store import sube_archivo, url_descarga
 from app.storage.base import StorageProvider
 
@@ -88,6 +94,54 @@ async def list_archivos(
         items=[to_archivo_out(archivo) for archivo in archivos],
         total=len(archivos),
     )
+
+
+_MIME_PREVISUALIZACION = {TipoArchivo.pdf: "application/pdf", TipoArchivo.xml: "application/xml"}
+
+
+async def previsualizar_comprobante(
+    *,
+    uow: UnitOfWork,
+    settings: Settings,
+    user: AuthenticatedUser,
+    comprobante_id: UUID,
+    storage_provider: StorageProvider | None = None,
+) -> PrevisualizacionOut:
+    """Los PDF y XML del comprobante, cada uno con su URL firmada para mostrarlo en línea.
+
+    Una sola petición en vez de «lista» + «una URL por archivo»: cada viaje a la base cuesta
+    ~300 ms, y firmar una URL no toca la red (es una cuenta local). Así abrir la previsualización
+    y pasar al siguiente archivo no vuelve a pedir nada al servidor.
+    """
+    comprobante = await uow.comprobantes.get(comprobante_id)
+    if comprobante is None:
+        raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
+    await require_membership(uow, user, comprobante.company_id)
+
+    archivos = [
+        a
+        for a in await uow.archivos.list_for_comprobante(comprobante_id)
+        if a.tipo in _MIME_PREVISUALIZACION and a.storage_key
+    ]
+    # Primero los PDF (lo que se quiere leer) y luego los XML; cada tipo por nombre.
+    archivos.sort(key=lambda a: (a.tipo is not TipoArchivo.pdf, a.nombre.lower()))
+    vigencia = min(settings.r2_signed_url_expires_seconds, _MAX_DIAS_FIRMA * 86400)
+    items = [
+        PrevisualizacionItemOut(
+            id=a.id,
+            tipo=a.tipo.value,
+            nombre=a.nombre,
+            size_bytes=a.size_bytes,
+            url=await url_descarga(
+                settings=settings,
+                archivo=a,
+                storage_provider=storage_provider,
+                inline_mime=_MIME_PREVISUALIZACION[a.tipo],
+            ),
+        )
+        for a in archivos
+    ]
+    return PrevisualizacionOut(comprobante_id=comprobante_id, items=items, expires_in=vigencia)
 
 
 async def subir_archivo(

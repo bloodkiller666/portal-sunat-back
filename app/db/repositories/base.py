@@ -14,6 +14,7 @@ from uuid import UUID
 
 from app.core.enums import (
     CampoOrden,
+    CorreoFiltro,
     DireccionOrden,
     EstadoComprobante,
     OrigenComprobante,
@@ -57,6 +58,7 @@ class FiltrosListado:
     vencimiento_hasta: date | None = None
     moneda: str | None = None
     respaldo: RespaldoFiltro | None = None
+    correo: CorreoFiltro | None = None
     orden: CampoOrden = CampoOrden.fecha
     direccion: DireccionOrden = DireccionOrden.desc
 
