@@ -631,7 +631,9 @@ def _cargar_registro(ruta: Path) -> set[str]:
 def _propiedad(objeto: Any, nombre: str) -> str:
     """Propiedad MAPI de un correo o adjunto (`0x5D01001F`…); vacío si Outlook no la da."""
     try:
-        valor = objeto.PropertyAccessor.GetProperty(f"http://schemas.microsoft.com/mapi/proptag/{nombre}")
+        valor = objeto.PropertyAccessor.GetProperty(
+            f"http://schemas.microsoft.com/mapi/proptag/{nombre}"
+        )
     except Exception:
         return ""
     return str(valor or "")
@@ -881,6 +883,79 @@ def _guardar_mensaje_original(correo: Any, ruta: Path, destino: Path) -> dict[st
     }
 
 
+_MSG_EN_CORREO_TXT = re.compile(r"Correo completo \(\.msg\):\s*(\S.*)")
+
+
+def copiar_mensaje_a_carpetas(
+    destino: Path, ruta_msg: Path, rutas_archivos: list[str], simular: bool = False
+) -> tuple[int, int]:
+    """Copia el `.msg` a la carpeta de cada factura que trajo el correo: `(copiados, faltantes)`.
+
+    La carpeta de la factura (`AAAA/MES/RUC/SERIE-NÚMERO`) sale de las rutas de sus archivos; las
+    de auditoría (`_sin_clasificar`, `_otras_empresas`) no son compras y se omiten. El original
+    sigue en `_correos/` (es la prueba) y no se sube al portal: el importador solo toma XML y PDF.
+    Idempotente.
+    """
+    carpetas = {
+        PurePosixPath(r).parent.as_posix()
+        for r in rutas_archivos
+        if PurePosixPath(r).parts and PurePosixPath(r).parts[0][:1].isdigit()
+    }
+    copiados = faltantes = 0
+    for carpeta in sorted(carpetas):
+        sitio = destino / carpeta
+        if not sitio.is_dir() or not ruta_msg.is_file():
+            faltantes += 1
+            continue
+        copia = sitio / f"correo_{ruta_msg.name}"
+        if copia.is_file() and copia.stat().st_size == ruta_msg.stat().st_size:
+            continue
+        if not simular:
+            shutil.copy2(ruta_msg, copia)
+        copiados += 1
+    return copiados, faltantes
+
+
+def mensajes_a_carpetas(args: argparse.Namespace) -> int:
+    """Trae cada `.msg` de `_correos/` a las carpetas de sus facturas (sin tocar Outlook)."""
+    destino = Path(args.destino).expanduser().resolve()
+    correos = copiados = faltantes = sin_msg = 0
+    for ruta_json in sorted((destino / "_correos").rglob("*.json")):
+        try:
+            datos = json.loads(ruta_json.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        ruta_msg = ruta_json.with_suffix(".msg")
+        if not ruta_msg.is_file():
+            sin_msg += 1
+            continue
+        correos += 1
+        c, f = copiar_mensaje_a_carpetas(
+            destino, ruta_msg, [a["ruta"] for a in datos.get("archivos", [])], args.simular
+        )
+        copiados += c
+        faltantes += f
+    # Carpetas que el portal armó al unir un PDF suelto o restaurar de R2: no figuran en el JSON del
+    # correo, pero su `correo.txt` indica de cuál `.msg` salieron.
+    for texto in sorted(destino.glob("[0-9][0-9][0-9][0-9]/*/*/*/correo.txt")):
+        coincidencia = _MSG_EN_CORREO_TXT.search(
+            texto.read_text(encoding="utf-8", errors="replace")
+        )
+        ruta_msg = destino / coincidencia.group(1).strip() if coincidencia else None
+        if ruta_msg is not None and ruta_msg.is_file():
+            carpeta = texto.parent.relative_to(destino).as_posix()
+            c, f = copiar_mensaje_a_carpetas(
+                destino, ruta_msg, [f"{carpeta}/correo.txt"], args.simular
+            )
+            copiados += c
+            faltantes += f
+    print(
+        f"Correos con .msg: {correos} | copias {'por hacer' if args.simular else 'hechas'}: "
+        f"{copiados} | carpetas inexistentes: {faltantes} | JSON sin .msg: {sin_msg}"
+    )
+    return 0
+
+
 def _registrar(
     destino: Path,
     ruta_registro: Path,
@@ -902,6 +977,10 @@ def _registrar(
     )
     meta.parent.mkdir(parents=True, exist_ok=True)
     mensaje = _guardar_mensaje_original(correo, meta.with_suffix(".msg"), destino)
+    if mensaje is not None:
+        copiar_mensaje_a_carpetas(
+            destino, meta.with_suffix(".msg"), [c.ruta for c in plan.colocaciones]
+        )
     meta.write_text(
         json.dumps(
             {
@@ -1020,7 +1099,7 @@ def respaldar_mensajes(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Extrae facturas de Outlook (solo lectura)")
-    parser.add_argument("--buzon", required=True, help="Parte del nombre del buzón en Outlook")
+    parser.add_argument("--buzon", default="", help="Parte del nombre del buzón en Outlook")
     parser.add_argument("--destino", default="~/Downloads/FacturasProveedores")
     parser.add_argument(
         "--ruc", default=RUC_EMPRESA_POR_DEFECTO, help="RUC de la empresa compradora"
@@ -1040,7 +1119,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Solo guarda el .msg original de los correos ya extraídos que no lo tienen",
     )
+    parser.add_argument(
+        "--mensajes-a-carpetas",
+        action="store_true",
+        help="Solo copia cada .msg de _correos a la carpeta de sus facturas (--simular: cuenta)",
+    )
     args = parser.parse_args(argv)
+    if args.mensajes_a_carpetas:
+        return mensajes_a_carpetas(args)
+    if not args.buzon:
+        parser.error("--buzon es obligatorio (salvo con --mensajes-a-carpetas)")
     return respaldar_mensajes(args) if args.respaldar_mensajes else ejecutar(args)
 
 

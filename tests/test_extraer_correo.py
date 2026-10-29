@@ -657,3 +657,38 @@ def test_sin_novedades_no_se_crea_el_archivo_de_pendientes(tmp_path: Path) -> No
     ex.anotar_pendientes(tmp_path, set())
 
     assert not (tmp_path / "_automatizacion").exists()
+
+
+def test_mensajes_a_carpetas_copia_el_msg_a_cada_factura(tmp_path: Path) -> None:
+    """El `.msg` llega a la carpeta de cada factura (y a la unida por texto); el original queda."""
+    correos = tmp_path / "_correos" / "2026-OCTUBRE"
+    correos.mkdir(parents=True)
+    (correos / "a.msg").write_bytes(b"correo")
+    (correos / "a.json").write_text(
+        json.dumps(
+            {
+                "archivos": [
+                    {"ruta": "2026/OCTUBRE/20100000001/F001-00000001/f.xml"},
+                    {"ruta": "2026/OCTUBRE/20100000001/F001-00000002/f.xml"},
+                    {"ruta": "_sin_clasificar/2026-OCTUBRE/a/x.pdf"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    for num in ("1", "2"):
+        (tmp_path / "2026/OCTUBRE/20100000001" / f"F001-0000000{num}").mkdir(parents=True)
+    unida = tmp_path / "2026/OCTUBRE/20100000001/F001-00000003"
+    unida.mkdir()
+    (unida / "correo.txt").write_text(
+        "Correo completo (.msg): _correos/2026-OCTUBRE/a.msg\n", encoding="utf-8"
+    )
+
+    ex.mensajes_a_carpetas(ex.argparse.Namespace(destino=str(tmp_path), simular=False))
+    ex.mensajes_a_carpetas(
+        ex.argparse.Namespace(destino=str(tmp_path), simular=False)
+    )  # idempotente
+
+    copias = sorted(p.parent.name for p in tmp_path.glob("2026/*/*/*/correo_a.msg"))
+    assert copias == ["F001-00000001", "F001-00000002", "F001-00000003"]
+    assert (correos / "a.msg").exists()

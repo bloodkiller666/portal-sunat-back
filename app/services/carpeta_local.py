@@ -66,31 +66,87 @@ def carpetas_base(settings: Settings, origen: str | None = None) -> list[Path]:
     return [ventas] if compras == ventas else [ventas, compras]
 
 
-def _traer_al_frente(titulo: str) -> None:  # pragma: no cover - solo Windows, con ventanas reales
-    """Restaura y enfoca la ventana del Explorador cuyo título es `titulo`.
+def _ventanas_del_explorador(titulo: str) -> list[int]:  # pragma: no cover - solo Windows
+    """Ventanas del Explorador cuyo título es `titulo`, de la de arriba a la de abajo."""
+    import ctypes
+    from ctypes import wintypes
 
-    Windows no deja que un proceso en segundo plano (el backend) pase una ventana al frente: la
-    abre minimizada en la barra de tareas. Pulsar y soltar Alt antes de `SetForegroundWindow`
-    habilita ese cambio de foco. Es un esfuerzo opcional: si no la encuentra, no hace nada.
+    usuario = ctypes.windll.user32
+    encontradas: list[int] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def revisar(hwnd, _lparam):
+        clase = ctypes.create_unicode_buffer(64)
+        usuario.GetClassNameW(hwnd, clase, 64)
+        if clase.value == "CabinetWClass":
+            texto = ctypes.create_unicode_buffer(512)
+            usuario.GetWindowTextW(hwnd, texto, 512)
+            # En Windows 10/11 el título es «NOMBRE - Explorador de archivos», no solo el nombre.
+            if texto.value == titulo or texto.value.startswith(f"{titulo} - "):
+                encontradas.append(hwnd)
+        return True
+
+    usuario.EnumWindows(revisar, 0)
+    return encontradas
+
+
+def _enfocar(hwnd: int) -> None:  # pragma: no cover - solo Windows, con ventanas reales
+    """Restaura (si está minimizada) y pone al frente una ventana, aunque otro proceso tenga foco.
+
+    Windows no deja que un proceso en segundo plano (el backend) pase una ventana al frente: la deja
+    minimizada o parpadeando en la barra de tareas. Se combinan los trucos conocidos: pulsar Alt,
+    unir el hilo de entrada al de la ventana en primer plano y alternar «siempre encima».
     """
     import ctypes
 
     usuario = ctypes.windll.user32
-    for _ in range(30):  # hasta ~3 s esperando que el Explorador cree la ventana
-        hwnd = usuario.FindWindowW("CabinetWClass", titulo)
-        if hwnd:
-            usuario.keybd_event(0x12, 0, 0, 0)  # Alt abajo
-            usuario.keybd_event(0x12, 0, 0x2, 0)  # Alt arriba
-            usuario.ShowWindow(hwnd, 9)  # SW_RESTORE
-            usuario.SetForegroundWindow(hwnd)
+    kernel = ctypes.windll.kernel32
+    if usuario.IsIconic(hwnd):
+        usuario.ShowWindow(hwnd, 9)  # SW_RESTORE
+    else:
+        usuario.ShowWindow(hwnd, 5)  # SW_SHOW
+    usuario.keybd_event(0x12, 0, 0, 0)  # Alt abajo: habilita el cambio de foco
+    usuario.keybd_event(0x12, 0, 0x2, 0)  # Alt arriba
+    primer_plano = usuario.GetForegroundWindow()
+    hilo_primer_plano = usuario.GetWindowThreadProcessId(primer_plano, None)
+    hilo_propio = kernel.GetCurrentThreadId()
+    unido = bool(hilo_primer_plano) and hilo_primer_plano != hilo_propio
+    if unido:
+        usuario.AttachThreadInput(hilo_propio, hilo_primer_plano, True)
+    try:
+        # «Siempre encima» y de vuelta: obliga a Windows a subirla por encima de las demás.
+        usuario.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
+        usuario.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
+        usuario.BringWindowToTop(hwnd)
+        usuario.SetForegroundWindow(hwnd)
+    finally:
+        if unido:
+            usuario.AttachThreadInput(hilo_propio, hilo_primer_plano, False)
+
+
+def _traer_al_frente(titulo: str, previas: set[int]) -> None:  # pragma: no cover - solo Windows
+    """Pone al frente la ventana del Explorador que muestra la carpeta recién abierta.
+
+    `previas` son las ventanas con ese título que ya existían antes de abrirla. Si el Explorador
+    creó una ventana nueva, es esa; si ya había una con esa carpeta (la abrieron dos veces), Windows
+    no crea otra: se enfoca la existente. Antes se tomaba la primera con ese título, que en la
+    segunda apertura era la vieja y la nueva quedaba minimizada. Es un esfuerzo opcional.
+    """
+    for _ in range(40):  # hasta ~4 s esperando que el Explorador cree o muestre la ventana
+        ventanas = _ventanas_del_explorador(titulo)
+        nuevas = [v for v in ventanas if v not in previas]
+        elegida = (nuevas or ventanas or [None])[0]
+        if elegida is not None:
+            _enfocar(elegida)
             return
         time.sleep(0.1)
 
 
 def _abrir_en_explorador(ruta: Path) -> None:
     if sys.platform == "win32":
+        previas = set(_ventanas_del_explorador(ruta.name))  # pragma: no cover
         os.startfile(ruta)
-        threading.Thread(target=_traer_al_frente, args=(ruta.name,), daemon=True).start()
+        threading.Thread(target=_traer_al_frente, args=(ruta.name, previas), daemon=True).start()
     elif sys.platform == "darwin":
         subprocess.Popen(["open", str(ruta)])
     else:

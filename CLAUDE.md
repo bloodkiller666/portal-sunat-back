@@ -497,3 +497,14 @@ esquema nuevo: simula por defecto, con `--aplicar` copia y actualiza `archivos.s
 - **Avisos** (`lib/avisos.ts`): `aviso.error` = rojo (algo falló, va a «Logs»; con `gravedad: gravedadDe(error)` un 4xx pasa a
   naranja), `aviso.advertencia` = naranja (orienta, no es fallo). «Abrir carpeta» abre una ventana (`dialogo-carpeta.tsx`) con
   la ruta, «Copiar ruta», «Abrir carpeta» (reintento con un clic) y «Guardar en mi PC» cuando no se pudo abrir solo.
+
+### P21 — `.msg` en la carpeta de cada factura y «Abrir carpeta» al frente (2026-10-29)
+
+- **`.msg` por factura**: el extractor copia el correo original (`_correos/AAAA-MES/{correo}.msg`) a la carpeta de
+  cada factura que trajo, como `correo_{correo}.msg` (`copiar_mensaje_a_carpetas`; también al extraer de ahora en
+  adelante). El original y el `correo.txt` se conservan; el importador solo toma XML y PDF, así que el `.msg` no
+  sube a R2. Para lo ya extraído: `uv run python -m scripts.extraer_correo_outlook --mensajes-a-carpetas [--simular]`
+  (no abre Outlook; también cubre las carpetas armadas al unir un PDF suelto, leyendo su `correo.txt`).
+- **Abrir carpeta**: en Windows 11 el título del Explorador es «CARPETA - Explorador de archivos»; se busca por
+  clase `CabinetWClass` y título que empiece así, y se restaura/enfoca siempre (`carpeta_local._traer_al_frente`).
+- `scripts/indice_sueltos.py` arma `_sin_clasificar/INDICE.html` con enlaces a los PDF sueltos (solo lectura).
