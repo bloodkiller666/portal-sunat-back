@@ -37,6 +37,7 @@ def _con_archivo(uow: FakeUnitOfWork, empresa: Company, comprobante, tipo: TipoA
         )
     )
 
+
 def _poblar_100(uow: FakeUnitOfWork, empresa: Company) -> None:
     for i in range(1, 101):
         _agregar(uow, empresa, correlativo=i, fecha_emision=date(2026, 9, 1 + (i % 28)))
@@ -86,7 +87,11 @@ def test_orden_por_importe_con_notas_de_credito_negativas(
     _agregar(uow, empresa_principal, correlativo=1, monto_total=Decimal("500"))
     _agregar(uow, empresa_principal, correlativo=2, monto_total=Decimal("100"))
     _agregar(
-        uow, empresa_principal, correlativo=3, tipo_documento="07", serie="FNC1",
+        uow,
+        empresa_principal,
+        correlativo=3,
+        tipo_documento="07",
+        serie="FNC1",
         monto_total=Decimal("900"),
     )  # nota de crédito: pesa -900
 
@@ -190,8 +195,9 @@ def test_filtra_por_respaldo(
 
     def numeros(respaldo: str) -> list[int]:
         cuerpo = client.get(
-            LISTA, headers=auth, params={"respaldo": respaldo, "orden": "numero",
-                                         "direccion": "asc"},
+            LISTA,
+            headers=auth,
+            params={"respaldo": respaldo, "orden": "numero", "direccion": "asc"},
         ).json()
         return [i["correlativo"] for i in cuerpo["items"]]
 
@@ -214,7 +220,8 @@ def test_filtra_compras_por_combinacion_de_xml_y_pdf(
 
     def numeros(respaldo: str) -> list[int]:
         cuerpo = client.get(
-            LISTA, headers=auth,
+            LISTA,
+            headers=auth,
             params={"respaldo": respaldo, "orden": "numero", "direccion": "asc"},
         ).json()
         return [i["correlativo"] for i in cuerpo["items"]]
@@ -229,19 +236,33 @@ def test_resumen_calcula_estados_neto_y_cobertura(
     client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
 ) -> None:
     factura = _agregar(
-        uow, empresa_principal, correlativo=1, estado=EstadoComprobante.aprobado,
+        uow,
+        empresa_principal,
+        correlativo=1,
+        estado=EstadoComprobante.aprobado,
         monto_total=Decimal("1000"),
     )
     _agregar(
-        uow, empresa_principal, correlativo=2, tipo_documento="07", serie="FNC1",
-        estado=EstadoComprobante.aprobado, monto_total=Decimal("200"),
+        uow,
+        empresa_principal,
+        correlativo=2,
+        tipo_documento="07",
+        serie="FNC1",
+        estado=EstadoComprobante.aprobado,
+        monto_total=Decimal("200"),
     )
     _agregar(  # anulado y rechazado no suman al facturado
-        uow, empresa_principal, correlativo=3, estado=EstadoComprobante.anulado,
+        uow,
+        empresa_principal,
+        correlativo=3,
+        estado=EstadoComprobante.anulado,
         monto_total=Decimal("999"),
     )
     _agregar(
-        uow, empresa_principal, correlativo=4, estado=EstadoComprobante.rechazado,
+        uow,
+        empresa_principal,
+        correlativo=4,
+        estado=EstadoComprobante.rechazado,
         monto_total=Decimal("999"),
     )
     _con_archivo(uow, empresa_principal, factura, TipoArchivo.xml)
@@ -250,7 +271,10 @@ def test_resumen_calcula_estados_neto_y_cobertura(
 
     assert cuerpo["total"] == 4
     assert cuerpo["por_estado"] == {
-        "pendiente": 0, "aprobado": 2, "rechazado": 1, "anulado": 1,
+        "pendiente": 0,
+        "aprobado": 2,
+        "rechazado": 1,
+        "anulado": 1,
     }
     assert Decimal(cuerpo["facturado_neto"]["PEN"]) == Decimal("800")  # 1000 - 200
     # Cobertura sobre lo exigible: todo menos el anulado.
@@ -263,13 +287,31 @@ def test_resumen_cuenta_correos_enviados_y_no_enviados(
     # Un asunto en blanco no cuenta como correo enviado.
     for correlativo, asunto in ((1, "FACTURA F001-1"), (2, "   "), (3, None)):
         c = _agregar(uow, empresa_principal, correlativo=correlativo)
-        uow.comprobantes.comprobantes[next(
-            k for k, v in uow.comprobantes.comprobantes.items() if v is c
-        )] = c.model_copy(update={"correo_asunto": asunto})
+        uow.comprobantes.comprobantes[
+            next(k for k, v in uow.comprobantes.comprobantes.items() if v is c)
+        ] = c.model_copy(update={"correo_asunto": asunto})
 
     cuerpo = client.get(RESUMEN, headers=auth).json()
 
     assert cuerpo["correos"] == {"enviados": 1, "no_enviados": 2}
+
+
+def test_el_listado_informa_desde_y_hasta_que_fecha_muestra_la_tabla(
+    client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, empresa_principal: Company
+) -> None:
+    for correlativo, dia in ((1, date(2026, 8, 5)), (2, date(2026, 10, 28)), (3, date(2026, 9, 1))):
+        _agregar(uow, empresa_principal, correlativo=correlativo, fecha_emision=dia)
+    ruta = f"/api/v1/companies/{RUC_PRINCIPAL}/comprobantes"
+
+    todo = client.get(ruta, headers=auth).json()
+    acotado = client.get(
+        ruta, headers=auth, params={"fecha_desde": "2026-09-01", "fecha_hasta": "2026-09-30"}
+    ).json()
+    sin_contar = client.get(ruta, headers=auth, params={"contar": "false"}).json()
+
+    assert (todo["fecha_desde"], todo["fecha_hasta"]) == ("2026-08-05", "2026-10-28")
+    assert (acotado["fecha_desde"], acotado["fecha_hasta"]) == ("2026-09-01", "2026-09-01")
+    assert (sin_contar["fecha_desde"], sin_contar["fecha_hasta"]) == (None, None)
 
 
 def test_resumen_respeta_el_rango_de_fechas(

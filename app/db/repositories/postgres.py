@@ -229,9 +229,7 @@ class PostgresCompaniesRepository:
         data = _row(record)
         return Company.model_validate(data) if data else None
 
-    async def get_access(
-        self, ruc: str, user_id: UUID
-    ) -> tuple[Company, Membership | None] | None:
+    async def get_access(self, ruc: str, user_id: UUID) -> tuple[Company, Membership | None] | None:
         # Un solo viaje a la base en vez de dos: es lo que más pesa con la base remota.
         record = await self._connection.fetchrow(
             """
@@ -296,7 +294,12 @@ class PostgresComprobantesRepository:
         parametros.extend([limit, offset])
         limite_idx, offset_idx = len(parametros) - 1, len(parametros)
         # `count(*) over()` evita una segunda consulta (cada ida y vuelta a la base cuesta).
-        total_sql = ", count(*) over() as _total" if contar else ""
+        total_sql = (
+            ", count(*) over() as _total, min(c.fecha_emision) over() as _fecha_desde,"
+            " max(c.fecha_emision) over() as _fecha_hasta"
+            if contar
+            else ""
+        )
         records = await self._connection.fetch(
             f"""
             select {_COLUMNAS_COMPROBANTE_C}, c.tiene_xml, c.tiene_cdr, c.tiene_pdf{total_sql}
@@ -308,9 +311,11 @@ class PostgresComprobantesRepository:
             *parametros,
         )
         total: int | None = None
+        fecha_desde = fecha_hasta = None
         if contar:
             if records:
                 total = records[0]["_total"]
+                fecha_desde, fecha_hasta = records[0]["_fecha_desde"], records[0]["_fecha_hasta"]
             elif offset == 0:
                 total = 0
             else:  # página más allá del final: se cuenta aparte para no mentir con 0
@@ -319,7 +324,8 @@ class PostgresComprobantesRepository:
         tipos: dict[UUID, set[TipoArchivo]] = {}
         for record in records:
             fila = dict(record)
-            fila.pop("_total", None)
+            for auxiliar in ("_total", "_fecha_desde", "_fecha_hasta"):
+                fila.pop(auxiliar, None)
             subidos = {
                 tipo
                 for tipo, columna in (
@@ -332,7 +338,13 @@ class PostgresComprobantesRepository:
             comprobante = Comprobante.model_validate(fila)
             items.append(comprobante)
             tipos[comprobante.id] = subidos
-        return PaginaComprobantes(items=items, total=total, tipos=tipos)
+        return PaginaComprobantes(
+            items=items,
+            total=total,
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
+            tipos=tipos,
+        )
 
     async def _contar(self, company_id: UUID, filtros: FiltrosListado) -> int:
         donde, parametros = _donde(company_id, filtros)
@@ -715,9 +727,7 @@ class PostgresComprobanteItemsRepository:
     def __init__(self, connection: asyncpg.Connection) -> None:
         self._connection = connection
 
-    async def create_many(
-        self, registros: list[ComprobanteItemRegistro]
-    ) -> list[ComprobanteItem]:
+    async def create_many(self, registros: list[ComprobanteItemRegistro]) -> list[ComprobanteItem]:
         if not registros:
             return []
         filas = [

@@ -1,10 +1,12 @@
-"""Pasa las rutas de R2 con el mes en número (`2026/10`) al mes en letras (`2026/OCTUBRE`).
+"""Pasa las rutas de R2 al mes con número y nombre (`2026/10. OCTUBRE`).
 
-    comprobantes/RUC/2026/10/FF01-1/x.xml  a  comprobantes/RUC/2026/OCTUBRE/FF01-1/x.xml
+    comprobantes/RUC/2026/10/FF01-1/x.xml       a  comprobantes/RUC/2026/10. OCTUBRE/FF01-1/x.xml
+    comprobantes/RUC/2026/OCTUBRE/FF01-1/x.xml  a  comprobantes/RUC/2026/10. OCTUBRE/FF01-1/x.xml
 
 Por defecto solo **simula**. Con `--aplicar` copia cada objeto, corrige `archivos.storage_key` y
 recién entonces borra el original (nunca se borra algo que la base aún no apunta a su ruta nueva).
-Es idempotente: lo que ya está en letras no se toca. Las evidencias de SIRE (`sire/RUC/AAAAMM/`)
+Es idempotente: lo que ya está en `10. OCTUBRE` no se toca. Las evidencias de SIRE
+(`sire/RUC/AAAAMM/`)
 llevan el periodo, no una carpeta de mes, y no se mueven.
 
     uv run python -m scripts.meses_en_letras_r2             # plan
@@ -22,16 +24,22 @@ import asyncpg
 from scripts.aplicar_migraciones import normalizar_dsn
 
 from app.core.config import Settings
-from app.core.meses import nombre_mes
+from app.core.meses import carpeta_de_mes, numero_de_mes
 from app.storage.providers.r2 import CloudflareR2StorageProvider
 
-_CLAVE = re.compile(r"^(comprobantes/\d{11}/\d{4}/)(0[1-9]|1[0-2])(/.+)$")
+_CLAVE = re.compile(r"^(comprobantes/\d{11}/\d{4}/)([^/]+)(/.+)$")
 
 
-def clave_en_letras(clave: str) -> str | None:
-    """La clave con el mes en letras, o `None` si ya lo está o no tiene esa forma."""
+def clave_con_mes_actual(clave: str) -> str | None:
+    """La clave con el mes como `10. OCTUBRE`, o `None` si ya lo está o no tiene esa forma.
+
+    El mes de antes puede ser el número (`10`) o el nombre solo (`OCTUBRE`).
+    """
     m = _CLAVE.match(clave)
-    return f"{m.group(1)}{nombre_mes(int(m.group(2)))}{m.group(3)}" if m else None
+    mes = numero_de_mes(m.group(2)) if m else None
+    if m is None or mes is None or m.group(2) == carpeta_de_mes(mes):
+        return None
+    return f"{m.group(1)}{carpeta_de_mes(mes)}{m.group(3)}"
 
 
 async def _ejecutar(args: argparse.Namespace) -> int:
@@ -48,8 +56,8 @@ async def _ejecutar(args: argparse.Namespace) -> int:
             existentes: set[str] = set()
             async for pagina in r2.get_paginator("list_objects_v2").paginate(Bucket=bucket):
                 existentes.update(o["Key"] for o in pagina.get("Contents", []))
-            plan = [(k, n) for k in sorted(existentes) if (n := clave_en_letras(k))]
-            print(f"{len(plan)} objetos con el mes en número de {len(existentes)} en el bucket")
+            plan = [(k, n) for k in sorted(existentes) if (n := clave_con_mes_actual(k))]
+            print(f"{len(plan)} objetos con el mes anterior de {len(existentes)} en el bucket")
             if not args.aplicar:
                 for origen, destino in plan[:5]:
                     print(f"  {origen}\n    a {destino}")
@@ -80,7 +88,7 @@ async def _ejecutar(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Meses en letras en las rutas de R2")
+    parser = argparse.ArgumentParser(description="Meses como «10. OCTUBRE» en las rutas de R2")
     parser.add_argument("--aplicar", action="store_true", help="Mueve de verdad (si no, simula)")
     parser.add_argument("--env-file", default=".env")
     return asyncio.run(_ejecutar(parser.parse_args(argv)))

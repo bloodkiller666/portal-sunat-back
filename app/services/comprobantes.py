@@ -415,6 +415,8 @@ async def list_comprobantes(
         offset=desplazamiento,
         has_more=hay_mas,
         total=resultado.total,
+        fecha_desde=resultado.fecha_desde,
+        fecha_hasta=resultado.fecha_hasta,
     )
 
 

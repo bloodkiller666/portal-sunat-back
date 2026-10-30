@@ -17,12 +17,13 @@ from app.core.errors import InvalidDocumentError, NotFoundError
 from app.core.security import AuthenticatedUser
 from app.db.models import Archivo
 from app.db.repositories.base import UnitOfWork
-from app.services.carpeta_local import leer_correo_txt_local
+from app.services.carpeta_local import leer_correos_txt_locales
 from app.services.companies import require_membership
 from app.services.correo_compras import texto_correo_de_compra
 from app.services.results import (
     ArchivoOut,
     ArchivosPage,
+    CorreoTxtOut,
     DescargaOut,
     PrevisualizacionItemOut,
     PrevisualizacionOut,
@@ -88,10 +89,6 @@ async def list_archivos(
     await require_membership(uow, user, comprobante.company_id)
 
     archivos = await uow.archivos.list_for_comprobante(comprobante_id)
-    if comprobante.origen is OrigenComprobante.recibido:
-        # Las compras ya no manejan CDR: los que se archivaron antes siguen en el bucket, pero
-        # el portal no los muestra. En las ventas el CDR sigue siendo parte del respaldo.
-        archivos = [a for a in archivos if a.tipo is not TipoArchivo.cdr]
     return ArchivosPage(
         comprobante_id=comprobante_id,
         items=[to_archivo_out(archivo) for archivo in archivos],
@@ -99,7 +96,22 @@ async def list_archivos(
     )
 
 
-_MIME_PREVISUALIZACION = {TipoArchivo.pdf: "application/pdf", TipoArchivo.xml: "application/xml"}
+_ORDEN_PREVISUALIZACION = {TipoArchivo.pdf: 0, TipoArchivo.xml: 1, TipoArchivo.cdr: 2}
+
+
+def _mime_previsualizable(archivo: Archivo) -> str | None:
+    """El MIME con que se muestra en línea, o `None` si no se puede mostrar.
+
+    Se ven los PDF, los XML y los CDR que llegaron como XML (`CDR-….xml`, el de los proveedores);
+    el `R-….zip` de SUNAT es un ZIP y solo se descarga.
+    """
+    if archivo.tipo is TipoArchivo.pdf:
+        return "application/pdf"
+    if archivo.tipo is TipoArchivo.xml:
+        return "application/xml"
+    if archivo.tipo is TipoArchivo.cdr and archivo.nombre.lower().endswith(".xml"):
+        return "application/xml"
+    return None
 
 
 async def previsualizar_comprobante(
@@ -124,10 +136,10 @@ async def previsualizar_comprobante(
     archivos = [
         a
         for a in await uow.archivos.list_for_comprobante(comprobante_id)
-        if a.tipo in _MIME_PREVISUALIZACION and a.storage_key
+        if a.storage_key and _mime_previsualizable(a)
     ]
-    # Primero los PDF (lo que se quiere leer) y luego los XML; cada tipo por nombre.
-    archivos.sort(key=lambda a: (a.tipo is not TipoArchivo.pdf, a.nombre.lower()))
+    # Primero los PDF (lo que se lee), luego los XML y al final los CDR, cada uno por nombre.
+    archivos.sort(key=lambda a: (_ORDEN_PREVISUALIZACION[a.tipo], a.nombre.lower()))
     vigencia = min(settings.r2_signed_url_expires_seconds, _MAX_DIAS_FIRMA * 86400)
     items = [
         PrevisualizacionItemOut(
@@ -139,19 +151,27 @@ async def previsualizar_comprobante(
                 settings=settings,
                 archivo=a,
                 storage_provider=storage_provider,
-                inline_mime=_MIME_PREVISUALIZACION[a.tipo],
+                inline_mime=_mime_previsualizable(a),
             ),
         )
         for a in archivos
     ]
-    correo_txt = None
+    correos: list[CorreoTxtOut] = []
     if comprobante.origen is OrigenComprobante.recibido:
-        # El de la PC trae también el cuerpo; sin él (servidor) se arma con lo que guarda la base.
-        correo_txt = await asyncio.to_thread(leer_correo_txt_local, settings, comprobante)
-        if correo_txt is None:
-            correo_txt = texto_correo_de_compra(comprobante, archivos)
+        # Los de la PC traen también el cuerpo; sin ellos (servidor) se arma uno con lo que guarda
+        # la base.
+        locales = await asyncio.to_thread(leer_correos_txt_locales, settings, comprobante)
+        correos = [CorreoTxtOut(nombre=n, texto=t) for n, t in locales]
+        if not correos:
+            texto = texto_correo_de_compra(comprobante, archivos)
+            if texto is not None:
+                correos = [CorreoTxtOut(nombre="correo.txt", texto=texto)]
     return PrevisualizacionOut(
-        comprobante_id=comprobante_id, items=items, expires_in=vigencia, correo_txt=correo_txt
+        comprobante_id=comprobante_id,
+        items=items,
+        expires_in=vigencia,
+        correos_txt=correos,
+        correo_txt=correos[0].texto if correos else None,
     )
 
 
@@ -182,8 +202,6 @@ async def subir_archivo(
     await require_membership(uow, user, comprobante.company_id, roles=ROLES_OPERATIVOS)
 
     tipo_efectivo = tipo or inferir_tipo(filename, None)
-    if tipo_efectivo is TipoArchivo.cdr and comprobante.origen is OrigenComprobante.recibido:
-        raise InvalidDocumentError("Las compras no guardan CDR: solo XML y PDF")
     if tipo_efectivo is None:
         raise InvalidDocumentError(
             "No se pudo determinar el tipo de archivo: envíe el parámetro `tipo` "

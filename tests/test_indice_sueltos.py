@@ -22,7 +22,7 @@ def test_el_motivo_depende_de_la_huella_el_texto_y_lo_que_cita(monkeypatch) -> N
 
 
 def test_el_html_enlaza_la_carpeta_del_correo_y_cada_pdf(tmp_path: Path) -> None:
-    correo = tmp_path / "2026-OCTUBRE" / "20261021-160605_abcdef"
+    correo = tmp_path / "2026-10. OCTUBRE" / "20261021-160605_abcdef"
     correo.mkdir(parents=True)
     (correo / "correo.txt").write_text(
         "Asunto:    Orden <4500054571>\nDe:        Proveedor SAC\nRecibido:  2026-10-21 16:06\n",

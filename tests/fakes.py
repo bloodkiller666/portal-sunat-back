@@ -211,11 +211,14 @@ class InMemoryComprobantesRepository:
         filtros = filtros or FiltrosListado()
         visibles = self._filtrar(company_id, filtros)
         total = len(visibles)
+        fechas = [c.fecha_emision for c in visibles if c.fecha_emision]
         visibles = self._ordenar(visibles, filtros)
         pagina = visibles[offset : offset + limit]
         return PaginaComprobantes(
             items=pagina,
             total=total if contar else None,
+            fecha_desde=min(fechas) if contar and fechas else None,
+            fecha_hasta=max(fechas) if contar and fechas else None,
             tipos={c.id: self._tipos(c) for c in pagina},
         )
 

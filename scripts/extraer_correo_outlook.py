@@ -21,8 +21,9 @@ reglas para unir el PDF a su factura son las mismas del importador del backend
 (`app.services.proveedores_paquete`). Al final de cada ejecución se intenta unir los PDF con
 serie-número en el nombre que llegaron en otro correo.
 
-* **CDR**: el portal ya no los guarda. Si llegan en el correo se descartan y se cuentan en el
-  informe (`omitidos.cdr_ignorado`).
+* **CDR**: el que llega en el correo (`CDR-….xml`, `ApplicationResponse`) va con su factura, como
+  un PDF más, y se importa al portal. Si no se sabe de cuál de varias facturas es, se descarta y se
+  cuenta en el informe (`omitidos.cdr_ignorado`).
 * **Asunto**: cada carpeta lleva `correo.txt` con el asunto, el remitente, la fecha, los adjuntos
   (con su SHA-256) y el cuerpo del correo del que salió: es el argumento de dónde vino. Si la misma
   factura llega en dos correos, queda un `correo.txt` por cada uno. No se importa al portal.
@@ -59,12 +60,18 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from app.core.errors import AppError
-from app.core.meses import nombre_mes, periodo_carpeta
-from app.services.pdf_identificar import candidatos_de_pdf
+from app.core.meses import carpeta_de_mes, periodo_carpeta
+from app.services.pdf_identificar import (
+    Referencias,
+    candidatos_de_pdf,
+    referencias_de_factura,
+    referencias_de_pdf,
+)
 from app.services.proveedores_paquete import (
     Asignacion,
     Entrada,
     agrupar,
+    raiz_xml,
     serie_numero_de,
 )
 from app.sunat.ubl import parse_comprobante_ubl
@@ -72,6 +79,7 @@ from app.sunat.ubl import parse_comprobante_ubl
 OL_MAIL = 43  # OlObjectClass.olMail
 OL_BY_VALUE = 1  # OlAttachmentType.olByValue: archivo real
 GUARDAR = {"xml", "pdf"}  # se guardan tal cual
+_SIN_REFERENCIAS = Referencias()
 ABRIR = {"zip"}  # se abren; el original se conserva
 APARTE = {"rar", "7z", ""}  # se apartan para revisión manual (sin extensión incluida)
 IMAGENES = {"png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "heic"}
@@ -288,7 +296,7 @@ def carpeta_de_comprobante(
     """`AAAA/MES/RUC/SERIE-NÚMERO` (o bajo `_otras_empresas/{RUC}` si compra otro RUC)."""
     anio, mes = ("sin-fecha",) * 2
     if emision:
-        anio, mes = f"{emision.year:04d}", nombre_mes(emision.month)
+        anio, mes = f"{emision.year:04d}", carpeta_de_mes(emision.month)
     base = f"{anio}/{mes}/{ruc_emisor}/{serie}-{correlativo:08d}"
     if adquirente and adquirente != ruc_empresa:
         return f"_otras_empresas/{adquirente}/{base}"
@@ -332,12 +340,18 @@ def planificar_correo(
     agrupacion = agrupar(entradas)
     destino_unico: str | None = None
     destinos: list[tuple[str, str, str, int]] = []  # (carpeta, RUC, serie, número) de cada factura
+    referencias: dict[str, Referencias] = {}  # carpeta -> OC y guías que cita su factura
     for asignacion in agrupacion.asignaciones:
         destino = _carpeta_de(asignacion, ruc_empresa, plan)
         if destino is not None:
             destino_unico = destino if len(agrupacion.asignaciones) == 1 else None
             c = plan.comprobantes[-1]
             destinos.append((destino, c.ruc_emisor, c.serie, c.correlativo))
+            referencias[destino] = referencias_de_factura(
+                asignacion.xml.contenido,
+                [p.contenido for p in asignacion.pdfs],
+                (c.serie.upper(), c.correlativo),
+            )
         for archivo in _archivos_de(asignacion):
             ruta = destino if destino is not None else _sin_clasificar(recibido, identificador)
             plan.colocaciones.append(
@@ -359,7 +373,7 @@ def planificar_correo(
             # conserva TAL CUAL, sin renombrarlo ni mezclarlo, en la factura a la que se refiere
             # o, si no se sabe cuál, en todas las del correo para que llegue a Cloudflare y al
             # portal.
-            for carpeta in _carpetas_del_pdf(archivo.contenido, destinos):
+            for carpeta in _carpetas_del_pdf(archivo.contenido, destinos, referencias):
                 plan.colocaciones.append(
                     Colocacion(
                         f"{carpeta}/{archivo.nombre}", archivo.contenido, origenes[archivo.nombre]
@@ -379,16 +393,38 @@ def planificar_correo(
     return plan
 
 
-def _carpetas_del_pdf(contenido: bytes, destinos: list[tuple[str, str, str, int]]) -> list[str]:
+def _carpetas_del_pdf(
+    contenido: bytes,
+    destinos: list[tuple[str, str, str, int]],
+    referencias: dict[str, Referencias] | None = None,
+) -> list[str]:
     """Carpetas de factura donde va un PDF que el nombre no une a ninguna.
 
-    Si su texto cita el RUC y la serie-número de una o más facturas del correo, va a esas. Si no
-    (escaneo, guía sin la factura citada, orden de compra…), va a todas las del correo: nada se
-    pierde y cada factura conserva el adjunto completo de su correo.
+    En orden:
+
+    1. Si su texto cita el RUC y la serie-número de una o más facturas del correo, va a esas.
+    2. Si lleva una orden de compra o una guía de remisión que la factura también cita (el XML o
+       su PDF dicen `OC 4500054453 / GRR EG07-1145`), va a esa factura: así cada OC y cada guía
+       queda con la suya aunque el correo traiga varias facturas del mismo proveedor.
+    3. Si no coincide con ninguna, lo toman las facturas que no declaran ni OC ni guía (no hay
+       con qué ordenarlas, así que jalan lo que sobra). Si todas declaran la suya, va a todas:
+       nada se pierde y cada factura conserva el adjunto completo de su correo.
     """
     rucs, series = candidatos_de_pdf(contenido)
     citadas = [d for d in destinos if d[1] in rucs and (d[2].upper(), d[3]) in series]
-    return list(dict.fromkeys(d[0] for d in (citadas or destinos)))
+    if citadas:
+        return list(dict.fromkeys(d[0] for d in citadas))
+    if referencias:
+        del_pdf = referencias_de_pdf(contenido)
+        if not del_pdf.vacia():
+            suyas = [
+                d for d in destinos if del_pdf.coincide(referencias.get(d[0], _SIN_REFERENCIAS))
+            ]
+            if suyas:
+                return list(dict.fromkeys(d[0] for d in suyas))
+        sin_referencias = [d for d in destinos if referencias.get(d[0], _SIN_REFERENCIAS).vacia()]
+        return list(dict.fromkeys(d[0] for d in (sin_referencias or destinos)))
+    return list(dict.fromkeys(d[0] for d in destinos))
 
 
 def _agregar_texto_correo(plan: PlanCorreo, meta: MetaCorreo) -> None:
@@ -420,7 +456,7 @@ def _sin_clasificar(recibido: datetime, identificador: str) -> str:
 
 
 def _archivos_de(asignacion: Asignacion) -> list[Entrada]:
-    return [asignacion.xml, *asignacion.pdfs]
+    return [asignacion.xml, *asignacion.pdfs, *asignacion.cdrs]
 
 
 def _carpeta_de(asignacion: Asignacion, ruc_empresa: str, plan: PlanCorreo) -> str | None:
@@ -531,6 +567,14 @@ def guardar_sin_duplicar(carpeta: Path, nombre: str, datos: bytes) -> bool:
     carpeta.mkdir(parents=True, exist_ok=True)
     nombre_libre(carpeta, nombre_seguro(nombre)).write_bytes(datos)
     return True
+
+
+def es_cdr(colocacion: Colocacion) -> bool:
+    """¿Es la constancia de recepción (`ApplicationResponse`) de una factura?"""
+    return (
+        colocacion.ruta.lower().endswith(".xml")
+        and raiz_xml(colocacion.datos) == "ApplicationResponse"
+    )
 
 
 def _escribir(
@@ -816,9 +860,13 @@ def extraer(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
                     informe.fuera_de_fechas += 1
                     continue
                 identificador = id_correo(str(correo.EntryID))
+                solo_cdr = bool(getattr(args, "recuperar_cdr", False))
                 if identificador in ya_hechos:
                     informe.ya_registrados += 1
-                    continue
+                    if not solo_cdr:
+                        continue
+                elif solo_cdr:
+                    continue  # lo nuevo lo extrae la corrida normal, con su registro
                 if correo.Attachments.Count == 0:
                     informe.sin_facturas += 1
                     continue
@@ -833,6 +881,18 @@ def extraer(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
                     identificador=identificador,
                     meta=meta_de_correo(correo, carpeta, recibido),
                 )
+                if solo_cdr:
+                    # Correo ya extraído antes de guardar los CDR: solo se suman los que faltan
+                    # (sin `correo.txt` ni lo ya hecho) y no se vuelve a registrar.
+                    plan.colocaciones = [c for c in plan.colocaciones if es_cdr(c)]
+                    if not plan.colocaciones:
+                        continue
+                    informe.con_facturas += 1
+                    if not args.simular:
+                        informe.ya_existian += len(plan.colocaciones) - _escribir(
+                            destino, plan, informe, tocadas
+                        )
+                    continue
                 informe.con_facturas += 1
                 informe.omitidos.update(plan.omitidos)
                 for c in plan.comprobantes:  # sin repetir la factura que llegó en varios correos
@@ -1158,6 +1218,11 @@ def main(argv: list[str] | None = None) -> int:
         "--respaldar-mensajes",
         action="store_true",
         help="Solo guarda el .msg original de los correos ya extraídos que no lo tienen",
+    )
+    parser.add_argument(
+        "--recuperar-cdr",
+        action="store_true",
+        help="Revisa los correos ya extraídos y guarda solo los CDR que no se habían guardado",
     )
     parser.add_argument(
         "--mensajes-a-carpetas",

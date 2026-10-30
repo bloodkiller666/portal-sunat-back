@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 from scripts import extraer_correo_outlook as ex
 
+from tests.test_api_proveedores_paquete import _pdf_con_texto
+
 
 def _zip(entradas: dict[str, bytes]) -> bytes:
     buffer = io.BytesIO()
@@ -30,7 +32,7 @@ def test_el_nombre_nunca_lleva_rutas_ni_caracteres_reservados() -> None:
 def test_la_carpeta_del_correo_agrupa_por_mes_y_no_usa_el_asunto(tmp_path: Path) -> None:
     ruta = ex.carpeta_de_correo(tmp_path, datetime(2026, 10, 21, 16, 6, 5), "abcdef123456")
 
-    assert ruta == tmp_path / "2026-OCTUBRE" / "20261021-160605_abcdef"
+    assert ruta == tmp_path / "2026-10. OCTUBRE" / "20261021-160605_abcdef"
 
 
 def test_un_nombre_repetido_no_pisa_el_archivo_existente(tmp_path: Path) -> None:
@@ -104,7 +106,7 @@ EMPRESA = "20123456789"
 RECIBIDO = datetime(2026, 10, 21, 16, 6, 5)
 PDF = b"%PDF-1.4 factura"
 GUIA = b'<DespatchAdvice xmlns="urn:oasis:names:specification:ubl:schema:xsd:DespatchAdvice-2"/>'
-CARPETA = "2026/OCTUBRE/20999999999/F010-00000456"
+CARPETA = "2026/10. OCTUBRE/20999999999/F010-00000456"
 
 
 def _cdr(referencia: str = "F010-00000456") -> bytes:
@@ -131,8 +133,8 @@ def test_los_meses_van_en_letras_en_todas_las_carpetas() -> None:
     def carpeta(fecha):
         return ex.carpeta_de_comprobante("20999999999", "F010", 1, fecha, EMPRESA, EMPRESA)
 
-    assert carpeta(datetime(2026, 12, 3)) == "2026/DICIEMBRE/20999999999/F010-00000001"
-    assert carpeta(datetime(2026, 9, 3)) == "2026/SETIEMBRE/20999999999/F010-00000001"
+    assert carpeta(datetime(2026, 12, 3)) == "2026/12. DICIEMBRE/20999999999/F010-00000001"
+    assert carpeta(datetime(2026, 9, 3)) == "2026/9. SETIEMBRE/20999999999/F010-00000001"
     assert carpeta(None).startswith("sin-fecha/sin-fecha/")
 
 
@@ -141,7 +143,7 @@ def test_la_carpeta_sale_del_xml_y_no_de_la_fecha_del_correo() -> None:
         ex.carpeta_de_comprobante(
             "20999999999", "F010", 456, datetime(2026, 7, 3), EMPRESA, EMPRESA
         )
-        == "2026/JULIO/20999999999/F010-00000456"
+        == "2026/7. JULIO/20999999999/F010-00000456"
     )
     assert ex.carpeta_de_comprobante("20999999999", "F010", 456, None, None, EMPRESA) == (
         "sin-fecha/sin-fecha/20999999999/F010-00000456"
@@ -153,10 +155,10 @@ def test_una_factura_a_otro_ruc_no_se_mezcla_con_las_de_la_empresa() -> None:
         "20999999999", "F010", 456, datetime(2026, 7, 3), "2061", EMPRESA
     )
 
-    assert carpeta == "_otras_empresas/2061/2026/JULIO/20999999999/F010-00000456"
+    assert carpeta == "_otras_empresas/2061/2026/7. JULIO/20999999999/F010-00000456"
 
 
-def test_el_xml_el_pdf_y_la_guia_del_correo_quedan_juntos_y_el_cdr_se_descarta() -> None:
+def test_el_xml_el_pdf_la_guia_y_el_cdr_del_correo_quedan_juntos() -> None:
     plan = _plan(
         ("factura.xml", FACTURA),
         ("cualquier nombre.pdf", PDF),
@@ -165,9 +167,9 @@ def test_el_xml_el_pdf_y_la_guia_del_correo_quedan_juntos_y_el_cdr_se_descarta()
     )
 
     assert sorted(c.ruta for c in plan.colocaciones) == sorted(
-        f"{CARPETA}/{n}" for n in ("factura.xml", "cualquier nombre.pdf", "guia.xml")
+        f"{CARPETA}/{n}" for n in ("factura.xml", "cualquier nombre.pdf", "R-cdr.xml", "guia.xml")
     )
-    assert plan.omitidos == {"cdr_ignorado": 1}
+    assert plan.omitidos == {}
     (colocado,) = plan.comprobantes
     assert (colocado.serie, colocado.correlativo, colocado.empresa) == ("F010", 456, True)
     assert plan.sin_clasificar == []
@@ -177,7 +179,7 @@ def test_un_pdf_sin_xml_se_aparta_porque_no_dice_a_que_documento_pertenece() -> 
     plan = _plan(("solo.pdf", PDF))
 
     assert [c.ruta for c in plan.colocaciones] == [
-        "_sin_clasificar/2026-OCTUBRE/20261021-160605_abcdef/solo.pdf"
+        "_sin_clasificar/2026-10. OCTUBRE/20261021-160605_abcdef/solo.pdf"
     ]
     assert plan.comprobantes == []
     assert plan.sin_clasificar == [("solo.pdf", "sin_xml")]
@@ -194,7 +196,7 @@ def test_un_xml_de_otro_ruc_va_a_otras_empresas() -> None:
 
     plan = _plan(("f.xml", ajena))
 
-    assert plan.colocaciones[0].ruta.startswith("_otras_empresas/20555555555/2026/OCTUBRE/")
+    assert plan.colocaciones[0].ruta.startswith("_otras_empresas/20555555555/2026/10. OCTUBRE/")
     assert plan.comprobantes[0].empresa is False
 
 
@@ -217,7 +219,7 @@ def test_el_pdf_que_llego_en_otro_correo_se_une_a_su_factura(tmp_path: Path) -> 
     carpeta = tmp_path / CARPETA
     carpeta.mkdir(parents=True)
     (carpeta / "f.xml").write_bytes(FACTURA)
-    suelto = tmp_path / "_sin_clasificar" / "2026-OCTUBRE" / "x"
+    suelto = tmp_path / "_sin_clasificar" / "2026-10. OCTUBRE" / "x"
     suelto.mkdir(parents=True)
     (suelto / "Factura F010-456.pdf").write_bytes(PDF)
     (suelto / "F999-1.pdf").write_bytes(PDF)  # de una factura que no tenemos
@@ -234,17 +236,19 @@ def test_el_pdf_que_llego_en_otro_correo_se_une_a_su_factura(tmp_path: Path) -> 
 
 def test_no_se_une_si_la_serie_numero_es_ambigua_o_ya_hay_pdf(tmp_path: Path) -> None:
     for ruc in ("20111111111", "20222222222"):
-        (tmp_path / "2026/OCTUBRE" / ruc / "F010-00000456").mkdir(parents=True)
+        (tmp_path / "2026/10. OCTUBRE" / ruc / "F010-00000456").mkdir(parents=True)
     suelto = tmp_path / "_sin_clasificar" / "x"
     suelto.mkdir(parents=True)
     (suelto / "F010-456.pdf").write_bytes(PDF)
-    ambiguo = _indice(*(f"2026/OCTUBRE/{r}/F010-00000456" for r in ("20111111111", "20222222222")))
+    ambiguo = _indice(
+        *(f"2026/10. OCTUBRE/{r}/F010-00000456" for r in ("20111111111", "20222222222"))
+    )
 
     assert ex.unir_sueltos(tmp_path, ambiguo) == {}
     assert (suelto / "F010-456.pdf").exists()
 
-    unica = _indice("2026/OCTUBRE/20111111111/F010-00000456")
-    (tmp_path / "2026/OCTUBRE/20111111111/F010-00000456/ya.pdf").write_bytes(b"%PDF otro")
+    unica = _indice("2026/10. OCTUBRE/20111111111/F010-00000456")
+    (tmp_path / "2026/10. OCTUBRE/20111111111/F010-00000456/ya.pdf").write_bytes(b"%PDF otro")
     assert ex.unir_sueltos(tmp_path, unica) == {}  # ya tiene su PDF: ante la duda no se mezcla
     assert (suelto / "F010-456.pdf").exists()
 
@@ -272,7 +276,7 @@ def test_los_zip_de_importacion_llevan_cada_compra_en_su_carpeta(tmp_path: Path)
     (carpeta / "f.pdf").write_bytes(PDF)
     (carpeta / "correo.txt").write_text("evidencia", encoding="utf-8")  # no se importa
     (carpeta / "foto.jpg").write_bytes(b"\xff\xd8")  # tampoco: el importador solo lee XML y PDF
-    ajena = tmp_path / "_otras_empresas/2055/2026/OCTUBRE/20999999999/F010-00000456"
+    ajena = tmp_path / "_otras_empresas/2055/2026/10. OCTUBRE/20999999999/F010-00000456"
     ajena.mkdir(parents=True)
     (ajena / "f.xml").write_bytes(FACTURA)
 
@@ -293,7 +297,7 @@ def test_el_zip_original_se_conserva_aparte_y_no_cuenta_como_sin_clasificar() ->
 
     rutas = {c.ruta for c in plan.colocaciones}
     assert f"{CARPETA}/f.xml" in rutas
-    assert "_originales_zip/2026-OCTUBRE/20261021-160605_abcdef/lote.zip" in rutas
+    assert "_originales_zip/2026-10. OCTUBRE/20261021-160605_abcdef/lote.zip" in rutas
     assert plan.sin_clasificar == []
 
 
@@ -357,7 +361,7 @@ def test_sin_meta_no_se_agrega_el_texto_del_correo() -> None:
 def test_un_pdf_sin_xml_tambien_lleva_su_correo_para_saber_de_donde_vino() -> None:
     plan = _plan_con_meta(("solo.pdf", PDF))
 
-    carpeta = "_sin_clasificar/2026-OCTUBRE/20261021-160605_abcdef"
+    carpeta = "_sin_clasificar/2026-10. OCTUBRE/20261021-160605_abcdef"
     assert "Factura F010-456 octubre" in _texto(plan, carpeta)
 
 
@@ -460,7 +464,7 @@ def test_la_foto_de_una_factura_va_con_la_unica_factura_del_correo() -> None:
 def test_una_foto_sola_se_aparta_para_revisarla_a_mano() -> None:
     plan = _plan(("IMG_0001.jpg", b"\xff\xd8\xff"))
 
-    assert plan.colocaciones[0].ruta.startswith("_sin_clasificar/2026-OCTUBRE/")
+    assert plan.colocaciones[0].ruta.startswith("_sin_clasificar/2026-10. OCTUBRE/")
     assert plan.sin_clasificar == [("IMG_0001.jpg", "imagen")]
     assert plan.comprobantes == []
 
@@ -552,10 +556,10 @@ def test_dos_facturas_en_un_correo_cada_pdf_se_une_a_la_suya_por_la_serie_numero
 
     rutas = {c.ruta for c in plan.colocaciones}
     assert f"{CARPETA}/Factura F010-0456.pdf" in rutas  # ceros a la izquierda: igual coincide
-    assert "2026/OCTUBRE/20999999999/F010-00000457/Factura F010-457.pdf" in rutas
+    assert "2026/10. OCTUBRE/20999999999/F010-00000457/Factura F010-457.pdf" in rutas
     # El PDF que no dice de cuál factura es no se aparta: queda en las dos (y llega a R2).
     assert f"{CARPETA}/sin-numero.pdf" in rutas
-    assert "2026/OCTUBRE/20999999999/F010-00000457/sin-numero.pdf" in rutas
+    assert "2026/10. OCTUBRE/20999999999/F010-00000457/sin-numero.pdf" in rutas
     assert plan.sin_clasificar == []
 
 
@@ -601,6 +605,84 @@ def test_los_pdf_adicionales_de_un_correo_con_tres_facturas_no_se_pierden(monkey
     assert copias == [b"%PDF sin-cita"] * 3
 
 
+def _con_referencias(factura: bytes, orden: str, guia: str) -> bytes:
+    """La factura cita su OC y su guía, como el XML de un proveedor (OrderReference/Despatch)."""
+    return factura.replace(
+        b"</Invoice>",
+        f"<!-- OC {orden} / GRR {guia} --></Invoice>".encode(),
+    )
+
+
+def test_cada_oc_y_cada_guia_va_con_la_factura_que_las_cita() -> None:
+    """Dos facturas del mismo proveedor en un correo, con sus dos OC y sus dos guías en PDF."""
+    f1 = _con_referencias(FACTURA, "4500054453", "EG07-1145")
+    f2 = _con_referencias(
+        FACTURA.replace(b"F010-00000456", b"F010-00000457"), "4500054500", "EG07-1150"
+    )
+    plan = _plan(
+        ("a.xml", f1),
+        ("b.xml", f2),
+        ("OC 4500054453.pdf", _pdf_con_texto("ORDEN DE COMPRA Nro Orden Compra 4500054453 TDM")),
+        ("OC 4500054500.pdf", _pdf_con_texto("ORDEN DE COMPRA Nro Orden Compra 4500054500 TDM")),
+        (
+            "guia 1145.pdf",
+            _pdf_con_texto("GUIA DE REMISION N EG07 - 00001145 Observaciones OC: 4500054453"),
+        ),
+        (
+            "guia 1150.pdf",
+            _pdf_con_texto("GUIA DE REMISION N EG07 - 00001150 Observaciones OC: 4500054500"),
+        ),
+    )
+
+    en = lambda nombre: {  # noqa: E731
+        c.ruta.rpartition("/")[0].rpartition("/")[2]
+        for c in plan.colocaciones
+        if c.ruta.endswith("/" + nombre)
+    }
+    assert en("OC 4500054453.pdf") == {"F010-00000456"}
+    assert en("guia 1145.pdf") == {"F010-00000456"}
+    assert en("OC 4500054500.pdf") == {"F010-00000457"}
+    assert en("guia 1150.pdf") == {"F010-00000457"}
+    assert plan.sin_clasificar == []
+
+
+def test_una_factura_sin_oc_ni_guia_jala_lo_que_ninguna_otra_reclama() -> None:
+    """La factura que no cita nada toma los PDF que no son de la otra; los de la otra no."""
+    con_referencias = _con_referencias(FACTURA, "4500054453", "EG07-1145")
+    sin_referencias = FACTURA.replace(b"F010-00000456", b"F010-00000457")
+    plan = _plan(
+        ("a.xml", con_referencias),
+        ("b.xml", sin_referencias),
+        ("OC 4500054453.pdf", _pdf_con_texto("ORDEN DE COMPRA Nro Orden Compra 4500054453 TDM")),
+        ("OC 4500099999.pdf", _pdf_con_texto("ORDEN DE COMPRA Nro Orden Compra 4500099999 TDM")),
+    )
+
+    en = lambda nombre: {  # noqa: E731
+        c.ruta.rpartition("/")[0].rpartition("/")[2]
+        for c in plan.colocaciones
+        if c.ruta.endswith("/" + nombre)
+    }
+    assert en("OC 4500054453.pdf") == {"F010-00000456"}  # es de la que la cita
+    assert en("OC 4500099999.pdf") == {"F010-00000457"}  # no es de nadie: la jala la que no cita
+
+
+def test_si_ninguna_oc_coincide_y_todas_las_facturas_citan_la_suya_va_a_todas() -> None:
+    f1 = _con_referencias(FACTURA, "4500054453", "EG07-1145")
+    f2 = _con_referencias(
+        FACTURA.replace(b"F010-00000456", b"F010-00000457"), "4500054500", "EG07-1150"
+    )
+    plan = _plan(
+        ("a.xml", f1),
+        ("b.xml", f2),
+        ("OC ajena.pdf", _pdf_con_texto("ORDEN DE COMPRA Nro Orden Compra 4500099999 TDM")),
+    )
+
+    carpetas = {
+        c.ruta.rpartition("/")[0] for c in plan.colocaciones if c.ruta.endswith("/OC ajena.pdf")
+    }
+    assert len(carpetas) == 2
+
+
 def test_dos_pdf_en_un_correo_con_una_sola_factura_van_con_ella() -> None:
     plan = _plan(("f.xml", FACTURA), ("factura.pdf", PDF), ("guia.pdf", PDF + b"guia"))
 
@@ -643,14 +725,17 @@ def test_lo_ya_guardado_en_disco_no_se_duplica_al_repetir_la_extraccion(tmp_path
 def test_los_pendientes_se_anotan_sin_duplicar_y_sin_incluir_otras_empresas(
     tmp_path: Path,
 ) -> None:
-    sueltas = "_sin_clasificar/2026-OCTUBRE/x"
+    sueltas = "_sin_clasificar/2026-10. OCTUBRE/x"
     ex.anotar_pendientes(tmp_path, {CARPETA, sueltas, "_otras_empresas/2055/a"})
     ex.anotar_pendientes(tmp_path, {CARPETA})
 
     anotado = json.loads(
         (tmp_path / "_automatizacion" / "pendientes_importar.json").read_text(encoding="utf-8")
     )
-    assert anotado == {"carpetas": [CARPETA], "sin_clasificar": ["_sin_clasificar/2026-OCTUBRE/x"]}
+    assert anotado == {
+        "carpetas": [CARPETA],
+        "sin_clasificar": ["_sin_clasificar/2026-10. OCTUBRE/x"],
+    }
 
 
 def test_sin_novedades_no_se_crea_el_archivo_de_pendientes(tmp_path: Path) -> None:
@@ -661,27 +746,27 @@ def test_sin_novedades_no_se_crea_el_archivo_de_pendientes(tmp_path: Path) -> No
 
 def test_mensajes_a_carpetas_copia_el_msg_a_cada_factura(tmp_path: Path) -> None:
     """El `.msg` llega a la carpeta de cada factura (y a la unida por texto); el original queda."""
-    correos = tmp_path / "_correos" / "2026-OCTUBRE"
+    correos = tmp_path / "_correos" / "2026-10. OCTUBRE"
     correos.mkdir(parents=True)
     (correos / "a.msg").write_bytes(b"correo")
     (correos / "a.json").write_text(
         json.dumps(
             {
                 "archivos": [
-                    {"ruta": "2026/OCTUBRE/20100000001/F001-00000001/f.xml"},
-                    {"ruta": "2026/OCTUBRE/20100000001/F001-00000002/f.xml"},
-                    {"ruta": "_sin_clasificar/2026-OCTUBRE/a/x.pdf"},
+                    {"ruta": "2026/10. OCTUBRE/20100000001/F001-00000001/f.xml"},
+                    {"ruta": "2026/10. OCTUBRE/20100000001/F001-00000002/f.xml"},
+                    {"ruta": "_sin_clasificar/2026-10. OCTUBRE/a/x.pdf"},
                 ]
             }
         ),
         encoding="utf-8",
     )
     for num in ("1", "2"):
-        (tmp_path / "2026/OCTUBRE/20100000001" / f"F001-0000000{num}").mkdir(parents=True)
-    unida = tmp_path / "2026/OCTUBRE/20100000001/F001-00000003"
+        (tmp_path / "2026/10. OCTUBRE/20100000001" / f"F001-0000000{num}").mkdir(parents=True)
+    unida = tmp_path / "2026/10. OCTUBRE/20100000001/F001-00000003"
     unida.mkdir()
     (unida / "correo.txt").write_text(
-        "Correo completo (.msg): _correos/2026-OCTUBRE/a.msg\n", encoding="utf-8"
+        "Correo completo (.msg): _correos/2026-10. OCTUBRE/a.msg\n", encoding="utf-8"
     )
 
     ex.mensajes_a_carpetas(ex.argparse.Namespace(destino=str(tmp_path), simular=False))
@@ -717,3 +802,9 @@ def test_sin_lista_se_leen_todas_las_carpetas_de_correo_menos_las_del_sistema() 
     leidas = [c.Name for c in ex._carpetas(raiz, {ex.TODAS_LAS_CARPETAS})]
     assert leidas == ["Bandeja de entrada", "TRANSMIDAL", "GRUPO AR&J"]
     assert [c.Name for c in ex._carpetas(raiz, {"grupo ar&j"})] == ["GRUPO AR&J"]
+
+
+def test_es_cdr_reconoce_solo_la_constancia_de_recepcion() -> None:
+    assert ex.es_cdr(ex.Colocacion(f"{CARPETA}/CDR-1.xml", _cdr(), "adjunto"))
+    assert not ex.es_cdr(ex.Colocacion(f"{CARPETA}/f.xml", FACTURA, "adjunto"))
+    assert not ex.es_cdr(ex.Colocacion(f"{CARPETA}/f.pdf", PDF, "adjunto"))

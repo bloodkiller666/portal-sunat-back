@@ -71,8 +71,9 @@ def test_con_un_solo_comprobante_la_carpeta_entera_es_suya() -> None:
 
     (asignacion,) = agrupacion.asignaciones
     assert [p.nombre for p in asignacion.pdfs] == ["documento-1.pdf", "otro.pdf"]
-    # El CDR no se guarda: queda como ignorado, con su motivo.
-    assert [(e.nombre, c) for e, c, _ in agrupacion.ignorados] == [("R-cdr.xml", "cdr_ignorado")]
+    # El CDR de la carpeta con una sola factura es de esa factura.
+    assert [c.nombre for c in asignacion.cdrs] == ["R-cdr.xml"]
+    assert agrupacion.ignorados == []
 
 
 def test_la_guia_y_los_archivos_de_otro_tipo_se_ignoran_y_se_informan() -> None:
@@ -109,10 +110,24 @@ def test_en_un_zip_plano_el_pdf_se_une_por_su_nombre_o_por_la_serie_numero() -> 
     por_xml = {a.xml.nombre: a for a in agrupacion.asignaciones}
     assert [p.nombre for p in por_xml["a.xml"].pdfs] == ["a.pdf"]
     assert [p.nombre for p in por_xml["b.xml"].pdfs] == ["Factura F010-457.pdf"]
-    assert sorted((e.nombre, c) for e, c, _ in agrupacion.ignorados) == [
-        ("R-1.xml", "cdr_ignorado"),
-        ("suelto.pdf", "sin_xml"),
-    ]
+    # El CDR cita F010-00000457: va con la segunda factura.
+    assert [c.nombre for c in por_xml["b.xml"].cdrs] == ["R-1.xml"]
+    assert por_xml["a.xml"].cdrs == []
+    assert [(e.nombre, c) for e, c, _ in agrupacion.ignorados] == [("suelto.pdf", "sin_xml")]
+
+
+def test_un_cdr_que_no_cita_ninguna_factura_de_la_carpeta_se_ignora() -> None:
+    otra = FACTURA.replace(b"F010-00000456", b"F010-00000457")
+    agrupacion = agrupar(
+        [
+            Entrada("a.xml", FACTURA),
+            Entrada("b.xml", otra),
+            Entrada("R-1.xml", _cdr("F010-00000999")),
+        ]
+    )
+
+    assert [(e.nombre, c) for e, c, _ in agrupacion.ignorados] == [("R-1.xml", "cdr_ignorado")]
+    assert all(a.cdrs == [] for a in agrupacion.asignaciones)
 
 
 def test_dos_carpetas_con_el_mismo_nombre_de_pdf_no_se_pisan() -> None:
@@ -132,7 +147,7 @@ def test_dos_carpetas_con_el_mismo_nombre_de_pdf_no_se_pisan() -> None:
 # --------------------------------------------------------------------------- #
 # Endpoint
 # --------------------------------------------------------------------------- #
-def test_registra_la_compra_con_su_pdf_y_no_guarda_el_cdr(
+def test_registra_la_compra_con_su_pdf_y_su_cdr(
     cliente_r2: TestClient, uow: FakeUnitOfWork
 ) -> None:
     paquete = _zip(
@@ -144,14 +159,16 @@ def test_registra_la_compra_con_su_pdf_y_no_guarda_el_cdr(
     cuerpo = _subir(cliente_r2, {"Authorization": f"Bearer {crear_token()}"}, paquete).json()
 
     assert (cuerpo["importados"], cuerpo["con_pdf"], cuerpo["con_error"]) == (1, 1, 0)
-    assert cuerpo["con_cdr"] == 0  # el CDR de una compra no se guarda ni se cuenta
+    assert cuerpo["con_cdr"] == 1
     (comprobante,) = uow.comprobantes.comprobantes.values()
     assert comprobante.origen is OrigenComprobante.recibido
     assert comprobante.ruc_emisor == "20999999999"
     assert comprobante.cdr_codigo is None  # un CDR recibido no toca el estado ni el código
-    assert {a.tipo.value for a in uow.archivos.archivos} == {"xml", "pdf"}
+    assert {a.tipo.value for a in uow.archivos.archivos} == {"xml", "pdf", "cdr"}
+    (cdr_guardado,) = [a for a in uow.archivos.archivos if a.tipo.value == "cdr"]
+    assert cdr_guardado.mime_type == "application/xml"  # es un XML suelto, no el ZIP de SUNAT
     (cdr,) = [i for i in cuerpo["items"] if i["archivo"].startswith("R-")]
-    assert (cdr["ok"], cdr["code"], cdr["situacion"]) == (False, "cdr_ignorado", "omitido")
+    assert (cdr["ok"], cdr["tipo"], cdr["situacion"]) == (True, "cdr", "guardado")
 
 
 def test_repetir_el_paquete_no_duplica_y_completa_lo_que_falte(
@@ -179,7 +196,7 @@ def test_repetir_el_paquete_no_duplica_y_completa_lo_que_falte(
     assert (segunda["duplicados"], segunda["con_pdf"], segunda["con_error"]) == (1, 1, 0)
     assert tercera["duplicados"] == 1
     assert sum(1 for a in uow.archivos.archivos if a.tipo.value == "pdf") == 1  # no se repite
-    assert not any(a.tipo.value == "cdr" for a in uow.archivos.archivos)
+    assert sum(1 for a in uow.archivos.archivos if a.tipo.value == "cdr") == 1  # tampoco
 
 
 def test_una_compra_de_sire_se_completa_con_el_xml_aunque_el_portal_corra_en_beta(
@@ -333,14 +350,13 @@ def test_cada_archivo_trae_su_tipo_y_la_situacion_de_la_compra(
     assert [(i["tipo"], i["situacion"]) for i in nueva["items"]] == [
         ("xml", "nueva"),
         ("pdf", "guardado"),
-        ("xml", "omitido"),  # el CDR llega como .xml, pero se ignora
+        ("cdr", "guardado"),  # el CDR llega como .xml y se guarda con su compra
     ]
-    assert nueva["items"][2]["code"] == "cdr_ignorado"
     assert (nueva["nuevas"], nueva["completadas"], nueva["importados"]) == (1, 0, 1)
     assert [(i["tipo"], i["situacion"]) for i in repetida["items"]] == [
         ("xml", "repetida"),
         ("pdf", "ya_estaba"),
-        ("xml", "omitido"),
+        ("cdr", "ya_estaba"),
     ]
     assert (repetida["duplicados"], repetida["importados"], repetida["con_error"]) == (1, 0, 0)
 

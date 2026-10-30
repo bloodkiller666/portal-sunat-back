@@ -9,7 +9,9 @@ el XML y solo sirve para ventas), aquí los archivos se agrupan por carpeta:
   existe. Un XML repetido no es un error: sigue sirviendo para añadir el PDF que falte.
 * Con UN solo comprobante en la carpeta, todos los PDF de esa carpeta son suyos. Con varios
   (ZIP plano), el PDF se une por el nombre o por la serie-número que lleve.
-* El portal solo guarda XML y PDF: un CDR (`ApplicationResponse`) se ignora y se informa.
+* El CDR que el proveedor manda en el correo (`ApplicationResponse`, un XML suelto) se guarda con
+  su compra, como un PDF más: con UNA factura en la carpeta es suyo; con varias, el de la
+  serie-número que cite. Si no se sabe de cuál es, se ignora y se informa.
 * Las guías de remisión y los XML no reconocidos se ignoran y se informan.
 
 Las reglas de agrupación son puras (`agrupar`) y se prueban sin base de datos.
@@ -82,6 +84,7 @@ class Asignacion:
 
     xml: Entrada
     pdfs: list[Entrada] = field(default_factory=list)
+    cdrs: list[Entrada] = field(default_factory=list)  # constancias de recepción (XML) del correo
 
 
 @dataclass
@@ -119,6 +122,7 @@ def agrupar(entradas: list[Entrada]) -> Agrupacion:
     for archivos in carpetas.values():
         comprobantes: list[Entrada] = []
         pdfs: list[Entrada] = []
+        cdrs: list[Entrada] = []
         for archivo in archivos:
             if archivo.extension == "pdf":
                 pdfs.append(archivo)
@@ -127,9 +131,7 @@ def agrupar(entradas: list[Entrada]) -> Agrupacion:
                 if raiz in _RAICES_COMPROBANTE:
                     comprobantes.append(archivo)
                 elif raiz == "ApplicationResponse":
-                    resultado.ignorados.append(
-                        (archivo, "cdr_ignorado", "El portal no guarda CDR: solo XML y PDF")
-                    )
+                    cdrs.append(archivo)
                 elif raiz == "DespatchAdvice":
                     resultado.ignorados.append(
                         (archivo, "guia", "Guía de remisión: no se registra como compra")
@@ -140,8 +142,37 @@ def agrupar(entradas: list[Entrada]) -> Agrupacion:
                     )
             else:
                 resultado.ignorados.append((archivo, "tipo_no_soportado", "Solo XML y PDF"))
+        antes = len(resultado.asignaciones)
         _repartir(comprobantes, pdfs, resultado)
+        _repartir_cdrs(cdrs, resultado.asignaciones[antes:], resultado)
     return resultado
+
+
+def _repartir_cdrs(cdrs: list[Entrada], asignaciones: list[Asignacion], salida: Agrupacion) -> None:
+    """Cada CDR a su compra: la única de la carpeta o, si hay varias, la que cite en su texto."""
+    claves = {a.xml.ruta: _clave_de_comprobante(a.xml) for a in asignaciones}
+    for cdr in cdrs:
+        destino = (
+            asignaciones[0]
+            if len(asignaciones) == 1
+            else _compra_del_cdr(cdr, asignaciones, claves)
+        )
+        if destino is None:
+            salida.ignorados.append(
+                (cdr, "cdr_ignorado", "No se sabe a qué factura de la carpeta pertenece el CDR")
+            )
+        else:
+            destino.cdrs.append(cdr)
+
+
+def _compra_del_cdr(
+    cdr: Entrada, asignaciones: list[Asignacion], claves: dict[str, tuple[str, int] | None]
+) -> Asignacion | None:
+    """La compra cuya serie-número aparece en el nombre o en el texto del CDR (solo si es una)."""
+    texto = f"{cdr.nombre} {cdr.contenido[:8000].decode('utf-8', errors='replace')}".upper()
+    citadas = {(m.group(1), int(m.group(2))) for m in _SERIE_NUMERO.finditer(texto)}
+    candidatas = [a for a in asignaciones if claves[a.xml.ruta] in citadas]
+    return candidatas[0] if len(candidatas) == 1 else None
 
 
 def _repartir(comprobantes: list[Entrada], pdfs: list[Entrada], salida: Agrupacion) -> None:
@@ -298,6 +329,7 @@ async def procesar_entradas(
         nuevas=sum(1 for i in xmls if i.ok and i.situacion == NUEVA),
         completadas=sum(1 for i in xmls if i.ok and i.situacion == COMPLETADA),
         con_pdf=sum(1 for i in items if i.tipo == "pdf" and i.ok),
+        con_cdr=sum(1 for i in items if i.tipo == "cdr" and i.ok),
         duplicados=sum(1 for i in xmls if i.situacion == REPETIDA),
         con_error=sum(1 for i in items if not i.ok and i.code not in _INFORMATIVOS),
         sin_xml=sum(1 for i in items if i.code == "sin_xml"),
@@ -372,7 +404,7 @@ async def _importar(
                     code="xml_con_error",
                     mensaje="No se procesó porque el XML de la compra tiene un error",
                 )
-                for a in asignacion.pdfs
+                for a in (*asignacion.pdfs, *asignacion.cdrs)
             ]
             return [item, *sin_xml]
         comprobante_id = comprobante.id
@@ -392,8 +424,44 @@ async def _importar(
         resultados.append(
             await _guardar_pdf(uow, settings, comprobante_id, numero, pdf, archivados)
         )
+    for cdr in asignacion.cdrs:
+        resultados.append(
+            await _guardar_cdr(uow, settings, comprobante_id, numero, cdr, archivados)
+        )
     item.pdf = any(r.ok for r in resultados if r.tipo == "pdf")
     return resultados
+
+
+async def _guardar_cdr(
+    uow: UnitOfWork,
+    settings: Settings,
+    comprobante_id: UUID,
+    numero: str,
+    cdr: Entrada,
+    archivados: list[Archivo],
+) -> PaqueteItemOut:
+    """Archiva el CDR (XML) de la compra; si ya estaba con ese nombre, no lo repite."""
+    item = PaqueteItemOut(
+        archivo=cdr.nombre, tipo="cdr", comprobante_id=comprobante_id, numero=numero
+    )
+    if any(a.tipo is TipoArchivo.cdr and a.nombre == cdr.nombre for a in archivados):
+        item.situacion, item.mensaje = "ya_estaba", "El CDR ya estaba archivado"
+        return item
+    guardado = await guardar_archivo_sin_fallar(
+        uow=uow,
+        settings=settings,
+        comprobante_id=comprobante_id,
+        tipo=TipoArchivo.cdr,
+        file_bytes=cdr.contenido,
+        filename=cdr.nombre,
+        content_type="application/xml",
+    )
+    if guardado is None:
+        item.ok, item.code = False, "no_archivado"
+        item.mensaje = "No se pudo guardar el CDR en el almacenamiento"
+    else:
+        item.situacion, item.mensaje = "guardado", f"CDR guardado en {numero}"
+    return item
 
 
 async def _guardar_pdf(

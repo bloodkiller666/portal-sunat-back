@@ -19,7 +19,7 @@ from app.core.errors import (
     StorageNotConfiguredError,
 )
 from app.core.logging import get_logger
-from app.core.meses import nombre_mes
+from app.core.meses import carpeta_de_mes
 from app.db.models import Archivo, ArchivoRegistro, Comprobante
 from app.db.repositories.base import UnitOfWork
 from app.storage.base import StorageProvider
@@ -55,10 +55,13 @@ async def sube_archivo(
     filename: str | None = None,
     folder_path: str | None = None,
     storage_provider: StorageProvider | None = None,
+    content_type: str | None = None,
 ) -> Archivo:
     """Sube el archivo a R2 y guarda su referencia en `archivos`.
 
-    Regresa el objeto `Archivo` recién insertado con la clave S3 y el hash real.
+    Regresa el objeto `Archivo` recién insertado con la clave S3 y el hash real. `content_type`
+    solo hace falta cuando el MIME del tipo no es el real: el CDR que manda un proveedor por correo
+    es un XML suelto, no el ZIP `R-….zip` que baja SUNAT.
     """
     comprobante = await uow.comprobantes.get(comprobante_id)
     if comprobante is None:
@@ -74,7 +77,7 @@ async def sube_archivo(
     subido = await proveedor.upload_file(
         file_bytes=file_bytes,
         filename=nombre,
-        content_type=_tipo_mime(tipo),
+        content_type=content_type or _tipo_mime(tipo),
         folder_path=carpeta,
     )
 
@@ -104,6 +107,7 @@ async def guardar_archivo_sin_fallar(
     filename: str | None = None,
     folder_path: str | None = None,
     storage_provider: StorageProvider | None = None,
+    content_type: str | None = None,
 ) -> Archivo | None:
     """Sube el archivo y registra su referencia, sin romper la operación principal.
 
@@ -121,6 +125,7 @@ async def guardar_archivo_sin_fallar(
             filename=filename,
             folder_path=folder_path,
             storage_provider=storage_provider,
+            content_type=content_type,
         )
     except StorageNotConfiguredError:
         logger.warning(
@@ -203,8 +208,8 @@ async def url_descarga(
 
 
 def carpeta_del_comprobante(comprobante: Comprobante) -> str:
-    """Carpeta del comprobante: `comprobantes/{ruc}/{año}/{MES}/{serie}-{número}`
-    (el mes va en letras, p. ej. `OCTUBRE`).
+    """Carpeta del comprobante: `comprobantes/{ruc}/{año}/{N. MES}/{serie}-{número}`
+    (el mes va con su número y su nombre, p. ej. `10. OCTUBRE`).
 
     Cada documento tiene su propia carpeta para que el XML y el CDR viajen
     juntos al revisar el bucket. El RUC emisor se conserva delante porque el
@@ -213,7 +218,7 @@ def carpeta_del_comprobante(comprobante: Comprobante) -> str:
     """
     fecha = comprobante.fecha_emision or datetime.now(tz=UTC).date()
     return (
-        f"comprobantes/{comprobante.ruc_emisor}/{fecha.year}/{nombre_mes(fecha.month)}"
+        f"comprobantes/{comprobante.ruc_emisor}/{fecha.year}/{carpeta_de_mes(fecha.month)}"
         f"/{documento_del_comprobante(comprobante)}"
     )
 

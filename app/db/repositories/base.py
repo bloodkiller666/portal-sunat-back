@@ -79,6 +79,9 @@ class PaginaComprobantes:
 
     items: list[Comprobante]
     total: int | None = None
+    # Primera y última fecha de emisión del conjunto filtrado (solo con `contar`).
+    fecha_desde: date | None = None
+    fecha_hasta: date | None = None
     # Respaldos subidos (xml, cdr, pdf) de cada fila, resueltos junto con la página.
     tipos: dict[UUID, set[TipoArchivo]] = field(default_factory=dict)
 
@@ -110,9 +113,7 @@ class CompaniesRepository(Protocol):
 
     async def get_membership(self, user_id: UUID, company_id: UUID) -> Membership | None: ...
 
-    async def get_access(
-        self, ruc: str, user_id: UUID
-    ) -> tuple[Company, Membership | None] | None:
+    async def get_access(self, ruc: str, user_id: UUID) -> tuple[Company, Membership | None] | None:
         """Empresa por RUC y la membresía del usuario en una sola consulta (`None` si no existe)."""
         ...
 

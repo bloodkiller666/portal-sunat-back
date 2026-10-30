@@ -16,6 +16,8 @@ import re
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from app.core.meses import es_carpeta_de_mes
+
 _INVALIDOS_EN_CLAVE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -84,6 +86,11 @@ def construir_clave(folder_path: str, filename: str) -> str:
     La ruta final es `comprobantes/{ruc}/{año}/{mes}/{serie}-{número}/{filename}`; cada
     componente se sanea por separado para que nada raro llegue al bucket.
     """
-    partes = [sanear_componente(parte) for parte in folder_path.strip("/").split("/") if parte]
+    # La carpeta del mes (`10. OCTUBRE`) conserva su espacio: es lo que se lee en el bucket.
+    partes = [
+        parte if es_carpeta_de_mes(parte) else sanear_componente(parte)
+        for parte in folder_path.strip("/").split("/")
+        if parte
+    ]
     partes.append(sanear_componente(filename))
     return "/".join(partes)

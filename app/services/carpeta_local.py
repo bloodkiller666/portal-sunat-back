@@ -22,7 +22,7 @@ from app.core.config import Settings
 from app.core.enums import OrigenComprobante, TipoArchivo
 from app.core.errors import ConflictError, NotFoundError
 from app.core.logging import get_logger
-from app.core.meses import mes_numerico, nombre_mes
+from app.core.meses import carpeta_de_mes, variantes_de_mes
 from app.core.security import AuthenticatedUser
 from app.db.models import Comprobante
 from app.db.repositories.base import UnitOfWork
@@ -175,7 +175,7 @@ def partes_del_comprobante(comprobante: Comprobante) -> list[str]:
         contraparte = comprobante.ruc_receptor or (comprobante.receptor_doc or "").strip()
     return [
         _limpio(str(fecha.year) if fecha else "", "sin-fecha"),
-        _limpio(nombre_mes(fecha.month) if fecha else "", "sin-fecha"),
+        _limpio(carpeta_de_mes(fecha.month) if fecha else "", "sin-fecha"),
         _limpio(contraparte or "", "sin-ruc"),
         _limpio(documento_del_comprobante(comprobante), "sin-numero"),
     ]
@@ -207,9 +207,7 @@ async def restaurar_carpeta(
     archivos = [
         a
         for a in await uow.archivos.list_for_comprobante(comprobante.id)
-        if a.storage_key
-        and a.tipo in (TipoArchivo.xml, TipoArchivo.pdf, TipoArchivo.cdr)
-        and not (es_compra and a.tipo is TipoArchivo.cdr)  # las compras no guardan CDR
+        if a.storage_key and a.tipo in (TipoArchivo.xml, TipoArchivo.pdf, TipoArchivo.cdr)
     ]
     texto_correo = (
         texto_correo_de_compra(comprobante, archivos, mensaje_original=mensaje_original)
@@ -296,34 +294,43 @@ def _escribir(ruta: Path, datos: bytes) -> None:
 MAX_CORREO_TXT = 200_000  # bytes: el cuerpo de un correo largo no debe inflar la respuesta
 
 
-def leer_correo_txt_local(settings: Settings, comprobante: Comprobante) -> str | None:
-    """El `correo.txt` del extractor en la carpeta de la compra, si el backend corre en la PC.
+def leer_correos_txt_locales(settings: Settings, comprobante: Comprobante) -> list[tuple[str, str]]:
+    """Los `correo.txt` del extractor en la carpeta de la compra: `[(nombre, texto)]`.
 
-    Es el más completo (trae el cuerpo del correo). Se lee solo si `LOCAL_ABRIR_CARPETA=true` (el
-    backend está en la misma PC que la carpeta) y de una carpeta que ya existe dentro de la base de
-    compras; en un servidor devuelve `None` y se usa el armado con lo que guarda la base.
+    Una factura que llega en dos correos deja `correo.txt` y `correo (2).txt`: se leen todos, el
+    primero antes. Son los más completos (traen el cuerpo del correo). Se leen solo si
+    `LOCAL_ABRIR_CARPETA=true` (el backend está en la misma PC que la carpeta) y de una carpeta que
+    ya existe dentro de la base de compras; en un servidor la lista sale vacía y se usa el armado
+    con lo que guarda la base.
     """
     if not settings.local_abrir_carpeta or comprobante.origen is not OrigenComprobante.recibido:
-        return None
+        return []
     base = carpeta_proveedores(settings)
     for variante in _variantes_de_mes(partes_del_comprobante(comprobante)):
-        ruta = base.joinpath(*variante, NOMBRE_CORREO_TXT).resolve()
-        if ruta.is_relative_to(base) and ruta.is_file():
+        carpeta = base.joinpath(*variante).resolve()
+        if not carpeta.is_relative_to(base) or not carpeta.is_dir():
+            continue
+        correos: list[tuple[str, str]] = []
+        for ruta in sorted(carpeta.glob("correo*.txt"), key=lambda r: (len(r.name), r.name)):
             try:
                 with ruta.open("rb") as archivo:
-                    return archivo.read(MAX_CORREO_TXT).decode("utf-8", errors="replace")
+                    texto = archivo.read(MAX_CORREO_TXT).decode("utf-8", errors="replace")
             except OSError:
-                return None
-    return None
+                continue
+            correos.append((ruta.name, texto))
+        return correos
+    return []
 
 
 def _variantes_de_mes(partes: list[str]) -> list[list[str]]:
-    """La ruta con el mes en letras y, si existe en ese formato, la de antes (`2026/10`).
+    """La ruta con el mes como se guarda hoy (`10. OCTUBRE`) y las formas de antes.
 
-    Las carpetas guardadas antes del cambio a nombres de mes siguen abriéndose.
+    Las carpetas guardadas antes siguen abriéndose: con el nombre solo (`OCTUBRE`) o con el
+    número (`10`). Sea cual sea la forma que mande el navegador, se prueban las tres.
     """
-    numerico = mes_numerico(partes[1]) if len(partes) > 1 else None
-    return [partes, [partes[0], numerico, *partes[2:]]] if numerico else [partes]
+    if len(partes) < 2:
+        return [partes]
+    return [[partes[0], mes, *partes[2:]] for mes in variantes_de_mes(partes[1])]
 
 
 def abrir_carpeta(*, settings: Settings, partes: list[str], origen: str | None = None) -> str:

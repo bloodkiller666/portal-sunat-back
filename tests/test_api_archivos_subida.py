@@ -225,7 +225,7 @@ def test_en_ventas_la_extension_cdr_se_reconoce(
     assert respuesta.json()["tipo"] == "cdr"
 
 
-def test_en_compras_un_cdr_se_rechaza_por_tipo_y_por_extension(
+def test_en_compras_el_cdr_tambien_se_guarda_por_tipo_y_por_extension(
     cliente_r2: TestClient, compra: Comprobante
 ) -> None:
     auth = {"Authorization": f"Bearer {crear_token()}"}
@@ -237,8 +237,8 @@ def test_en_compras_un_cdr_se_rechaza_por_tipo_y_por_extension(
         files={"archivo": ("R-1.cdr", b"x", "application/octet-stream")},
     )
 
-    assert por_tipo.status_code == 422
-    assert por_extension.status_code == 422
+    assert por_tipo.status_code == 201
+    assert por_extension.status_code == 201
 
 
 def test_en_compras_el_pdf_y_el_xml_siguen_subiendo(
@@ -253,7 +253,7 @@ def test_en_compras_el_pdf_y_el_xml_siguen_subiendo(
     assert pdf.status_code == 201
 
 
-def test_el_listado_oculta_los_cdr_viejos_de_una_compra_pero_no_los_de_una_venta(
+def test_el_listado_trae_el_cdr_tanto_de_una_compra_como_de_una_venta(
     cliente_r2: TestClient,
     uow: FakeUnitOfWork,
     comprobante: Comprobante,
@@ -275,7 +275,7 @@ def test_el_listado_oculta_los_cdr_viejos_de_una_compra_pero_no_los_de_una_venta
     compra_ = cliente_r2.get(_ruta(compra.id), headers=auth).json()
 
     assert sorted(a["tipo"] for a in venta["items"]) == ["cdr", "pdf"]
-    assert [a["tipo"] for a in compra_["items"]] == ["pdf"]
+    assert sorted(a["tipo"] for a in compra_["items"]) == ["cdr", "pdf"]
 
 
 def test_la_previsualizacion_trae_pdf_y_xml_con_su_url_en_una_sola_peticion(
@@ -353,7 +353,61 @@ def test_la_previsualizacion_prefiere_el_correo_txt_de_la_pc_con_el_cuerpo(
 
     respuesta = cliente_r2.get(f"/api/v1/comprobantes/{compra.id}/previsualizacion", headers=auth)
 
-    assert "Buenas tardes" in respuesta.json()["correo_txt"]
+    cuerpo = respuesta.json()
+    assert "Buenas tardes" in cuerpo["correo_txt"]
+    assert [c["nombre"] for c in cuerpo["correos_txt"]] == ["correo.txt"]
+
+
+def test_la_previsualizacion_trae_todos_los_correo_txt_de_la_carpeta(
+    cliente_r2: TestClient, compra: Comprobante, settings_con_r2: Settings, tmp_path: Path
+) -> None:
+    """Una factura que llegó en dos correos tiene `correo.txt` y `correo (2).txt`: salen ambos."""
+    carpeta = tmp_path.joinpath(*partes_del_comprobante(compra))
+    carpeta.mkdir(parents=True)
+    for nombre, asunto in (("correo (2).txt", "segundo"), ("correo.txt", "primero")):
+        (carpeta / nombre).write_text(f"Asunto: {asunto}", encoding="utf-8")
+    settings_con_r2.local_abrir_carpeta = True
+    settings_con_r2.local_proveedores_dir = tmp_path
+    auth = {"Authorization": f"Bearer {crear_token()}"}
+
+    respuesta = cliente_r2.get(f"/api/v1/comprobantes/{compra.id}/previsualizacion", headers=auth)
+
+    correos = respuesta.json()["correos_txt"]
+    assert [(c["nombre"], c["texto"]) for c in correos] == [
+        ("correo.txt", "Asunto: primero"),
+        ("correo (2).txt", "Asunto: segundo"),
+    ]
+
+
+def test_la_previsualizacion_incluye_el_cdr_xml_pero_no_el_zip_de_sunat(
+    cliente_r2: TestClient, compra: Comprobante
+) -> None:
+    auth = {"Authorization": f"Bearer {crear_token()}"}
+    for nombre, datos, mime in (
+        ("f.pdf", PDF, "application/pdf"),
+        ("f.xml", b"<Invoice/>", "application/xml"),
+        ("R-f.zip", b"PK\x03\x04", "application/zip"),
+    ):
+        cliente_r2.post(
+            _ruta(compra.id), headers=auth, files={"archivo": (nombre, datos, mime)}
+        )
+    cdr = cliente_r2.post(
+        _ruta(compra.id),
+        headers=auth,
+        data={"tipo": "cdr"},
+        files={"archivo": ("CDR-f.xml", b"<ApplicationResponse/>", "application/xml")},
+    )
+    assert cdr.status_code == 201
+
+    respuesta = cliente_r2.get(f"/api/v1/comprobantes/{compra.id}/previsualizacion", headers=auth)
+
+    items = respuesta.json()["items"]
+    assert [(i["tipo"], i["nombre"]) for i in items] == [
+        ("pdf", "f.pdf"),
+        ("xml", "f.xml"),
+        ("cdr", "CDR-f.xml"),
+    ]
+    assert items[2]["url"].endswith("?inline=application/xml")
 
 
 def test_la_previsualizacion_de_una_venta_no_trae_correo_txt(

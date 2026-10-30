@@ -518,3 +518,29 @@ esquema nuevo: simula por defecto, con `--aplicar` copia y actualiza `archivos.s
 - **XML `facele.pe`** (`<Comprobante><cpe>…`, OSE Facele): `parse_comprobante_ubl` lo lee (`_parse_facele`) y devuelve lo
   mismo que un UBL (tipos 01/03/07/08, ítems, vencimiento, forma de pago). Antes daba `InvalidDocumentError` y la factura
   caía en `_sin_clasificar` como `xml_no_reconocido`.
+
+### P23 — CDR de compras, todos los `correo.txt`, rango de fechas, meses «10. OCTUBRE» y OC/guía (2026-10-30)
+
+- **CDR de las compras (revierte lo de P17)**: el CDR que el proveedor manda en el correo (`CDR-….xml`,
+  `ApplicationResponse`) se guarda con su factura (`agrupar` → `Asignacion.cdrs`; con UNA factura en la carpeta es
+  suyo, con varias el que cite su serie-número), llega a R2 como `tipo=cdr` (`application/xml`) y se ve en la
+  previsualización (`_mime_previsualizable`: PDF, XML y CDR `.xml`; el `R-….zip` de SUNAT solo se descarga). Ya no hay 422
+  al subir un CDR a una compra ni se oculta en `GET /comprobantes/{id}/archivos`. «Descargar CDR», «Guardar en mi PC» y
+  el lote ZIP lo incluyen en Compras (solo si existe: no es un faltante). Para los correos ya extraídos:
+  `uv run --with pywin32 python -m scripts.extraer_correo_outlook --buzon recepcionfacturas --recuperar-cdr` (solo suma los
+  CDR que faltan y deja las carpetas pendientes de importar).
+- **Todos los `correo.txt`**: la previsualización trae `correos_txt` (uno por correo en que llegó la factura:
+  `correo.txt`, `correo (2).txt`…; los del disco con el cuerpo si el backend está en la PC, si no el armado con lo que guarda
+  la base) y `correo_txt` (el primero, por compatibilidad). El frontend los muestra tras los archivos.
+- **Rango de fechas**: `GET .../comprobantes` con `contar=true` devuelve `fecha_desde/fecha_hasta` (primera y última emisión
+  del conjunto filtrado). El botón de fechas de la tabla las dice (`05/08/2026 – 28/10/2026`) en vez de «Todas las fechas»
+  y sigue a los filtros y a los datos nuevos.
+- **Meses «N. MES»** (`app/core/meses.py::carpeta_de_mes`, `lib/carpeta-local.ts::nombreDeMes`): `2026/10. OCTUBRE/RUC/SERIE-NÚMERO`
+  en la PC y en R2 (`construir_clave` conserva el espacio de esa carpeta), y `_correos/2026-10. OCTUBRE/…` en la auditoría.
+  «Abrir carpeta» y `correo_compras` aceptan también `OCTUBRE` y `10`. Migraciones (simulan por defecto):
+  `scripts.meses_en_letras_r2` (objetos de R2 + `archivos.storage_key`) y `scripts.meses_en_carpetas_locales` (carpetas de
+  la PC y rutas citadas en `.json/.jsonl/correo*.txt`; lo que esté en uso por otro programa se deja y se vuelve a correr).
+- **OC y guía ordenan las carpetas** (`pdf_identificar.Referencias`, `extraer_correo_outlook._carpetas_del_pdf`): en un correo con
+  varias facturas, cada PDF sin serie-número va (1) a la factura cuyo RUC+serie-número cita, (2) a la que cita la misma OC
+  (`45…`, 10 dígitos) o la misma guía (`EG07-1145`) en su XML o PDF, (3) si no coincide con ninguna, a las facturas que no
+  declaran OC ni guía (o a todas si todas la declaran). Solo para lo que se extraiga desde ahora.

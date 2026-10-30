@@ -165,6 +165,10 @@ class ComprobantesPage(BaseModel):
     has_more: bool
     # Total del conjunto filtrado; `None` si el cliente pidió `contar=false`.
     total: int | None = None
+    # Primera y última fecha de emisión del conjunto filtrado (con `contar`): el portal las muestra
+    # en el selector de fechas (de 01/08/2026 a 28/10/2026), no «Todas las fechas».
+    fecha_desde: date | None = None
+    fecha_hasta: date | None = None
 
 
 class CoberturaOut(BaseModel):
@@ -355,13 +359,22 @@ class PrevisualizacionItemOut(BaseModel):
     url: str
 
 
+class CorreoTxtOut(BaseModel):
+    """Un `correo.txt` de la compra: asunto, remitente, fecha, adjuntos y, si lo hay, el cuerpo."""
+
+    nombre: str
+    texto: str
+
+
 class PrevisualizacionOut(BaseModel):
     """Todo lo necesario para previsualizar un comprobante en UNA sola petición."""
 
     comprobante_id: UUID
     items: list[PrevisualizacionItemOut]
     expires_in: int
-    # `correo.txt` de la compra: asunto, remitente, fecha y adjuntos (y el cuerpo si está en la PC).
+    # Los `correo.txt` de la compra (uno por correo en que llegó), el primero antes.
+    correos_txt: list[CorreoTxtOut] = []
+    # El primero de `correos_txt` (para clientes que solo conocían uno).
     correo_txt: str | None = None
 
 

@@ -17,9 +17,10 @@ from datetime import datetime, timedelta, timezone
 from app.db.models import Archivo, CompanyMember, Comprobante
 from app.db.repositories.base import UnitOfWork
 
-# El mes es el nombre (`OCTUBRE`) o, en carpetas anteriores, el número (`10`).
+# El mes es `10. OCTUBRE` o, en carpetas anteriores, el nombre (`OCTUBRE`) o el número (`10`).
+_MES = r"(?:\d{1,2}\. [A-ZÁÉÍÓÚ]{4,10}|\d{2}|[A-ZÁÉÍÓÚ]{4,10})"
 _CARPETA_DE_COMPRA = re.compile(
-    r"^\d{4}/(?:\d{2}|[A-ZÁÉÍÓÚ]{4,10})/(\d{11})/([A-Z0-9]{4})-(\d{1,8})$", re.IGNORECASE
+    rf"^\d{{4}}/{_MES}/(\d{{11}})/([A-Z0-9]{{4}})-(\d{{1,8}})$", re.IGNORECASE
 )
 MAX_ASUNTO = 500
 MAX_REMITENTE = 300
