@@ -7,6 +7,7 @@ la firma en el `StorageProvider`.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -16,7 +17,9 @@ from app.core.errors import InvalidDocumentError, NotFoundError
 from app.core.security import AuthenticatedUser
 from app.db.models import Archivo
 from app.db.repositories.base import UnitOfWork
+from app.services.carpeta_local import leer_correo_txt_local
 from app.services.companies import require_membership
+from app.services.correo_compras import texto_correo_de_compra
 from app.services.results import (
     ArchivoOut,
     ArchivosPage,
@@ -141,7 +144,15 @@ async def previsualizar_comprobante(
         )
         for a in archivos
     ]
-    return PrevisualizacionOut(comprobante_id=comprobante_id, items=items, expires_in=vigencia)
+    correo_txt = None
+    if comprobante.origen is OrigenComprobante.recibido:
+        # El de la PC trae también el cuerpo; sin él (servidor) se arma con lo que guarda la base.
+        correo_txt = await asyncio.to_thread(leer_correo_txt_local, settings, comprobante)
+        if correo_txt is None:
+            correo_txt = texto_correo_de_compra(comprobante, archivos)
+    return PrevisualizacionOut(
+        comprobante_id=comprobante_id, items=items, expires_in=vigencia, correo_txt=correo_txt
+    )
 
 
 async def subir_archivo(
@@ -168,9 +179,7 @@ async def subir_archivo(
     if comprobante is None:
         raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
 
-    await require_membership(
-        uow, user, comprobante.company_id, roles=ROLES_OPERATIVOS
-    )
+    await require_membership(uow, user, comprobante.company_id, roles=ROLES_OPERATIVOS)
 
     tipo_efectivo = tipo or inferir_tipo(filename, None)
     if tipo_efectivo is TipoArchivo.cdr and comprobante.origen is OrigenComprobante.recibido:
@@ -208,9 +217,7 @@ async def firmar_descarga(
 
     await require_membership(uow, user, archivo.company_id)
 
-    url = await url_descarga(
-        settings=settings, archivo=archivo, storage_provider=storage_provider
-    )
+    url = await url_descarga(settings=settings, archivo=archivo, storage_provider=storage_provider)
     vigencia = min(settings.r2_signed_url_expires_seconds, _MAX_DIAS_FIRMA * 86400)
     return DescargaOut(
         archivo_id=archivo.id,

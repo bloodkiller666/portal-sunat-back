@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.core.config import Settings
 from app.core.enums import EstadoArchivo, OrigenComprobante, TipoArchivo
 from app.db.models import Company, Comprobante
 from app.services.archivos import TAMANO_MAXIMO_ARCHIVO, inferir_tipo
+from app.services.carpeta_local import partes_del_comprobante
 from tests.conftest import crear_token
 from tests.fakes import FakeUnitOfWork, construir_comprobante
 
@@ -90,9 +94,7 @@ def test_archiva_el_pdf_y_lo_lista(
     assert listado["total"] == 1
     assert listado["items"][0]["id"] == cuerpo["id"]
 
-    descarga = cliente_r2.post(
-        f"/api/v1/archivos/{cuerpo['id']}/download-url", headers=auth
-    )
+    descarga = cliente_r2.post(f"/api/v1/archivos/{cuerpo['id']}/download-url", headers=auth)
     assert descarga.status_code == 200
     assert descarga.json()["url"].startswith("https://firmada/")
 
@@ -201,9 +203,7 @@ def _subir_cdr(cliente: TestClient, comprobante: Comprobante, **extra):
     )
 
 
-def test_en_ventas_se_puede_subir_un_cdr(
-    cliente_r2: TestClient, comprobante: Comprobante
-) -> None:
+def test_en_ventas_se_puede_subir_un_cdr(cliente_r2: TestClient, comprobante: Comprobante) -> None:
     respuesta = _subir_cdr(cliente_r2, comprobante, data={"tipo": "cdr"})
 
     assert respuesta.status_code == 201
@@ -313,3 +313,56 @@ def test_la_previsualizacion_de_un_comprobante_ajeno_da_404(cliente_r2: TestClie
     respuesta = cliente_r2.get(f"/api/v1/comprobantes/{uuid4()}/previsualizacion", headers=auth)
 
     assert respuesta.status_code == 404
+
+
+def test_la_previsualizacion_de_una_compra_trae_su_correo_txt(
+    cliente_r2: TestClient, compra: Comprobante, uow: FakeUnitOfWork
+) -> None:
+    """El `correo.txt` sale de lo que guarda la base (asunto, remitente, fecha y adjuntos)."""
+    auth = {"Authorization": f"Bearer {crear_token()}"}
+    uow.comprobantes.comprobantes[compra.id] = compra.model_copy(
+        update={
+            "correo_asunto": "FACTURA F010-1",
+            "correo_remitente": "Proveedor <ventas@proveedor.pe>",
+            "correo_recibido_at": datetime(2026, 10, 5, 15, 30, tzinfo=UTC),
+        }
+    )
+    cliente_r2.post(
+        _ruta(compra.id), headers=auth, files={"archivo": ("f.pdf", PDF, "application/pdf")}
+    )
+
+    respuesta = cliente_r2.get(f"/api/v1/comprobantes/{compra.id}/previsualizacion", headers=auth)
+
+    texto = respuesta.json()["correo_txt"]
+    assert "Asunto:    FACTURA F010-1" in texto
+    assert "ventas@proveedor.pe" in texto
+    assert "Recibido:  2026-10-05 10:30:00" in texto  # hora de Lima
+    assert "f.pdf" in texto
+
+
+def test_la_previsualizacion_prefiere_el_correo_txt_de_la_pc_con_el_cuerpo(
+    cliente_r2: TestClient, compra: Comprobante, settings_con_r2: Settings, tmp_path: Path
+) -> None:
+    carpeta = tmp_path.joinpath(*partes_del_comprobante(compra))
+    carpeta.mkdir(parents=True)
+    texto = "Asunto: X\n\nCuerpo:\nBuenas tardes"
+    (carpeta / "correo.txt").write_text(texto, encoding="utf-8")
+    settings_con_r2.local_abrir_carpeta = True
+    settings_con_r2.local_proveedores_dir = tmp_path
+    auth = {"Authorization": f"Bearer {crear_token()}"}
+
+    respuesta = cliente_r2.get(f"/api/v1/comprobantes/{compra.id}/previsualizacion", headers=auth)
+
+    assert "Buenas tardes" in respuesta.json()["correo_txt"]
+
+
+def test_la_previsualizacion_de_una_venta_no_trae_correo_txt(
+    cliente_r2: TestClient, comprobante: Comprobante
+) -> None:
+    auth = {"Authorization": f"Bearer {crear_token()}"}
+
+    respuesta = cliente_r2.get(
+        f"/api/v1/comprobantes/{comprobante.id}/previsualizacion", headers=auth
+    )
+
+    assert respuesta.json()["correo_txt"] is None

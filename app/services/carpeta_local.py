@@ -293,6 +293,30 @@ def _escribir(ruta: Path, datos: bytes) -> None:
     temporal.replace(ruta)  # nunca queda un archivo a medio escribir con el nombre final
 
 
+MAX_CORREO_TXT = 200_000  # bytes: el cuerpo de un correo largo no debe inflar la respuesta
+
+
+def leer_correo_txt_local(settings: Settings, comprobante: Comprobante) -> str | None:
+    """El `correo.txt` del extractor en la carpeta de la compra, si el backend corre en la PC.
+
+    Es el más completo (trae el cuerpo del correo). Se lee solo si `LOCAL_ABRIR_CARPETA=true` (el
+    backend está en la misma PC que la carpeta) y de una carpeta que ya existe dentro de la base de
+    compras; en un servidor devuelve `None` y se usa el armado con lo que guarda la base.
+    """
+    if not settings.local_abrir_carpeta or comprobante.origen is not OrigenComprobante.recibido:
+        return None
+    base = carpeta_proveedores(settings)
+    for variante in _variantes_de_mes(partes_del_comprobante(comprobante)):
+        ruta = base.joinpath(*variante, NOMBRE_CORREO_TXT).resolve()
+        if ruta.is_relative_to(base) and ruta.is_file():
+            try:
+                with ruta.open("rb") as archivo:
+                    return archivo.read(MAX_CORREO_TXT).decode("utf-8", errors="replace")
+            except OSError:
+                return None
+    return None
+
+
 def _variantes_de_mes(partes: list[str]) -> list[list[str]]:
     """La ruta con el mes en letras y, si existe en ese formato, la de antes (`2026/10`).
 

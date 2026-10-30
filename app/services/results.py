@@ -361,6 +361,8 @@ class PrevisualizacionOut(BaseModel):
     comprobante_id: UUID
     items: list[PrevisualizacionItemOut]
     expires_in: int
+    # `correo.txt` de la compra: asunto, remitente, fecha y adjuntos (y el cuerpo si está en la PC).
+    correo_txt: str | None = None
 
 
 class DescargaOut(BaseModel):
