@@ -176,7 +176,10 @@ def parse_propuesta_zip(
 
 
 def _parse_txt(texto: str, ruc_esperado: str, resultado: ResultadoPropuesta) -> None:
-    lineas = texto.splitlines()
+    # SUNAT a veces antepone un segundo BOM (en el archivo de un periodo sin movimiento, por
+    # ejemplo): `utf-8-sig` solo quita el primero y «Ruc» quedaba como «\ufeffRuc», lo que se
+    # leía como «faltan columnas» y tumbaba toda la sincronización.
+    lineas = texto.lstrip("\ufeff").splitlines()
     if not lineas:
         return
     cabecera = [columna.strip() for columna in lineas[0].split("|")]

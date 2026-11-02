@@ -268,6 +268,17 @@ class SireClient:
                 f"SUNAT rechazó la solicitud SIRE (código {', '.join(codigos) or 's/c'})",
                 details={"codigos": codigos, "detalle": redact(respuesta.text[:300])},
             )
+        if respuesta.status_code == 429:
+            # SIRE limita las consultas por minuto: no es un fallo del formato ni de las
+            # credenciales; se reintenta pasados unos minutos (la automatización lo hace sola).
+            raise SunatFaultError(
+                "SIRE limitó las consultas (demasiadas peticiones seguidas); "
+                "espera unos minutos y vuelve a intentar",
+                details={
+                    "http_status": 429,
+                    "reintentar_despues_s": respuesta.headers.get("Retry-After"),
+                },
+            )
         if respuesta.status_code != 200:
             raise SunatFaultError(
                 "Respuesta inesperada de SIRE", details={"http_status": respuesta.status_code}

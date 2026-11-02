@@ -182,6 +182,19 @@ def test_otro_422_se_informa_con_su_codigo(cliente: SireClient) -> None:
 
 
 @respx.mock
+def test_demasiadas_peticiones_se_explican_y_no_son_un_formato_nuevo(cliente: SireClient) -> None:
+    respx.post(TOKEN_URL).mock(return_value=_token_ok())
+    respx.get(PROPUESTA_URL).mock(return_value=httpx.Response(429, headers={"Retry-After": "60"}))
+
+    with pytest.raises(SunatFaultError) as error:
+        cliente.solicitar_propuesta("202609")
+
+    assert "limitó las consultas" in error.value.message
+    assert error.value.details["http_status"] == 429
+    assert error.value.details["reintentar_despues_s"] == "60"
+
+
+@respx.mock
 def test_respuesta_sin_ticket_es_un_fallo(cliente: SireClient) -> None:
     respx.post(TOKEN_URL).mock(return_value=_token_ok())
     respx.get(PROPUESTA_URL).mock(return_value=httpx.Response(200, json={}))

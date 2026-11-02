@@ -126,6 +126,18 @@ def test_si_cambia_el_formato_de_sunat_se_avisa() -> None:
     assert error.value.details["faltantes"] == ["Total CP"]
 
 
+def test_un_segundo_bom_en_la_cabecera_no_se_toma_por_formato_nuevo() -> None:
+    """Un periodo sin movimiento llegó con dos BOM y solo la cabecera: no es otro formato."""
+    texto = "\ufeff" + "|".join(CABECERA) + "\r\n"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("LE20123456789202611001400400001EXP2.txt", ("\ufeff" + texto).encode("utf-8"))
+
+    resultado = parse_propuesta_zip(buffer.getvalue(), ruc_esperado=RUC_PRINCIPAL)
+
+    assert resultado.registros == []
+
+
 def test_zip_invalido_se_rechaza() -> None:
     with pytest.raises(SunatFaultError):
         parse_propuesta_zip(b"esto no es un zip", ruc_esperado=RUC_PRINCIPAL)
