@@ -957,6 +957,226 @@ def extraer(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
     return 0, resumen_final
 
 
+# --------------------------------------------------------------------------- #
+# Carpeta de SharePoint que llena el flujo de Power Automate
+# --------------------------------------------------------------------------- #
+# El flujo deja cada correo en `AAAA-MM/AAAAMMDD-HHMMSS_<6 del id>/` con sus adjuntos tal cual y un
+# `00_CORREO_….pdf` que trae el asunto, el remitente y la fecha. El flujo no reconoce RUC ni
+# números de documento: eso lo valida aquí el mismo planificador que usa la lectura de Outlook.
+_CARPETA_DE_FLUJO = re.compile(r"^(\d{8})-(\d{6})_(.+)$")
+_PDF_DE_CORREO = re.compile(r"^00_CORREO_.*\.pdf$", re.IGNORECASE)
+
+
+def _texto_del_pdf(datos: bytes) -> str:
+    try:
+        from pypdf import PdfReader
+
+        return "\n".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(datos)).pages)
+    except Exception:
+        return ""
+
+
+def meta_del_flujo(pdf_correo: bytes | None, recibido: datetime, carpeta: str) -> MetaCorreo:
+    """Asunto, remitente y cuerpo salen del texto del `00_CORREO_….pdf` (mejor esfuerzo).
+
+    Un asunto largo puede partirse en varias líneas del PDF: se une hasta el siguiente rótulo. Si
+    el PDF falta o no se entiende, el correo se procesa igual, solo sin asunto ni remitente.
+    """
+    texto = _texto_del_pdf(pdf_correo).replace("\r", "") if pdf_correo else ""
+
+    def campo(rotulo: str, siguiente: str) -> str:
+        encontrado = re.search(rf"^{rotulo}:(.*?)\n{siguiente}:", texto, re.DOTALL | re.MULTILINE)
+        return " ".join(encontrado.group(1).split()) if encontrado else ""
+
+    fecha = re.search(r"^Recibido:\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", texto, re.MULTILINE)
+    cuerpo = texto.partition("\nCuerpo:\n")[2]
+    return MetaCorreo(
+        asunto=campo("Asunto", "De"),
+        remitente=campo("De", "Para"),
+        para=campo("Para", "Recibido"),
+        recibido=datetime.strptime(fecha.group(1), "%Y-%m-%d %H:%M:%S") if fecha else recibido,
+        carpeta_outlook=f"SharePoint/{carpeta}",
+        cuerpo=cuerpo.strip(),
+    )
+
+
+def _adjuntos_de_disco(
+    carpeta: Path, informe: Informe
+) -> tuple[list[tuple[str, bytes, str]], bytes | None]:
+    """Lee los adjuntos de la carpeta de un correo con las mismas reglas que con Outlook.
+
+    Devuelve `([(nombre, datos, origen)…], pdf_del_correo)`. El `00_CORREO_….pdf` NO es un
+    adjunto: se aparta, porque de lo contrario se importaría como PDF de una factura.
+    """
+    resultado: list[tuple[str, bytes, str]] = []
+    pdf_correo: bytes | None = None
+    for ruta in sorted(carpeta.iterdir()):
+        if not ruta.is_file():
+            continue
+        if _PDF_DE_CORREO.match(ruta.name):
+            pdf_correo = ruta.read_bytes()
+            continue
+        ext = extension(ruta.name)
+        tamano = ruta.stat().st_size
+        if ext in DE_FIRMA:
+            continue
+        if ext in IMAGENES and not es_foto_de_documento(ruta.name, tamano, False):
+            informe.omitidos["imagen_de_firma_o_logo"] += 1
+            continue
+        if ext not in GUARDAR | ABRIR | APARTE | IMAGENES:
+            informe.omitidos[f"omite_{ext}"] += 1
+            continue
+        if tamano > MAX_BYTES_ADJUNTO:
+            informe.omitidos["adjunto_demasiado_grande"] += 1
+            continue
+        datos, nombre = ruta.read_bytes(), nombre_seguro(ruta.name)
+        if ext in GUARDAR | IMAGENES:
+            resultado.append((nombre, datos, "adjunto"))
+        elif ext in ABRIR:
+            contenidos, motivos = leer_zip(datos)
+            for motivo in motivos:
+                informe.omitidos[motivo] += 1
+            resultado.extend((interno, bruto, f"zip:{nombre}") for interno, bruto in contenidos)
+            resultado.append((nombre, datos, "zip_original"))
+        else:
+            resultado.append((nombre if ext else f"{nombre}.bin", datos, "revisar"))
+    return resultado, pdf_correo
+
+
+def _sin_correo_ya_anotado(destino: Path, plan: PlanCorreo, meta: MetaCorreo) -> None:
+    """Quita del plan el `correo.txt` de un correo que ya dejó el suyo (el de Outlook).
+
+    Si el mismo correo llegó por Outlook y por SharePoint, cada carpeta tendría dos `correo.txt`
+    del mismo mensaje y el portal lo mostraría duplicado. Se reconoce por la fecha exacta.
+    """
+    marca = f"Recibido:  {meta.recibido:%Y-%m-%d %H:%M:%S}"
+    conservar: list[Colocacion] = []
+    for c in plan.colocaciones:
+        if c.origen == "correo":
+            carpeta = destino / c.ruta.rpartition("/")[0]
+            if any(
+                marca in t.read_text(encoding="utf-8", errors="replace")
+                for t in carpeta.glob("correo*.txt")
+            ):
+                continue
+        conservar.append(c)
+    plan.colocaciones = conservar
+
+
+def extraer_de_carpeta(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
+    """Procesa la carpeta de SharePoint sincronizada: la misma salida que `extraer` (Outlook).
+
+    Es un canal MÁS: el destino, el registro y el índice son los de Outlook, y un archivo
+    idéntico no se duplica dentro de su carpeta, así que lo que llegó por los dos no se repite.
+    """
+    origen = Path(args.origen_carpeta).expanduser().resolve()
+    if not origen.is_dir():
+        print(f"No existe la carpeta de origen: {origen}")
+        return 2, None
+    destino = Path(args.destino).expanduser().resolve()
+    desde = date.fromisoformat(args.desde) if args.desde else None
+    hasta = date.fromisoformat(args.hasta) if args.hasta else None
+    if not args.simular:
+        destino.mkdir(parents=True, exist_ok=True)
+    ruta_registro = destino / "registro_correos.jsonl"
+    ruta_indice = destino / "indice_comprobantes.jsonl"
+    ya_hechos = _cargar_registro(ruta_registro)
+    indice = _indice_cargar(ruta_indice)
+    informe = Informe()
+    vistos_empresa: set[str] = set()
+    vistos_otras: set[str] = set()
+    tocadas: set[str] = set()
+    print(
+        f"Origen: {origen} | destino: {destino} | {'SIMULACIÓN' if args.simular else 'guardando'}"
+    )
+
+    correos = sorted(p for p in origen.rglob("*") if p.is_dir() and _CARPETA_DE_FLUJO.match(p.name))
+    for carpeta in correos:
+        try:
+            partes = _CARPETA_DE_FLUJO.match(carpeta.name)
+            assert partes is not None
+            recibido = datetime.strptime(partes.group(1) + partes.group(2), "%Y%m%d%H%M%S")
+            informe.revisados += 1
+            if (desde and recibido.date() < desde) or (hasta and recibido.date() > hasta):
+                informe.fuera_de_fechas += 1
+                continue
+            id_registro = f"sp:{carpeta.name}"
+            if id_registro in ya_hechos:
+                informe.ya_registrados += 1
+                continue
+            archivos, pdf_correo = _adjuntos_de_disco(carpeta, informe)
+            if not archivos:
+                informe.sin_facturas += 1
+                continue
+            info = meta_del_flujo(pdf_correo, recibido, carpeta.name)
+            identificador = nombre_seguro(partes.group(3))
+            plan = planificar_correo(
+                archivos,
+                ruc_empresa=args.ruc,
+                recibido=recibido,
+                identificador=identificador,
+                meta=info,
+            )
+            informe.con_facturas += 1
+            informe.omitidos.update(plan.omitidos)
+            for c in plan.comprobantes:
+                (vistos_empresa if c.empresa else vistos_otras).add(c.carpeta)
+            informe.sin_clasificar.update(motivo for _, motivo in plan.sin_clasificar)
+            if args.simular:
+                continue
+            _sin_correo_ya_anotado(destino, plan, info)
+            nuevos = _escribir(destino, plan, informe, tocadas)
+            informe.ya_existian += len(plan.colocaciones) - nuevos
+            _registrar(
+                destino,
+                ruta_registro,
+                ruta_indice,
+                indice,
+                None,
+                "SharePoint",
+                recibido,
+                identificador,
+                plan,
+                info,
+                id_registro=id_registro,
+            )
+        except Exception as exc:
+            informe.errores += 1
+            print(f"    correo {carpeta.name}: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    informe.comprobantes = len(vistos_empresa)
+    informe.otras_empresas = len(vistos_otras)
+    paquetes: list[Path] = []
+    if not args.simular:
+        informe.unidos_despues.update(unir_sueltos(destino, indice, tocadas))
+        anotar_pendientes(destino, tocadas)
+        if not args.sin_paquetes:
+            paquetes = crear_paquetes(destino, simular=False)
+    resumen = {
+        "correos_en_la_carpeta": len(correos),
+        "con_facturas": informe.con_facturas,
+        "sin_facturas": informe.sin_facturas,
+        "ya_registrados": informe.ya_registrados,
+        "fuera_de_fechas": informe.fuera_de_fechas,
+        "comprobantes_de_la_empresa": informe.comprobantes,
+        "comprobantes_de_otras_empresas": informe.otras_empresas,
+        "sin_clasificar": dict(informe.sin_clasificar),
+        "unidos_despues": dict(informe.unidos_despues),
+        "archivos_nuevos": dict(informe.archivos),
+        "archivos_repetidos_omitidos": informe.ya_existian,
+        "omitidos": dict(informe.omitidos),
+        "errores": informe.errores,
+        "paquetes_para_importar": [str(p) for p in paquetes],
+        "simulacion": args.simular,
+    }
+    print(json.dumps(resumen, ensure_ascii=False, indent=2))
+    if not args.simular:
+        (destino / "informe_sharepoint.json").write_text(
+            json.dumps(resumen, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    return 0, resumen
+
+
 def ejecutar(args: argparse.Namespace) -> int:
     return extraer(args)[0]
 
@@ -1067,8 +1287,13 @@ def _registrar(
     identificador: str,
     plan: PlanCorreo,
     info: MetaCorreo,
+    id_registro: str | None = None,
 ) -> None:
-    """Deja constancia del correo: de dónde salió cada archivo y qué comprobantes aportó."""
+    """Deja constancia del correo: de dónde salió cada archivo y qué comprobantes aportó.
+
+    Sin `correo` (los que llegan por la carpeta de SharePoint) no hay `.msg` que respaldar, y
+    `id_registro` distingue su entrada de las de Outlook en `registro_correos.jsonl`.
+    """
     meta = (
         destino
         / "_correos"
@@ -1076,7 +1301,11 @@ def _registrar(
         / f"{recibido:%Y%m%d-%H%M%S}_{identificador[:6]}.json"
     )
     meta.parent.mkdir(parents=True, exist_ok=True)
-    mensaje = _guardar_mensaje_original(correo, meta.with_suffix(".msg"), destino)
+    mensaje = (
+        _guardar_mensaje_original(correo, meta.with_suffix(".msg"), destino)
+        if correo is not None
+        else None
+    )
     if mensaje is not None:
         copiar_mensaje_a_carpetas(
             destino, meta.with_suffix(".msg"), [c.ruta for c in plan.colocaciones]
@@ -1084,9 +1313,9 @@ def _registrar(
     meta.write_text(
         json.dumps(
             {
-                "id": identificador,
+                "id": id_registro or identificador,
                 "recibido": recibido.isoformat(),
-                "carpeta_correo": str(carpeta.Name),
+                "carpeta_correo": str(getattr(carpeta, "Name", carpeta)),
                 "asunto": info.asunto,
                 "remitente": info.remitente,
                 "para": info.para,
@@ -1122,9 +1351,9 @@ def _registrar(
         archivo.write(
             json.dumps(
                 {
-                    "id": identificador,
+                    "id": id_registro or identificador,
                     "recibido": recibido.isoformat(),
-                    "carpeta": str(carpeta.Name),
+                    "carpeta": str(getattr(carpeta, "Name", carpeta)),
                 },
                 ensure_ascii=False,
             )
@@ -1229,11 +1458,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Solo copia cada .msg de _correos a la carpeta de sus facturas (--simular: cuenta)",
     )
+    parser.add_argument(
+        "--origen-carpeta",
+        help="En vez de Outlook, lee la carpeta de SharePoint sincronizada (flujo de Power "
+        "Automate): una subcarpeta por correo, con sus adjuntos y un 00_CORREO_….pdf",
+    )
     args = parser.parse_args(argv)
     if args.mensajes_a_carpetas:
         return mensajes_a_carpetas(args)
+    if args.origen_carpeta:
+        return extraer_de_carpeta(args)[0]
     if not args.buzon:
-        parser.error("--buzon es obligatorio (salvo con --mensajes-a-carpetas)")
+        parser.error("--buzon u --origen-carpeta es obligatorio (salvo con --mensajes-a-carpetas)")
     return respaldar_mensajes(args) if args.respaldar_mensajes else ejecutar(args)
 
 

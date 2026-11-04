@@ -808,3 +808,127 @@ def test_es_cdr_reconoce_solo_la_constancia_de_recepcion() -> None:
     assert ex.es_cdr(ex.Colocacion(f"{CARPETA}/CDR-1.xml", _cdr(), "adjunto"))
     assert not ex.es_cdr(ex.Colocacion(f"{CARPETA}/f.xml", FACTURA, "adjunto"))
     assert not ex.es_cdr(ex.Colocacion(f"{CARPETA}/f.pdf", PDF, "adjunto"))
+
+
+# --------------------------------------------------------------------------- #
+# Carpeta de SharePoint que llena el flujo de Power Automate
+# --------------------------------------------------------------------------- #
+TEXTO_CORREO = (
+    "Asunto:    FACTURA ELECTRONICA F010 - 00000456\n"
+    "   OC 4500055647\n"
+    "De:        facturacion@proveedor.example\n"
+    "Para:      \n"
+    "Recibido:  2026-10-21 16:06:05\n\n"
+    "Archivos de este correo:\n  - f.xml (10 bytes)\n\n"
+    "Cuerpo:\nBuenas tardes, se adjunta la factura.\n"
+)
+
+
+def _args_de_carpeta(origen: Path, destino: Path, **extra):
+    import argparse
+
+    base = {
+        "origen_carpeta": str(origen),
+        "destino": str(destino),
+        "ruc": EMPRESA,
+        "desde": None,
+        "hasta": None,
+        "simular": False,
+        "sin_paquetes": True,
+    }
+    return argparse.Namespace(**{**base, **extra})
+
+
+def _correo_en_carpeta(origen: Path, nombre: str = "20261021-160605_abcAAA=") -> Path:
+    carpeta = origen / "2026-10" / nombre
+    carpeta.mkdir(parents=True)
+    (carpeta / "20999999999-01-F010-00000456.xml").write_bytes(FACTURA)
+    (carpeta / "PDF-F010-456.pdf").write_bytes(PDF)
+    (carpeta / "00_CORREO_20261021-160605_abcAAA=.pdf").write_bytes(b"%PDF-1.4 correo")
+    return carpeta
+
+
+def test_el_pdf_del_correo_da_el_asunto_el_remitente_y_la_fecha(monkeypatch) -> None:
+    monkeypatch.setattr(ex, "_texto_del_pdf", lambda datos: TEXTO_CORREO)
+
+    meta = ex.meta_del_flujo(b"pdf", datetime(2026, 1, 1), "20261021-160605_abcAAA=")
+
+    assert meta.asunto == "FACTURA ELECTRONICA F010 - 00000456 OC 4500055647"  # unió las líneas
+    assert meta.remitente == "facturacion@proveedor.example"
+    assert meta.recibido == datetime(2026, 10, 21, 16, 6, 5)
+    assert meta.cuerpo == "Buenas tardes, se adjunta la factura."
+
+
+def test_sin_pdf_del_correo_se_usa_la_fecha_de_la_carpeta() -> None:
+    meta = ex.meta_del_flujo(None, RECIBIDO, "20261021-160605_abcAAA=")
+
+    assert meta.asunto == meta.remitente == ""
+    assert meta.recibido == RECIBIDO
+
+
+def test_la_carpeta_del_flujo_se_ordena_por_factura_y_el_pdf_del_correo_no_se_importa(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(ex, "_texto_del_pdf", lambda datos: TEXTO_CORREO)
+    origen, destino = tmp_path / "entrada", tmp_path / "salida"
+    _correo_en_carpeta(origen)
+
+    codigo, resumen = ex.extraer_de_carpeta(_args_de_carpeta(origen, destino))
+
+    assert codigo == 0 and resumen is not None
+    assert resumen["comprobantes_de_la_empresa"] == 1
+    carpeta = destino / CARPETA
+    assert sorted(p.name for p in carpeta.iterdir()) == [
+        "20999999999-01-F010-00000456.xml",
+        "PDF-F010-456.pdf",
+        "correo.txt",
+    ]
+    assert "FACTURA ELECTRONICA F010" in (carpeta / "correo.txt").read_text(encoding="utf-8")
+    assert not list(destino.rglob("00_CORREO_*"))  # un PDF más en la carpeta se habría importado
+
+
+def test_repetir_la_carpeta_del_flujo_no_vuelve_a_procesar_el_correo(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(ex, "_texto_del_pdf", lambda datos: TEXTO_CORREO)
+    origen, destino = tmp_path / "entrada", tmp_path / "salida"
+    _correo_en_carpeta(origen)
+    ex.extraer_de_carpeta(_args_de_carpeta(origen, destino))
+
+    _, resumen = ex.extraer_de_carpeta(_args_de_carpeta(origen, destino))
+
+    assert resumen is not None
+    assert resumen["ya_registrados"] == 1 and resumen["con_facturas"] == 0
+    assert len(list((destino / CARPETA).iterdir())) == 3
+
+
+def test_un_correo_que_ya_dejo_outlook_no_repite_su_correo_txt(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ex, "_texto_del_pdf", lambda datos: TEXTO_CORREO)
+    origen, destino = tmp_path / "entrada", tmp_path / "salida"
+    _correo_en_carpeta(origen)
+    previa = destino / CARPETA
+    previa.mkdir(parents=True)
+    (previa / "correo.txt").write_text(
+        "Asunto:    FACTURA ELECTRÓNICA F010\nRecibido:  2026-10-21 16:06:05\n", encoding="utf-8"
+    )
+
+    ex.extraer_de_carpeta(_args_de_carpeta(origen, destino))
+
+    assert sorted(p.name for p in previa.glob("correo*.txt")) == ["correo.txt"]
+
+
+def test_simular_la_carpeta_del_flujo_no_escribe_nada(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(ex, "_texto_del_pdf", lambda datos: TEXTO_CORREO)
+    origen, destino = tmp_path / "entrada", tmp_path / "salida"
+    _correo_en_carpeta(origen)
+
+    _, resumen = ex.extraer_de_carpeta(_args_de_carpeta(origen, destino, simular=True))
+
+    assert resumen is not None and resumen["comprobantes_de_la_empresa"] == 1
+    assert not destino.exists()
+
+
+def test_una_carpeta_de_origen_inexistente_se_informa(tmp_path: Path) -> None:
+    codigo, resumen = ex.extraer_de_carpeta(_args_de_carpeta(tmp_path / "no_existe", tmp_path))
+
+    assert (codigo, resumen) == (2, None)

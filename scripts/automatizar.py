@@ -1,11 +1,11 @@
-"""Automatiza SIRE, el correo de proveedores y la importación al portal, sin pulsar botones.
+"""Automatiza el correo de proveedores y la importación al portal, sin pulsar botones.
 
 Pensado para la Tarea programada de Windows (ver `scripts/registrar_tarea_windows.ps1`), que lo
 ejecuta 3 veces al día. En cada corrida (`--tarea auto`):
 
-1. **SIRE** (ventas y compras, mes actual y anterior): una vez al día, a partir de las 9:00. Si la
-   PC estaba apagada a esa hora, la primera corrida posterior lo hace. Es solo lectura hacia SUNAT
-   y no duplica nada (con `forzar` solo agrega lo nuevo).
+1. **SIRE**: ya NO forma parte de la corrida automática (`SIRE_EN_AUTO = False`): el botón de
+   SIRE del portal funciona y se usa a demanda. Sigue disponible a mano con `--tarea sire`
+   (ventas y compras, mes actual y anterior; solo lectura hacia SUNAT, sin duplicar nada).
 2. **Correo**: extrae los adjuntos de los correos que aún no vio (todos los pendientes, no solo los
    de hoy: si la PC estuvo apagada, se acumulan y se bajan en la siguiente corrida).
 3. **Importación**: sube al portal lo que el correo trajo (completa lo de SIRE, une el PDF y
@@ -81,6 +81,9 @@ ERRORES_TRANSITORIOS = (
 INTENTOS_BASE = 3
 ESPERA_REINTENTO_SEGUNDOS = 5
 HORA_SIRE_POR_DEFECTO = 9
+# SIRE se pide desde el botón del portal; la corrida automática solo lee el correo. Con `True`
+# volvería a sincronizarse una vez al día (desde `HORA_SIRE_POR_DEFECTO`).
+SIRE_EN_AUTO = False
 ESPERA_TICKET_SEGUNDOS = 20
 MAX_REINTENTOS_TICKET = 12
 BLOQUEO_CADUCA_HORAS = 3
@@ -346,9 +349,7 @@ async def _anotar_correo_de_pdf(
 ) -> int:
     """Identifica la compra de un PDF por su texto y le anota el correo (una transacción)."""
     async with uow_factory(usuario.claims_para_rls) as uow:
-        compra = await identificar_compra_de_pdf(
-            contenido, uow=uow, company_id=acceso.company_id
-        )
+        compra = await identificar_compra_de_pdf(contenido, uow=uow, company_id=acceso.company_id)
         if compra is None:
             return 0
         return await registrar_correos(
@@ -682,6 +683,20 @@ async def _usuario_de_servicio(
     )
 
 
+def tareas_a_correr(
+    tarea: str, estado: dict[str, Any], ahora: datetime, hora_sire: int
+) -> tuple[bool, bool]:
+    """`(hacer_sire, hacer_correo)` según `--tarea`.
+
+    `auto` solo lee el correo mientras `SIRE_EN_AUTO` sea falso; SIRE se corre a mano con
+    `--tarea sire` o desde el botón del portal.
+    """
+    hacer_sire = tarea == "sire" or (
+        tarea == "auto" and SIRE_EN_AUTO and sire_toca(estado, ahora, hora_sire)
+    )
+    return hacer_sire, tarea in ("correo", "auto")
+
+
 async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[str, Any]:
     inicio = time.monotonic()
     destino = Path(args.destino)  # ya resuelto en main()
@@ -693,10 +708,7 @@ async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[st
         "novedades": {},
     }
     estado = _leer_json(rutas.estado, {})
-    hacer_sire = args.tarea == "sire" or (
-        args.tarea == "auto" and sire_toca(estado, ahora, args.hora_sire)
-    )
-    hacer_correo = args.tarea in ("correo", "auto")
+    hacer_sire, hacer_correo = tareas_a_correr(args.tarea, estado, ahora, args.hora_sire)
     resumen["tareas"] = [t for t, h in (("sire", hacer_sire), ("correo", hacer_correo)) if h]
 
     settings = get_settings()

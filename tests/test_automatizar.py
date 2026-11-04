@@ -46,6 +46,20 @@ def test_sire_se_hace_una_vez_al_dia_desde_las_9() -> None:
     assert au.sire_toca(hoy_ok, datetime(2026, 10, 22, 13, 0)) is False  # ya se hizo hoy
 
 
+def test_la_corrida_automatica_solo_lee_el_correo_y_sire_queda_a_mano(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sin_sire_hoy = {}  # `sire_toca` diría que sí: aun así `auto` no lo hace
+    ahora = datetime(2026, 10, 22, 9, 30)
+
+    assert au.tareas_a_correr("auto", sin_sire_hoy, ahora, 9) == (False, True)
+    assert au.tareas_a_correr("correo", sin_sire_hoy, ahora, 9) == (False, True)
+    assert au.tareas_a_correr("sire", sin_sire_hoy, ahora, 9) == (True, False)
+
+    monkeypatch.setattr(au, "SIRE_EN_AUTO", True)  # reactivarlo es cambiar la constante
+    assert au.tareas_a_correr("auto", sin_sire_hoy, ahora, 9) == (True, True)
+
+
 def test_si_la_pc_estaba_apagada_a_las_9_la_siguiente_corrida_recupera_sire() -> None:
     ayer_ok = {"ultima_sire_ok": "2026-10-21T09:01:00"}
 

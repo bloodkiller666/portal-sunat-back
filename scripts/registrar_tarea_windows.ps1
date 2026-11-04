@@ -6,8 +6,8 @@
 #   .\scripts\registrar_tarea_windows.ps1 -Destino C:\Users\yo\Downloads\FacturasProovedores
 #   .\scripts\registrar_tarea_windows.ps1 -Quitar          # la elimina
 #
-# La tarea ejecuta `scripts.automatizar --tarea auto --aplicar`: SIRE una vez al dia (a partir de
-# las 9:00), el correo en cada corrida y la importacion de lo nuevo. Ademas de los horarios se
+# La tarea ejecuta `scripts.automatizar --tarea auto --aplicar`: el correo en cada corrida y
+# la importacion de lo nuevo (SIRE ya no va en la tarea: se pide con el boton del portal). Ademas de los horarios se
 # ejecuta 5 minutos despues de iniciar sesion, y "StartWhenAvailable" lanza una corrida perdida
 # en cuanto la PC vuelve a estar disponible: si estuvo apagada, el correo se acumula en Outlook y
 # la proxima corrida lo baja. Corre con TU usuario y sesion iniciada (Outlook clasico lo necesita).
@@ -53,7 +53,7 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interac
 
 Register-ScheduledTask -TaskName $nombre -Action $accion -Trigger $disparadores `
     -Settings $ajustes -Principal $principal -Force `
-    -Description "SIRE (ventas y compras), correo de proveedores e importacion al portal" | Out-Null
+    -Description "Correo de proveedores e importacion al portal" | Out-Null
 
 Write-Host "Tarea registrada: $nombre"
 Write-Host "Horarios: $($Horas -join ', ') y 5 minutos despues de iniciar sesion"

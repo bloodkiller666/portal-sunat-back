@@ -544,3 +544,28 @@ esquema nuevo: simula por defecto, con `--aplicar` copia y actualiza `archivos.s
   varias facturas, cada PDF sin serie-número va (1) a la factura cuyo RUC+serie-número cita, (2) a la que cita la misma OC
   (`45…`, 10 dígitos) o la misma guía (`EG07-1145`) en su XML o PDF, (3) si no coincide con ninguna, a las facturas que no
   declaran OC ni guía (o a todas si todas la declaran). Solo para lo que se extraiga desde ahora.
+
+### P24 — Carpeta de SharePoint, base nueva, Ventas oculta y «Mi cuenta» (2026-11-04)
+
+- **Carpeta de SharePoint (Power Automate)**: un flujo guarda cada correo de `recepcionfacturas` en
+  `Facturas/_entrada/AAAA-MM/<AAAAMMDD-HHMMSS>_<id>/` (adjuntos tal cual + `00_CORREO_….pdf` con asunto,
+  remitente y cuerpo). `extraer_correo_outlook --origen-carpeta "<carpeta sincronizada con OneDrive>"
+  [--simular]` la procesa con las MISMAS reglas que Outlook (`planificar_correo`): valida RUC y serie-número
+  por el XML, separa otros RUC del grupo, une PDF/guía/OC y deja las carpetas pendientes de importar. Es un
+  canal MÁS (mismo destino, registro `sp:<carpeta>`, sin duplicar archivos ni `correo.txt` ya anotados por
+  Outlook). El `00_CORREO` nunca se importa como PDF de la factura. Los acentos del asunto llegan como «�»
+  porque el PDF del flujo ya los pierde (arreglo pendiente en el flujo: forzar UTF-8 en el HTML).
+- **Base nueva de Supabase** (proyecto `xdljuznrlxpoosdmtfdc`, 2026-11-04): migraciones `0001`–`0014` aplicadas
+  y datos copiados con los mismos UUID (usuarios de `auth` incluidos; la base anterior `ehdbmnozhbbqiicoirjq`
+  queda intacta como respaldo). Conexión: SIEMPRE el pooler en modo sesión
+  (`aws-0-us-east-1.pooler.supabase.com:5432`, usuario `postgres.<ref>`): el host directo `db.<ref>…` es solo
+  IPv6 y no resuelve en la PC ni en Render. Tokens ES256: `SUPABASE_JWT_ALG=ES256` +
+  `SUPABASE_JWT_JWKS_URL=https://<ref>.supabase.co/auth/v1/.well-known/jwks.json` (el secreto no se usa).
+  Frontend: `NEXT_PUBLIC_SUPABASE_URL` y la clave `sb_publishable_…` del proyecto nuevo.
+- **La automatización ya solo lee el correo** (`SIRE_EN_AUTO = False` en `scripts/automatizar.py`): SIRE se pide
+  con el botón del portal o a mano con `--tarea sire`. `tareas_a_correr` decide qué corre.
+- **Frontend**: Ventas está oculta (`lib/secciones.ts::VENTAS_VISIBLES = false`; su código sigue intacto y el
+  portal abre en Compras). «Mi cuenta» (menú lateral) cambia el correo, la contraseña o ambos
+  (`lib/cuenta.ts`, `supabase.auth.updateUser`; solo se manda lo que se escribió; el correo nuevo queda
+  pendiente hasta confirmarlo con el enlace que envía Supabase).
+
