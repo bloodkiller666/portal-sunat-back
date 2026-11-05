@@ -509,6 +509,36 @@ class PostgresComprobantesRepository:
             raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
         return Comprobante.model_validate(data)
 
+    async def confirmar_en_sire(
+        self,
+        company_id: UUID,
+        claves: list[tuple[str, str, int, str]],
+        *,
+        estado: EstadoComprobante,
+    ) -> int:
+        """Cruza con SIRE las compras del correo: una sola sentencia para todo el lote."""
+        if not claves:
+            return 0
+        resultado = await self._connection.execute(
+            """
+            update public.comprobantes c
+               set estado = $2, updated_at = now()
+              from unnest($3::text[], $4::text[], $5::int[], $6::text[])
+                   as k(tipo, serie, correlativo, ruc)
+             where c.company_id = $1 and c.origen = 'recibido'
+               and c.fuente = 'xml' and c.estado = 'pendiente'
+               and c.tipo_documento::text = k.tipo and c.serie = k.serie
+               and c.correlativo = k.correlativo and c.ruc_emisor = k.ruc
+            """,
+            company_id,
+            estado.value,
+            [c[0] for c in claves],
+            [c[1] for c in claves],
+            [c[2] for c in claves],
+            [c[3] for c in claves],
+        )
+        return int(resultado.rsplit(" ", 1)[-1])
+
     async def registrar_correo(
         self,
         company_id: UUID,

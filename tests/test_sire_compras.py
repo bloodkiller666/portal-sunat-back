@@ -388,3 +388,150 @@ def test_en_compras_un_tipo_de_cambio_cero_tampoco_se_guarda() -> None:
 
     assert compra.tipo_cambio is None and compra.monto_pen is None
     assert compra.monto_total == Decimal("100.00")  # sin conversión posible: se conserva el total
+
+
+# --------------------------------------------------------------------------- #
+# Cruce con las compras que llegaron por el XML del correo
+# --------------------------------------------------------------------------- #
+async def _compra_del_correo(
+    uow: FakeUnitOfWork,
+    empresa: Company,
+    *,
+    ruc_proveedor: str = "20613171631",
+    correlativo: int = 10,
+    estado: EstadoComprobante = EstadoComprobante.pendiente,
+    fuente: str = "xml",
+) -> None:
+    """Una compra como la deja el importador del correo: `fuente=xml` y pendiente hasta cruzarla."""
+    from app.db.models import ComprobanteRegistro
+
+    await uow.comprobantes.create(
+        ComprobanteRegistro(
+            company_id=empresa.id,
+            origen=OrigenComprobante.recibido,
+            ruc_emisor=ruc_proveedor,
+            tipo_documento="01",
+            serie="E001",
+            correlativo=correlativo,
+            numero=f"{correlativo:08d}",
+            fecha_emision=date(2026, 9, 9),
+            monto_total=Decimal("472.00"),
+            fuente=fuente,
+            estado=estado,
+            sunat_ambiente=SunatAmbiente.prod,
+        )
+    )
+
+
+def _estados(uow: FakeUnitOfWork) -> dict[int, EstadoComprobante]:
+    return {c.correlativo: c.estado for c in uow.comprobantes.comprobantes.values()}
+
+
+async def test_una_compra_del_correo_que_sire_lista_pasa_de_pendiente_a_aprobada(
+    client: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    sire: FakeSireClient,
+    empresa_principal: Company,
+) -> None:
+    await _compra_del_correo(uow, empresa_principal)
+    sire.zips = [_zip(_fila())]
+
+    cuerpo = _sincronizar(client, auth).json()
+
+    assert (cuerpo["nuevos"], cuerpo["ya_existian"], cuerpo["cruzados"]) == (0, 1, 1)
+    assert "1 cruzados" in cuerpo["mensaje"]
+    (compra,) = uow.comprobantes.comprobantes.values()
+    assert compra.estado is EstadoComprobante.aprobado
+    assert compra.fuente == "xml"  # el cruce solo cambia el estado, no el origen de sus datos
+
+
+async def test_si_sire_la_da_de_baja_la_compra_del_correo_queda_anulada(
+    client: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    sire: FakeSireClient,
+    empresa_principal: Company,
+) -> None:
+    await _compra_del_correo(uow, empresa_principal)
+    sire.zips = [_zip(_fila(**{"Est. Comp.": "2"}))]
+
+    cuerpo = _sincronizar(client, auth).json()
+
+    assert cuerpo["cruzados"] == 1
+    assert _estados(uow) == {10: EstadoComprobante.anulado}
+
+
+async def test_lo_que_sire_no_lista_o_es_de_otro_proveedor_sigue_pendiente(
+    client: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    sire: FakeSireClient,
+    empresa_principal: Company,
+) -> None:
+    await _compra_del_correo(uow, empresa_principal, correlativo=10)  # SIRE la lista
+    await _compra_del_correo(uow, empresa_principal, correlativo=11)  # SIRE no la lista
+    await _compra_del_correo(  # misma serie-número, otro proveedor: no es la misma compra
+        uow, empresa_principal, ruc_proveedor="20100128218", correlativo=10
+    )
+    sire.zips = [_zip(_fila())]
+
+    cuerpo = _sincronizar(client, auth).json()
+
+    assert cuerpo["cruzados"] == 1
+    por_clave = {
+        (c.ruc_emisor, c.correlativo): c.estado for c in uow.comprobantes.comprobantes.values()
+    }
+    assert por_clave == {
+        ("20613171631", 10): EstadoComprobante.aprobado,
+        ("20613171631", 11): EstadoComprobante.pendiente,
+        ("20100128218", 10): EstadoComprobante.pendiente,
+    }
+
+
+async def test_el_cruce_no_degrada_lo_que_ya_tiene_un_estado_y_es_idempotente(
+    client: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    sire: FakeSireClient,
+    empresa_principal: Company,
+) -> None:
+    await _compra_del_correo(uow, empresa_principal, correlativo=10)
+    await _compra_del_correo(
+        uow, empresa_principal, correlativo=11, estado=EstadoComprobante.rechazado
+    )
+    sire.zips = [_zip(_fila(), _fila(**{"Nro CP o Doc. Nro Inicial (Rango)": "11"}))]
+
+    primera = _sincronizar(client, auth).json()
+    segunda = _sincronizar(client, auth, forzar=True).json()
+
+    assert (primera["cruzados"], segunda["cruzados"]) == (1, 0)
+    assert _estados(uow) == {10: EstadoComprobante.aprobado, 11: EstadoComprobante.rechazado}
+
+
+async def test_una_compra_que_ya_vino_de_sire_no_cuenta_como_cruzada(
+    client: TestClient,
+    auth: dict[str, str],
+    uow: FakeUnitOfWork,
+    sire: FakeSireClient,
+    empresa_principal: Company,
+) -> None:
+    sire.zips = [_zip(_fila())]
+    _sincronizar(client, auth)
+
+    segunda = _sincronizar(client, auth, forzar=True).json()
+
+    assert (segunda["ya_existian"], segunda["cruzados"]) == (1, 0)
+    assert "cruzados" not in segunda["mensaje"]
+
+
+def test_el_cruce_solo_ocurre_en_compras_no_en_ventas(
+    client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, sire: FakeSireClient
+) -> None:
+    from tests.fakes import construir_zip_propuesta, fila_propuesta
+
+    sire.zips = [construir_zip_propuesta([fila_propuesta(RUC_PRINCIPAL)])]
+
+    cuerpo = client.post(SYNC_VENTAS, headers=auth, json={"periodo": "202609"}).json()
+
+    assert cuerpo["cruzados"] == 0

@@ -447,6 +447,9 @@ class SireSyncOut(BaseModel):
     total_filas: int = 0
     nuevos: int = 0
     ya_existian: int = 0
+    # Compras que ya estaban por el XML del correo y SIRE también lista: pasan de pendiente a
+    # aprobado (o anulado si SIRE las da de baja). Solo en el libro de compras.
+    cruzados: int = 0
     anulados: int = 0
     omitidos: dict[str, int] = Field(default_factory=dict)
     evidencias: list[ArchivoOut] = Field(default_factory=list)

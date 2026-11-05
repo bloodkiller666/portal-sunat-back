@@ -346,22 +346,40 @@ async def _sincronizar(
             evidencias.append(to_archivo_out(guardado))
 
     nuevos = existentes = anulados = 0
+    # Compras que ya estaban (por el XML del correo) y que SIRE también lista: se cruzan abajo.
+    por_cruzar: dict[EstadoComprobante, list[tuple[str, str, int, str]]] = {
+        EstadoComprobante.aprobado: [],
+        EstadoComprobante.anulado: [],
+    }
     for registro in propuesta.registros:
-        creado = await uow.comprobantes.create_if_absent(
-            libro.a_registro(registro, access=access, user=user)
-        )
+        datos = libro.a_registro(registro, access=access, user=user)
+        creado = await uow.comprobantes.create_if_absent(datos)
         if creado is None:
             existentes += 1
+            if libro.origen is OrigenComprobante.recibido:
+                destino = (
+                    EstadoComprobante.anulado if registro.anulado else EstadoComprobante.aprobado
+                )
+                por_cruzar[destino].append(
+                    (str(datos.tipo_documento), datos.serie, datos.correlativo, datos.ruc_emisor)
+                )
             continue
         nuevos += 1
         anulados += 1 if registro.anulado else 0
 
+    cruzados = 0
+    for destino, claves in por_cruzar.items():
+        cruzados += await uow.comprobantes.confirmar_en_sire(
+            access.company_id, claves, estado=destino
+        )
+
     logger.info(
-        "SIRE %s %s: %s nuevos, %s ya existían, %s omitidos",
+        "SIRE %s %s: %s nuevos, %s ya existían (%s cruzados), %s omitidos",
         libro.sigla,
         periodo,
         nuevos,
         existentes,
+        cruzados,
         propuesta.total_omitidos,
     )
 
@@ -388,12 +406,16 @@ async def _sincronizar(
         total_filas=len(propuesta.registros) + propuesta.total_omitidos,
         nuevos=nuevos,
         ya_existian=existentes,
+        cruzados=cruzados,
         anulados=anulados,
         omitidos=propuesta.omitidos,
         evidencias=evidencias,
         respaldos=respaldos,
         respaldos_error=respaldos_error,
-        mensaje=f"{nuevos} comprobantes nuevos, {existentes} ya estaban registrados",
+        mensaje=(
+            f"{nuevos} comprobantes nuevos, {existentes} ya estaban registrados"
+            + (f" ({cruzados} cruzados con el correo)" if cruzados else "")
+        ),
     )
 
 

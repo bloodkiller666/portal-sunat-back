@@ -488,6 +488,28 @@ class InMemoryComprobantesRepository:
         self.comprobantes[comprobante_id] = actualizado
         return actualizado
 
+    async def confirmar_en_sire(
+        self,
+        company_id: UUID,
+        claves: list[tuple[str, str, int, str]],
+        *,
+        estado: EstadoComprobante,
+    ) -> int:
+        buscadas = set(claves)
+        cuenta = 0
+        for id_, c in list(self.comprobantes.items()):
+            coincide = (
+                c.company_id == company_id
+                and c.origen is OrigenComprobante.recibido
+                and c.fuente == "xml"
+                and c.estado is EstadoComprobante.pendiente
+                and (str(c.tipo_documento), c.serie, c.correlativo, c.ruc_emisor) in buscadas
+            )
+            if coincide:
+                self.comprobantes[id_] = c.model_copy(update={"estado": estado})
+                cuenta += 1
+        return cuenta
+
     async def registrar_correo(
         self,
         company_id: UUID,

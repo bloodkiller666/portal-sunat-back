@@ -569,3 +569,53 @@ esquema nuevo: simula por defecto, con `--aplicar` copia y actualiza `archivos.s
   (`lib/cuenta.ts`, `supabase.auth.updateUser`; solo se manda lo que se escribió; el correo nuevo queda
   pendiente hasta confirmarlo con el enlace que envía Supabase).
 
+### P25 — Carpeta de red `00 Portal` y segunda empresa «Holding TDM S.A.C.» (2026-11-05) — PLAN, NO EJECUTAR AÚN
+
+**Esta sección es un plan acordado con el usuario. NO se implementa hasta que aprueben la fase actual y el
+usuario dé la orden expresa de hacer «el siguiente paso» (Holding TDM).**
+
+- **Fase actual (TDM Asfaltos S.A.C., RUC 20514831620)**: gerencia creó la carpeta de red
+  `\\fs-server\GER ADM FINANZ\2026\00 Portal` (unidad `W:`; no es SharePoint). El usuario aún NO tiene permiso de
+  escritura (se lo pide a TI: escritura con subcarpetas, solo sobre `00 Portal`, también por VPN; lectura para
+  gerencia). Cuando lo tenga: copiar el historial de `FacturasProveedores` a la subcarpeta de la empresa (para que
+  `registro_correos.jsonl` no haga releer los correos), simular con `--simular` y luego ejecutar a mano
+  `automatizar --tarea correo --aplicar --destino "<ruta>"`. La automatización sigue siendo SOLO manual.
+- **Estructura acordada** (el orden interno NO cambia; solo se antepone la empresa):
+  `00 Portal\TDM ASFALTOS S.A.C.\AAAA\N. MES\<RUC proveedor>\<SERIE-NÚMERO>` y
+  `00 Portal\HOLDING TDM S.A.C.\AAAA\N. MES\<RUC proveedor>\<SERIE-NÚMERO>`. Para TDM Asfaltos NO hace falta código:
+  basta usar la subcarpeta de la empresa como `--destino`, como `LOCAL_PROVEEDORES_DIR` y como
+  `NEXT_PUBLIC_RUTA_CARPETAS` (frontend, Vercel; usar la ruta UNC `\\fs-server\…`, no la letra `W:`).
+- **«Abrir carpeta»**: abre el Explorador en la máquina donde corre el BACKEND, no en la del usuario. En la nube
+  (Render) siempre sale el diálogo con la ruta; ahora esa ruta sale de `NEXT_PUBLIC_RUTA_CARPETAS`
+  (`lib/carpeta-local.ts::rutaParaCopiar`; sin la variable queda `Descargas\…`, que no existe en ninguna PC). Un
+  clic real para gerencia requeriría un ayudante/protocolo en cada PC (no hecho).
+- **Fase siguiente — Holding TDM S.A.C. (otro RUC, empresa aparte; pendiente de aprobación)**, por hacer:
+  1. Alta de la empresa en la base, credenciales `SUNAT_CRED_<RUC>_*` (SOL, SIRE) y membresías de usuarios con rol.
+  2. La ruta base pasa a depender de la empresa (hoy es una sola variable de entorno): una por empresa o un mapa
+     RUC → carpeta, tanto en el backend (`LOCAL_PROVEEDORES_DIR`, `carpeta_local`, `correo_compras`) como en el
+     frontend (`rutaParaCopiar`).
+  3. El extractor (`extraer_correo_outlook`) hoy aparta las facturas de otros RUC del grupo en `_otras_empresas`;
+     debe llevarlas a la carpeta de Holding según el RUC del receptor y el importador debe cargarlas a esa empresa.
+     Definir si usan el mismo buzón o uno distinto.
+  4. Pedir a TI el permiso sobre `00 Portal` completo (no solo la subcarpeta de TDM Asfaltos) para no pedir otro.
+- **Alternativas descartadas por ahora** (documentadas por si se retoman): leer/depositar por SharePoint con Microsoft
+  Graph (necesita tenant, client id, secret y `Sites.Selected` con consentimiento de admin; permitiría
+  automatizar sin PC encendida con GitHub Actions/Render, con el orden en R2 y en una carpeta «Ordenado» de
+  SharePoint); Power Automate con gateway de datos para escribir en `W:` (conector premium); Scrapling para
+  Bizlinks (descartado: el portal anónimo ya funciona con `httpx` y el diseño no evade bloqueos a propósito; el
+  camino mejor es el canal oficial `invoker`, `BIZLINKS_CANAL=api`).
+- **Usuarios de prueba (base nueva)**: `123@gmail.com` y `asfalto123@gmail.com`, ambos `emisor` de TDM Asfaltos. La
+  contraseña del segundo se escribió en el chat: debe cambiarse desde «Mi cuenta».
+
+
+### P26 — Cruce de las compras del correo con SIRE (2026-11-05)
+
+Una compra que entra por el XML del correo nace `pendiente` (`fuente=xml`); las que entran desde SIRE nacen `aprobado`.
+Antes, si SIRE listaba después una compra que ya estaba por el correo, `create_if_absent` la saltaba y quedaba
+`pendiente` para siempre (caso real: FE01-00005483 de TERMOTRANSPORT; 293 de 322 compras del correo estaban en SIRE).
+Ahora `sincronizar_compras` (`app/services/sire.py`) junta las que ya existían y llama UNA vez por estado a
+`confirmar_en_sire` (`UPDATE … FROM unnest(…)`): `pendiente → aprobado`, o `anulado` si SIRE las da de baja. Solo toca
+`origen=recibido`, `fuente=xml` y `estado=pendiente` (no degrada ni pisa aprobado/rechazado/anulado) y NO cambia la fuente,
+el XML ni el correo. La respuesta trae `cruzados` y el mensaje lo cuenta. Ventas no se cruza. Pruebas en
+`tests/test_sire_compras.py`. **Las compras ya cargadas no se actualizan solas**: el cruce ocurre en la próxima
+sincronización de SIRE de ese periodo (o con una pasada sobre los ZIP de evidencia de R2, sin pedir nada a SUNAT).

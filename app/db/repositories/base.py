@@ -172,6 +172,21 @@ class ComprobantesRepository(Protocol):
         self, comprobante_id: UUID, registro: ComprobanteRegistro
     ) -> Comprobante: ...
 
+    async def confirmar_en_sire(
+        self,
+        company_id: UUID,
+        claves: list[tuple[str, str, int, str]],
+        *,
+        estado: EstadoComprobante,
+    ) -> int:
+        """Cruza con SIRE las compras que llegaron por el XML del correo.
+
+        `claves` son `(tipo_documento, serie, correlativo, ruc_proveedor)` de comprobantes que SIRE
+        lista. Solo toca las compras con `fuente='xml'` que siguen `pendiente` (una compra ya
+        aprobada, rechazada o anulada no se degrada) y les pone `estado`. Devuelve cuántas cambió.
+        """
+        ...
+
     async def registrar_correo(
         self,
         company_id: UUID,
