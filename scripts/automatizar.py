@@ -812,6 +812,18 @@ async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[st
                 resumen["evidencia"] = evidencia
                 resumen["errores"] += [f"evidencia {e}" for e in evidencia["errores"]]
                 resumen["novedades"]["compras con correo.txt completado"] = evidencia["completadas"]
+        if hacer_correo and getattr(args, "publicar", None):
+            try:
+                from scripts.publicar_red import publicar_anios
+
+                pub = await asyncio.to_thread(
+                    publicar_anios, destino, Path(args.publicar), simular=not args.aplicar
+                )
+                resumen["publicacion"] = pub
+                resumen["errores"] += [f"publicar en la red: {e}" for e in pub["errores"]]
+                resumen["novedades"]["archivos publicados en la red"] = pub["copiados"]
+            except Exception as exc:
+                resumen["errores"].append(f"publicar en la red: {describir_error(exc)}")
         if args.aplicar:
             _escribir_json(rutas.estado, estado)
             try:
@@ -842,6 +854,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ruc", default="20514831620")
     parser.add_argument("--buzon", default="recepcionfacturas")
     parser.add_argument("--destino", default="~/Downloads/FacturasProveedores")
+    parser.add_argument(
+        "--publicar",
+        default=os.environ.get("PUBLICAR_DIR") or None,
+        help="Carpeta de red donde copiar solo las carpetas de año (AAAA); los apoyos "
+        "(_correos, registro…) quedan en --destino",
+    )
     parser.add_argument("--hora-sire", type=int, default=HORA_SIRE_POR_DEFECTO)
     parser.add_argument("--usuario-id", default=None)
     args = parser.parse_args(argv)

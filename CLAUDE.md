@@ -604,6 +604,14 @@ usuario dé la orden expresa de hacer «el siguiente paso» (Holding TDM).**
   SharePoint); Power Automate con gateway de datos para escribir en `W:` (conector premium); Scrapling para
   Bizlinks (descartado: el portal anónimo ya funciona con `httpx` y el diseño no evade bloqueos a propósito; el
   camino mejor es el canal oficial `invoker`, `BIZLINKS_CANAL=api`).
+- **Carpeta real (2026-11-06)**: el acceso final es `\\fs-server\CONTAB\00 Portal` (no `GER ADM FINANZ`). Windows quita el
+  punto final de un nombre de carpeta: la de la empresa es `TDM ASFALTOS S.A.C` (y será `HOLDING TDM S.A.C`); con el punto,
+  Python no la encuentra. En la red queda **solo `AAAA/N. MES/RUC/SERIE-NÚMERO`**: la automatización trabaja en
+  `~/Downloads/FacturasProveedores` (apoyos `_correos`, `registro_correos.jsonl`…) y `--publicar "<carpeta de red>"`
+  (`scripts/publicar_red.py`) copia al final solo las carpetas de año, sin borrar. Comando:
+  `automatizar --tarea correo --aplicar --publicar "\\fs-server\CONTAB\00 Portal\TDM ASFALTOS S.A.C"`.
+  `LOCAL_PROVEEDORES_DIR` (backend, «Abrir carpeta»/restaurar) apunta a la carpeta de red.
+  Un PDF de 0 bytes en el correo (proveedor lo mandó vacío) no entra a R2: no hay arreglo, se pide al proveedor.
 - **Usuarios de prueba (base nueva)**: `123@gmail.com` y `asfalto123@gmail.com`, ambos `emisor` de TDM Asfaltos. La
   contraseña del segundo se escribió en el chat: debe cambiarse desde «Mi cuenta».
 
