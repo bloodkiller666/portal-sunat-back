@@ -17,7 +17,7 @@ from app.core.errors import InvalidDocumentError, NotFoundError
 from app.core.security import AuthenticatedUser
 from app.db.models import Archivo
 from app.db.repositories.base import UnitOfWork
-from app.services.carpeta_local import leer_correos_txt_locales
+from app.services.carpeta_local import ajustes_de_la_empresa, leer_correos_txt_locales
 from app.services.companies import require_membership
 from app.services.correo_compras import texto_correo_de_compra
 from app.services.results import (
@@ -160,7 +160,8 @@ async def previsualizar_comprobante(
     if comprobante.origen is OrigenComprobante.recibido:
         # Los de la PC traen también el cuerpo; sin ellos (servidor) se arma uno con lo que guarda
         # la base.
-        locales = await asyncio.to_thread(leer_correos_txt_locales, settings, comprobante)
+        ajustes = await ajustes_de_la_empresa(uow, settings, comprobante.company_id)
+        locales = await asyncio.to_thread(leer_correos_txt_locales, ajustes, comprobante)
         correos = [CorreoTxtOut(nombre=n, texto=t) for n, t in locales]
         if not correos:
             texto = texto_correo_de_compra(comprobante, archivos)

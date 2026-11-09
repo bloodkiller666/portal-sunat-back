@@ -563,3 +563,36 @@ def test_un_correo_txt_del_extractor_con_cuerpo_nunca_se_reemplaza_por_el_del_po
 
     assert informe["pendientes"] == 0
     assert (carpeta / "correo.txt").read_text(encoding="utf-8").endswith("hola")
+
+
+def test_cada_empresa_abre_su_propia_carpeta_bajo_la_raiz(
+    client: TestClient,
+    auth: dict[str, str],
+    settings: Settings,
+    tmp_path: Path,
+    abiertas: list[Path],
+) -> None:
+    """Con `LOCAL_PROVEEDORES_RAIZ` la carpeta sale de la razón social (sin el punto final)."""
+    settings.local_abrir_carpeta = True
+    settings.local_proveedores_raiz = tmp_path
+    holding = tmp_path / "HOLDING TDM S.A.C"
+    holding.joinpath(*PARTES).mkdir(parents=True)
+    tmp_path.joinpath("TDM ASFALTOS S.A.C", *PARTES).mkdir(parents=True)
+
+    r = client.post(
+        URL,
+        headers=auth,
+        json={"partes": PARTES, "origen": "recibido", "empresa": "HOLDING TDM S.A.C."},
+    )
+
+    assert r.status_code == 200
+    assert abiertas == [holding.joinpath(*PARTES).resolve()]
+
+
+def test_el_nombre_de_empresa_no_puede_salir_de_la_raiz(tmp_path: Path) -> None:
+    from app.services.carpeta_local import ajustes_para_empresa
+
+    ajustes = ajustes_para_empresa(Settings(local_proveedores_raiz=tmp_path), r"..\..\otra/cosa. ")
+
+    assert ajustes.local_proveedores_dir is not None
+    assert ajustes.local_proveedores_dir.parent == tmp_path

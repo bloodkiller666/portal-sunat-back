@@ -111,6 +111,10 @@ class Settings(BaseSettings):
     # Donde `scripts/extraer_correo_outlook.py` deja las facturas de proveedores (mismo esquema
     # AAAA/MES/RUC/SERIE-NÚMERO); por defecto `~/Downloads/FacturasProveedores`.
     local_proveedores_dir: Path | None = None
+    # Raíz común de las carpetas de compras de TODAS las empresas: cada una vive en su subcarpeta,
+    # con el nombre de su razón social (`<raíz>/TDM ASFALTOS S.A.C`, `<raíz>/HOLDING TDM S.A.C`,
+    # sin el punto final, que Windows quita). Si se define, manda sobre `LOCAL_PROVEEDORES_DIR`.
+    local_proveedores_raiz: Path | None = None
 
     # ---------------- Supabase ----------------
     supabase_url: str | None = None

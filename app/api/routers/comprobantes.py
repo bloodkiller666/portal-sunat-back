@@ -383,6 +383,11 @@ class CarpetaLocalIn(BaseModel):
         default=None,
         description="Apartado: Ventas (emitido) o Compras (recibido); sin él se buscan ambas",
     )
+    empresa: str | None = Field(
+        default=None,
+        max_length=200,
+        description="Razón social de la empresa activa (su carpeta bajo LOCAL_PROVEEDORES_RAIZ)",
+    )
 
 
 class CarpetaLocalOut(BaseModel):
@@ -401,7 +406,9 @@ async def post_abrir_carpeta(
 
     No usa la base de datos: solo valida el token y abre una carpeta existente bajo la base.
     """
-    ruta = abrir_carpeta(settings=settings, partes=datos.partes, origen=datos.origen)
+    ruta = abrir_carpeta(
+        settings=settings, partes=datos.partes, origen=datos.origen, empresa=datos.empresa
+    )
     return CarpetaLocalOut(ruta=ruta)
 
 

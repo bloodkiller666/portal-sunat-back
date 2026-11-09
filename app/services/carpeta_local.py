@@ -51,6 +51,31 @@ def carpeta_proveedores(settings: Settings) -> Path:
     ).resolve()
 
 
+def nombre_carpeta_empresa(razon_social: str) -> str:
+    """Carpeta de una empresa: su razón social sin el punto final (Windows lo quita)."""
+    return _limpio(razon_social, "empresa")
+
+
+def ajustes_para_empresa(settings: Settings, razon_social: str | None) -> Settings:
+    """Ajustes con la carpeta de compras de ESA empresa (`LOCAL_PROVEEDORES_RAIZ/<razón social>`).
+
+    Sin raíz configurada o sin nombre se devuelven tal cual: sigue valiendo `LOCAL_PROVEEDORES_DIR`
+    (una sola empresa). Cada empresa tiene su carpeta aparte, así sus documentos nunca se mezclan.
+    """
+    if settings.local_proveedores_raiz is None or not razon_social:
+        return settings
+    carpeta = settings.local_proveedores_raiz / nombre_carpeta_empresa(razon_social)
+    return settings.model_copy(update={"local_proveedores_dir": carpeta})
+
+
+async def ajustes_de_la_empresa(uow: UnitOfWork, settings: Settings, company_id: UUID) -> Settings:
+    """`ajustes_para_empresa` buscando la razón social por el id de la empresa."""
+    if settings.local_proveedores_raiz is None:
+        return settings
+    empresa = await uow.companies.get_by_id(company_id)
+    return ajustes_para_empresa(settings, empresa.razon_social if empresa else None)
+
+
 def carpetas_base(settings: Settings, origen: str | None = None) -> list[Path]:
     """Dónde buscar según el apartado: Ventas (`emitido`) o Compras (`recibido`).
 
@@ -258,6 +283,7 @@ async def restaurar_y_abrir_carpeta(
     if comprobante is None:
         raise NotFoundError("El comprobante no existe o no pertenece a sus empresas")
     await require_membership(uow, user, comprobante.company_id)
+    settings = await ajustes_de_la_empresa(uow, settings, comprobante.company_id)
 
     destino = await restaurar_carpeta(
         uow=uow, settings=settings, comprobante=comprobante, storage_provider=storage_provider
@@ -333,7 +359,13 @@ def _variantes_de_mes(partes: list[str]) -> list[list[str]]:
     return [[partes[0], mes, *partes[2:]] for mes in variantes_de_mes(partes[1])]
 
 
-def abrir_carpeta(*, settings: Settings, partes: list[str], origen: str | None = None) -> str:
+def abrir_carpeta(
+    *,
+    settings: Settings,
+    partes: list[str],
+    origen: str | None = None,
+    empresa: str | None = None,
+) -> str:
     """Abre en el explorador la carpeta `año/mes/RUC/documento` y devuelve su ruta completa.
 
     No consulta la base de datos (la apertura es inmediata): el frontend manda las partes que ya
@@ -341,6 +373,7 @@ def abrir_carpeta(*, settings: Settings, partes: list[str], origen: str | None =
     de la carpeta base ni abrir algo que no exista.
     """
     _exigir_habilitado(settings)
+    settings = ajustes_para_empresa(settings, empresa)
     limpias = [_limpio(parte, "sin-dato") for parte in partes]
     ruta: Path | None = None
     for base in carpetas_base(settings, origen):

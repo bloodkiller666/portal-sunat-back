@@ -627,3 +627,24 @@ Ahora `sincronizar_compras` (`app/services/sire.py`) junta las que ya existían 
 el XML ni el correo. La respuesta trae `cruzados` y el mensaje lo cuenta. Ventas no se cruza. Pruebas en
 `tests/test_sire_compras.py`. **Las compras ya cargadas no se actualizan solas**: el cruce ocurre en la próxima
 sincronización de SIRE de ese periodo (o con una pasada sobre los ZIP de evidencia de R2, sin pedir nada a SUNAT).
+
+### P27 — Segunda empresa: HOLDING TDM S.A.C. (RUC 20615204791) (2026-11-09)
+
+Cada razón social es una empresa APARTE en el portal (otro `company_id`, sus propias compras, carpeta y
+usuarios): nunca se mezclan, y pueden venir más. Solo Compras (Ventas sigue oculta). SIRE aún no está
+habilitado para Holding: sin `SUNAT_CRED_20615204791_*` el botón de SIRE falla, el resto funciona.
+
+- **Alta**: `uv run python -m scripts.alta_empresa --ruc <RUC> --razon-social "<NOMBRE>" [--direccion …]
+  --copiar-usuarios-de 20514831620 [--aplicar]` (simula por defecto; idempotente). La razón social sale del
+  XML de las facturas (`AccountingCustomerParty`); la consulta de SUNAT RUC pide captcha. Holding se dio de
+  alta el 2026-11-09 con los mismos usuarios y roles de TDM Asfaltos.
+- **Carpetas**: `LOCAL_PROVEEDORES_RAIZ` (backend; p. ej. `\fs-server\CONTAB\00 Portal`) es la raíz común y cada
+  empresa vive en `<raíz>\<razón social sin el punto final>` (`carpeta_local.ajustes_para_empresa`); si se
+  define manda sobre `LOCAL_PROVEEDORES_DIR`. «Abrir carpeta» manda `empresa` (razón social). Frontend:
+  `NEXT_PUBLIC_RUTA_CARPETAS` ahora es la RAÍZ (no la carpeta de TDM) y `rutaParaCopiar` agrega la carpeta de la
+  empresa activa (`lib/carpeta-local.ts::carpetaDeEmpresa`).
+- **Automatización por empresa**: el mismo script con otros valores (cada empresa lee el mismo buzón con su propio
+  registro y deja lo de otros RUC en `_otras_empresas` de SU destino):
+  `automatizar --tarea correo --aplicar --ruc 20615204791 --destino "~/Downloads/FacturasProveedores Holding"
+  --publicar "\fs-server\CONTAB\00 Portal\HOLDING TDM S.A.C"`. En la red queda solo `AAAA/N. MES/RUC/SERIE-NÚMERO`.
+- Para una empresa nueva: alta → carpeta de red con su nombre → corrida con su `--ruc/--destino/--publicar`.
