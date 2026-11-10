@@ -116,6 +116,12 @@ class Settings(BaseSettings):
     # sin el punto final, que Windows quita). Si se define, manda sobre `LOCAL_PROVEEDORES_DIR`.
     local_proveedores_raiz: Path | None = None
 
+    # ---------------- SIRE ----------------
+    # Meses «abiertos» para sincronizar SIRE sin `forzar`: el actual y los anteriores hasta
+    # completar esta cantidad (2 = actual + anterior). SUNAT sigue reflejando comprobantes de un mes
+    # unos días después de terminar; los meses más viejos, ya cargados, se rechazan salvo `forzar`.
+    sire_meses_abiertos: int = Field(default=2, ge=1, le=24)
+
     # ---------------- Supabase ----------------
     supabase_url: str | None = None
     supabase_jwt_alg: Literal["HS256", "HS384", "HS512", "ES256", "ES384", "RS256"] = "HS256"

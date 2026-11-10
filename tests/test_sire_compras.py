@@ -535,3 +535,35 @@ def test_el_cruce_solo_ocurre_en_compras_no_en_ventas(
     cuerpo = client.post(SYNC_VENTAS, headers=auth, json={"periodo": "202609"}).json()
 
     assert cuerpo["cruzados"] == 0
+
+
+def test_el_mes_en_curso_se_puede_volver_a_sincronizar_sin_forzar(
+    client: TestClient, auth: dict[str, str], uow: FakeUnitOfWork, sire: FakeSireClient
+) -> None:
+    """Las compras del día llegan a SIRE después de la primera carga: no se puede bloquear."""
+    from datetime import UTC, datetime
+
+    ahora = datetime.now(tz=UTC)
+    periodo = f"{ahora.year:04d}{ahora.month:02d}"
+    sire.zips = [_zip(_fila())]
+    assert _sincronizar(client, auth, periodo=periodo).status_code == 200
+    sire.solicitudes.clear()
+    sire.zips = [_zip(_fila())]
+
+    r = _sincronizar(client, auth, periodo=periodo)
+
+    assert r.status_code == 200
+    assert len(sire.solicitudes) == 1
+    assert len(uow.comprobantes.comprobantes) == 1
+
+
+def test_la_ventana_de_meses_abiertos_se_mueve_con_el_calendario() -> None:
+    from datetime import date
+
+    from app.services.sire import _primer_mes_abierto
+
+    assert _primer_mes_abierto(date(2026, 11, 10), 2) == (2026, 10)
+    assert _primer_mes_abierto(date(2026, 12, 3), 2) == (2026, 11)
+    assert _primer_mes_abierto(date(2027, 1, 5), 2) == (2026, 12)
+    assert _primer_mes_abierto(date(2026, 11, 10), 4) == (2026, 8)
+    assert _primer_mes_abierto(date(2026, 11, 10), 1) == (2026, 11)

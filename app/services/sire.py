@@ -276,7 +276,9 @@ async def _sincronizar(
 
     ruc = access.company.ruc
     if ticket is None and not forzar:
-        await _rechazar_si_ya_cargado(uow, access, periodo, libro)
+        await _rechazar_si_ya_cargado(
+            uow, access, periodo, libro, settings.sire_meses_abiertos
+        )
     credenciales = secrets_provider.get_company_credentials(ruc)
     cliente = client_factory(credenciales, settings)
 
@@ -419,8 +421,22 @@ async def _sincronizar(
     )
 
 
+def _primer_mes_abierto(hoy: date, meses_abiertos: int) -> tuple[int, int]:
+    """`(año, mes)` del mes más antiguo que aún se puede volver a sincronizar.
+
+    Con 2 meses abiertos en noviembre: octubre. En diciembre: noviembre (la ventana se mueve sola).
+    """
+    indice = hoy.year * 12 + (hoy.month - 1) - (meses_abiertos - 1)
+    return indice // 12, indice % 12 + 1
+
+
 async def _rechazar_si_ya_cargado(
-    uow: UnitOfWork, access: CompanyMember, periodo: str, libro: _Libro
+    uow: UnitOfWork,
+    access: CompanyMember,
+    periodo: str,
+    libro: _Libro,
+    meses_abiertos: int,
+    hoy: date | None = None,
 ) -> None:
     """Rechaza la sincronización si el periodo ya tiene comprobantes traídos de SIRE.
 
@@ -428,8 +444,15 @@ async def _rechazar_si_ya_cargado(
     pasa por aquí: sus filas aún no se registraron. `forzar` permite volver a sincronizar
     (sigue siendo idempotente: solo agrega lo que falte). Ventas y compras se miden por
     separado: tener cargadas las ventas de un mes no impide cargar sus compras.
+
+    Solo protege los meses CERRADOS. Los últimos `meses_abiertos` (`SIRE_MESES_ABIERTOS`, el actual
+    incluido) siguen recibiendo comprobantes, así que se pueden volver a sincronizar sin `forzar`:
+    es idempotente y solo agrega lo nuevo. Sin esa ventana, tras la primera carga del mes las
+    compras del día no se podían traer desde el portal.
     """
     anio, mes = int(periodo[:4]), int(periodo[4:])
+    if (anio, mes) >= _primer_mes_abierto(hoy or datetime.now(tz=UTC).date(), meses_abiertos):
+        return
     desde = date(anio, mes, 1)
     hasta = date(anio + (mes == 12), mes % 12 + 1, 1) - timedelta(days=1)
     pagina = await uow.comprobantes.list_for_company(

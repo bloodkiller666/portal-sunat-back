@@ -648,3 +648,15 @@ habilitado para Holding: sin `SUNAT_CRED_20615204791_*` el botón de SIRE falla,
   `automatizar --tarea correo --aplicar --ruc 20615204791 --destino "~/Downloads/FacturasProveedores Holding"
   --publicar "\fs-server\CONTAB\00 Portal\HOLDING TDM S.A.C"`. En la red queda solo `AAAA/N. MES/RUC/SERIE-NÚMERO`.
 - Para una empresa nueva: alta → carpeta de red con su nombre → corrida con su `--ruc/--destino/--publicar`.
+
+### P28 — El mes en curso y el anterior se pueden volver a sincronizar (2026-11-10)
+
+El rechazo `periodo_ya_cargado` (P11) bloqueaba TODO mes con comprobantes de SIRE, también el actual: tras la primera
+carga, las compras que SUNAT refleja a diario (p. ej. las del 10/11) no se podían traer desde el portal, que nunca manda
+`forzar`. Ahora `_rechazar_si_ya_cargado` solo protege los meses CERRADOS (anteriores al mes pasado); el actual y el
+anterior se sincronizan siempre (idempotente: solo agrega lo nuevo). `forzar` sigue sirviendo para los cerrados.
+
+Actualización (2026-11-10): la ventana es configurable con `SIRE_MESES_ABIERTOS` (por defecto 2: el mes actual + el
+anterior; `sire_meses_abiertos` en `Settings`). Se mueve sola con el calendario (en diciembre quedan noviembre y
+diciembre; octubre vuelve a protegerse). El diálogo «Sincronizar SIRE» del portal trae la casilla «Volver a consultar
+meses cerrados», que manda `forzar` para los meses fuera de la ventana.
