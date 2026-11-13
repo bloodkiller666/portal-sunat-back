@@ -932,3 +932,49 @@ def test_una_carpeta_de_origen_inexistente_se_informa(tmp_path: Path) -> None:
     codigo, resumen = ex.extraer_de_carpeta(_args_de_carpeta(tmp_path / "no_existe", tmp_path))
 
     assert (codigo, resumen) == (2, None)
+
+
+class _Elemento:
+    def __init__(self, recibido: datetime) -> None:
+        self.ReceivedTime = recibido
+
+
+class _Carpeta:
+    """Imita `Items` de Outlook: `Sort` reordena y `Item` es de base 1."""
+
+    def __init__(self, fechas: list[datetime]) -> None:
+        self._elementos = [_Elemento(f) for f in fechas]
+
+    def Sort(self, campo: str, descendente: bool) -> None:  # noqa: N802
+        self._elementos.sort(key=lambda e: e.ReceivedTime, reverse=descendente)
+
+    def Item(self, posicion: int) -> _Elemento:  # noqa: N802
+        return self._elementos[posicion - 1]
+
+
+def test_posiciones_a_leer_corta_en_la_fecha_y_conserva_el_orden_antiguo_primero() -> None:
+    from datetime import date
+
+    fechas = [datetime(2026, 11, d, 8, 0) for d in (1, 5, 9, 11, 12)]
+    items = _Carpeta(fechas)
+    posiciones = ex._posiciones_a_leer(items, 5, date(2026, 11, 9))
+    # Tras ordenar de más nuevo a más viejo, las posiciones 1..3 son 12, 11 y 9 de noviembre;
+    # se devuelven del correo más antiguo al más nuevo.
+    assert [items.Item(p).ReceivedTime.day for p in posiciones] == [9, 11, 12]
+
+
+def test_posiciones_a_leer_sin_fecha_son_todas_y_en_su_orden() -> None:
+    items = _Carpeta([datetime(2026, 11, 1), datetime(2026, 11, 2)])
+    assert ex._posiciones_a_leer(items, 2, None) == [1, 2]
+    assert ex._posiciones_a_leer(items, 0, None) == []
+
+
+def test_posiciones_a_leer_si_outlook_no_ordena_lee_todo() -> None:
+    from datetime import date
+
+    class _SinOrden(_Carpeta):
+        def Sort(self, campo: str, descendente: bool) -> None:  # noqa: N802
+            raise OSError("no se puede ordenar")
+
+    items = _SinOrden([datetime(2026, 11, 1), datetime(2026, 11, 20)])
+    assert ex._posiciones_a_leer(items, 2, date(2026, 11, 10)) == [1, 2]

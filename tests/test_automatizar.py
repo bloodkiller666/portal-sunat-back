@@ -467,3 +467,46 @@ def test_importar_reintenta_si_la_conexion_se_corta_a_mitad(entorno, monkeypatch
 
     assert informe["errores"] == [] and informe["nuevas"] == 1
     assert fallos == [1]
+
+
+def test_corte_incremental_pasada_completa_o_reciente() -> None:
+    from datetime import timedelta
+
+    ahora = datetime(2026, 11, 13, 9, 0)
+    margen = timedelta(days=3)
+    estado = {
+        "ultimo_correo_ok": "2026-11-12T09:00:00",
+        "ultima_lectura_completa": "2026-11-10T09:00:00",
+    }
+    args = ("ultimo_correo_ok", "ultima_lectura_completa", ahora, margen)
+
+    # Hubo una corrida buena y una pasada completa reciente: solo se mira desde el margen.
+    assert au.corte_incremental(estado, *args) == datetime(2026, 11, 9, 9, 0)
+    # Se pide completa, no hay historial o la pasada completa ya caducó: se revisa todo.
+    assert au.corte_incremental(estado, *args, completo=True) is None
+    assert au.corte_incremental({}, *args) is None
+    viejo = {**estado, "ultima_lectura_completa": "2026-11-05T09:00:00"}
+    assert au.corte_incremental(viejo, *args) is None
+    assert au.corte_incremental({"ultimo_correo_ok": "basura"}, *args) is None
+
+
+def test_marcar_pasada_solo_anota_la_completa_cuando_lo_fue() -> None:
+    ahora = datetime(2026, 11, 13, 9, 0)
+    estado: dict[str, str] = {}
+    au.marcar_pasada(estado, "ok", "completa", ahora, fue_completa=False)
+    assert estado == {"ok": "2026-11-13T09:00:00"}
+    au.marcar_pasada(estado, "ok", "completa", ahora, fue_completa=True)
+    assert estado["completa"] == "2026-11-13T09:00:00"
+
+
+def test_vigilante_se_apaga_sin_limite_y_se_cancela_si_la_corrida_termina(tmp_path: Path) -> None:
+    import argparse
+
+    rutas = Rutas(tmp_path / "_automatizacion")
+    sin_limite = argparse.Namespace(limite_minutos=0, aplicar=False)
+    assert au._armar_vigilante(sin_limite, rutas, datetime(2026, 11, 13, 9, 0)) is None
+
+    con_limite = argparse.Namespace(limite_minutos=60, aplicar=False)
+    vigilante = au._armar_vigilante(con_limite, rutas, datetime(2026, 11, 13, 9, 0))
+    assert vigilante is not None and vigilante.daemon
+    vigilante.cancel()

@@ -677,6 +677,34 @@ def _fecha(valor: Any) -> datetime | None:
         return None
 
 
+def _posiciones_a_leer(items: Any, total: int, desde: date | None) -> list[int]:
+    """Posiciones de `items` que hay que abrir, en el orden de siempre (de la más antigua).
+
+    Sin `desde` son todas. Con `desde` se ordena la carpeta de la más reciente a la más antigua
+    y se corta al primer correo anterior a esa fecha, en vez de abrir uno por uno los ~1300
+    correos (cada apertura es una llamada COM). Se evalúa solo la fecha, sin depender del
+    formato regional de `Restrict`. Si Outlook no deja ordenar, se lee todo como antes.
+    """
+    todas = list(range(1, total + 1))
+    if desde is None or total == 0:
+        return todas
+    try:
+        items.Sort("[ReceivedTime]", True)
+    except Exception:
+        return todas
+    recientes: list[int] = []
+    for posicion in todas:
+        try:
+            recibido = _fecha(items.Item(posicion).ReceivedTime)
+        except Exception:
+            recibido = None  # un elemento raro se incluye y el bucle principal lo descarta
+        if recibido is not None and recibido.date() < desde:
+            break
+        recientes.append(posicion)
+    recientes.reverse()  # el que llegó primero se procesa primero (gana al anotar el correo)
+    return recientes
+
+
 def _es_carpeta_de_correo(carpeta: Any) -> bool:
     """Carpeta de mensajes que puede recibir facturas (no calendario, contactos ni sistema)."""
     try:
@@ -842,12 +870,17 @@ def extraer(args: argparse.Namespace) -> tuple[int, dict[str, Any] | None]:
     for carpeta in carpetas:
         items = carpeta.Items
         total = items.Count
-        print(f"Leyendo «{carpeta.Name}» ({total} elementos)…", file=sys.stderr, flush=True)
-        for posicion in range(1, total + 1):
+        posiciones = _posiciones_a_leer(items, total, desde)
+        print(
+            f"Leyendo «{carpeta.Name}» ({len(posiciones)} de {total} elementos)…",
+            file=sys.stderr,
+            flush=True,
+        )
+        for avance, posicion in enumerate(posiciones, 1):
             if args.limite and informe.con_facturas >= args.limite:
                 break
-            if posicion % 200 == 0:
-                print(f"    … {posicion}/{total}", file=sys.stderr, flush=True)
+            if avance % 200 == 0:
+                print(f"    … {avance}/{len(posiciones)}", file=sys.stderr, flush=True)
             try:
                 correo = items.Item(posicion)
                 if correo.Class != OL_MAIL:

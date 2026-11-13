@@ -35,6 +35,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Awaitable, Callable
@@ -88,6 +89,13 @@ ESPERA_TICKET_SEGUNDOS = 20
 MAX_REINTENTOS_TICKET = 12
 BLOQUEO_CADUCA_HORAS = 3
 REINTENTO_SUELTOS_DIAS = 7
+# Lectura del correo y publicación en la red: lo normal mira solo lo reciente (segundos en vez de
+# minutos) y cada `PASADA_COMPLETA_DIAS` días se revisa todo, por si algo se quedó atrás.
+PASADA_COMPLETA_DIAS = 7
+MARGEN_CORREO_DIAS = 3
+MARGEN_PUBLICACION_HORAS = 24
+# Si una corrida pasa de este tiempo (Outlook o la red colgados) se corta y se avisa.
+LIMITE_MINUTOS_POR_DEFECTO = 20
 EXTENSIONES = {".xml", ".pdf"}
 
 
@@ -185,6 +193,47 @@ def sueltos_toca(estado: dict[str, Any], ahora: datetime) -> bool:
     return ultima is None or ahora - datetime.fromisoformat(ultima) >= timedelta(
         days=REINTENTO_SUELTOS_DIAS
     )
+
+
+def corte_incremental(
+    estado: dict[str, Any],
+    clave_ok: str,
+    clave_completa: str,
+    ahora: datetime,
+    margen: timedelta,
+    *,
+    completo: bool = False,
+) -> datetime | None:
+    """Desde cuándo basta mirar, o `None` si toca una pasada completa.
+
+    Es completa cuando se pide (`--completo`), nunca hubo una corrida buena, o la última pasada
+    completa tiene `PASADA_COMPLETA_DIAS` días o más. Si no, el corte es la última corrida buena
+    menos un margen.
+    """
+    if completo:
+        return None
+    try:
+        ultima_ok = datetime.fromisoformat(estado[clave_ok])
+        ultima_completa = datetime.fromisoformat(estado[clave_completa])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if ahora - ultima_completa >= timedelta(days=PASADA_COMPLETA_DIAS):
+        return None
+    return ultima_ok - margen
+
+
+def marcar_pasada(
+    estado: dict[str, Any],
+    clave_ok: str,
+    clave_completa: str,
+    ahora: datetime,
+    *,
+    fue_completa: bool,
+) -> None:
+    """Anota una corrida buena (y si fue completa, también la pasada completa)."""
+    estado[clave_ok] = ahora.isoformat(timespec="seconds")
+    if fue_completa:
+        estado[clave_completa] = ahora.isoformat(timespec="seconds")
 
 
 def adquirir_bloqueo(ruta: Path, ahora: datetime) -> bool:
@@ -744,6 +793,17 @@ async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[st
             try:
                 from scripts.extraer_correo_outlook import CARPETAS_POR_DEFECTO, extraer
 
+                corte_correo = corte_incremental(
+                    estado,
+                    "ultimo_correo_ok",
+                    "ultima_lectura_completa",
+                    ahora,
+                    timedelta(days=MARGEN_CORREO_DIAS),
+                    completo=getattr(args, "completo", False),
+                )
+                resumen["lectura_correo"] = (
+                    "completa" if corte_correo is None else f"desde {corte_correo.date()}"
+                )
                 codigo, ext = await asyncio.to_thread(
                     extraer,
                     argparse.Namespace(
@@ -751,7 +811,7 @@ async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[st
                         destino=str(destino),
                         ruc=args.ruc,
                         carpetas=CARPETAS_POR_DEFECTO,
-                        desde=None,
+                        desde=corte_correo.date().isoformat() if corte_correo else None,
                         hasta=None,
                         limite=0,
                         simular=not args.aplicar,
@@ -777,6 +837,14 @@ async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[st
                     ]
                     if ext["errores"]:
                         resumen["errores"].append(f"{ext['errores']} correo(s) no se pudieron leer")
+                    elif args.aplicar:
+                        marcar_pasada(
+                            estado,
+                            "ultimo_correo_ok",
+                            "ultima_lectura_completa",
+                            ahora,
+                            fue_completa=corte_correo is None,
+                        )
             except Exception as exc:
                 resumen["errores"].append(f"Correo: {describir_error(exc)}")
 
@@ -816,9 +884,30 @@ async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[st
             try:
                 from scripts.publicar_red import publicar_anios
 
-                pub = await asyncio.to_thread(
-                    publicar_anios, destino, Path(args.publicar), simular=not args.aplicar
+                corte_pub = corte_incremental(
+                    estado,
+                    "ultima_publicacion_ok",
+                    "ultima_publicacion_completa",
+                    ahora,
+                    timedelta(hours=MARGEN_PUBLICACION_HORAS),
+                    completo=getattr(args, "completo", False),
                 )
+                pub = await asyncio.to_thread(
+                    publicar_anios,
+                    destino,
+                    Path(args.publicar),
+                    simular=not args.aplicar,
+                    modificados_desde=corte_pub.timestamp() if corte_pub else None,
+                )
+                pub["revision"] = "completa" if corte_pub is None else "solo lo reciente"
+                if args.aplicar and not pub["errores"]:
+                    marcar_pasada(
+                        estado,
+                        "ultima_publicacion_ok",
+                        "ultima_publicacion_completa",
+                        ahora,
+                        fue_completa=corte_pub is None,
+                    )
                 resumen["publicacion"] = pub
                 resumen["errores"] += [f"publicar en la red: {e}" for e in pub["errores"]]
                 resumen["novedades"]["archivos publicados en la red"] = pub["copiados"]
@@ -847,6 +936,45 @@ async def ejecutar_corrida(args: argparse.Namespace, ahora: datetime) -> dict[st
     return resumen
 
 
+def _armar_vigilante(
+    args: argparse.Namespace, rutas: Rutas, ahora: datetime
+) -> threading.Timer | None:
+    """Corta la corrida si se cuelga (Outlook o la red sin responder).
+
+    Una llamada COM o de red no se puede interrumpir desde dentro; por eso un temporizador
+    aparte anota el motivo, libera el bloqueo y termina el proceso. Es seguro: todo lo que
+    hace la corrida es idempotente y lo que quedó a medias se rehace en la siguiente.
+    """
+    if args.limite_minutos <= 0:
+        return None
+
+    def cortar() -> None:
+        mensaje = (
+            f"La corrida pasó de {args.limite_minutos} minutos y se cortó "
+            "(¿Outlook o la carpeta de red no responden?). Lo pendiente sigue en la próxima."
+        )
+        print(mensaje, file=sys.stderr, flush=True)
+        try:
+            if args.aplicar:
+                resumen = {
+                    "modo": "REAL",
+                    "tareas": [],
+                    "novedades": {},
+                    "errores": [mensaje],
+                    "segundos": args.limite_minutos * 60,
+                }
+                registrar_actividad(rutas, ahora, resumen)
+                avisar_en_pantalla("Automatización cortada", mensaje)
+            liberar_bloqueo(rutas.bloqueo)
+        finally:
+            os._exit(3)
+
+    temporizador = threading.Timer(args.limite_minutos * 60, cortar)
+    temporizador.daemon = True
+    temporizador.start()
+    return temporizador
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SIRE + correo + importación automáticos")
     parser.add_argument("--tarea", choices=["auto", "sire", "correo"], default="auto")
@@ -862,6 +990,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--hora-sire", type=int, default=HORA_SIRE_POR_DEFECTO)
     parser.add_argument("--usuario-id", default=None)
+    parser.add_argument(
+        "--completo",
+        action="store_true",
+        help="Lee todo el buzón y revisa toda la carpeta de red (lo normal solo mira lo "
+        f"reciente; se hace solo cada {PASADA_COMPLETA_DIAS} días)",
+    )
+    parser.add_argument(
+        "--limite-minutos",
+        type=int,
+        default=LIMITE_MINUTOS_POR_DEFECTO,
+        help="Corta la corrida si pasa de este tiempo (0 = sin límite)",
+    )
     args = parser.parse_args(argv)
 
     ahora = datetime.now()
@@ -871,6 +1011,7 @@ def main(argv: list[str] | None = None) -> int:
         print("Ya hay otra corrida en curso: no se inicia otra.")
         return 0
     inicio = time.monotonic()
+    vigilante = _armar_vigilante(args, rutas, ahora)
     try:
         resumen = asyncio.run(ejecutar_corrida(args, ahora))
     except Exception as exc:
@@ -882,6 +1023,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         traceback.print_exc()
     finally:
+        if vigilante:
+            vigilante.cancel()
         liberar_bloqueo(rutas.bloqueo)
     resumen["segundos"] = round(time.monotonic() - inicio)
     print(json.dumps(resumen, ensure_ascii=False, indent=2, default=str))
