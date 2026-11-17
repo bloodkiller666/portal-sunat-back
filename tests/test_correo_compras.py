@@ -230,11 +230,14 @@ def test_una_venta_con_esa_serie_numero_no_recibe_el_correo(
     assert uow.comprobantes.comprobantes[venta.id].correo_asunto is None
 
 
-def test_un_correo_sin_asunto_no_se_anota(uow: FakeUnitOfWork, empresa_principal: Company) -> None:
+def test_un_correo_sin_asunto_se_anota_como_sin_asunto(
+    uow: FakeUnitOfWork, empresa_principal: Company
+) -> None:
+    """Caso real F204-00003133: el proveedor mandó el correo sin asunto y figuraba «no enviado»."""
     compra = _compra(uow, empresa_principal)
 
-    assert _aplicar(uow, empresa_principal, _correo("   ")) == 0
-    assert uow.comprobantes.comprobantes[compra.id].correo_asunto is None
+    assert _aplicar(uow, empresa_principal, _correo("   ")) == 1
+    assert uow.comprobantes.comprobantes[compra.id].correo_asunto == "(sin asunto)"
 
 
 def test_el_asunto_se_limpia_y_se_recorta(uow: FakeUnitOfWork, empresa_principal: Company) -> None:

@@ -32,7 +32,7 @@ from app.services.carpeta_local import (
     restaurar_carpeta,
 )
 from app.services.comprobantes import MAX_COMPROBANTES_PAGINA
-from app.services.correo_compras import NOMBRE_CORREO_TXT
+from app.services.correo_compras import NOMBRE_CORREO_TXT, SIN_ASUNTO
 from app.storage.base import StorageProvider
 
 logger = get_logger(__name__)
@@ -46,7 +46,7 @@ def clave_de_correo(asunto: str, recibido: datetime) -> Clave:
     """Identifica un correo por su asunto (como lo guarda la base) y su hora de recepción en UTC."""
     if recibido.tzinfo is None:  # el extractor guarda la hora local de Lima, sin zona
         recibido = recibido.replace(tzinfo=_LIMA)
-    return " ".join(asunto.split())[:500], recibido.astimezone(UTC)
+    return " ".join(asunto.split())[:500] or SIN_ASUNTO, recibido.astimezone(UTC)
 
 
 def indice_mensajes(destino: Path) -> dict[Clave, str]:

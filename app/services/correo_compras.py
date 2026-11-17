@@ -23,6 +23,9 @@ _CARPETA_DE_COMPRA = re.compile(
     rf"^\d{{4}}/{_MES}/(\d{{11}})/([A-Z0-9]{{4}})-(\d{{1,8}})$", re.IGNORECASE
 )
 MAX_ASUNTO = 500
+# Hay proveedores que mandan el correo sin asunto. Igual es la constancia de que la factura llegó
+# por el buzón, así que se anota con este texto en vez de descartarse.
+SIN_ASUNTO = "(sin asunto)"
 MAX_REMITENTE = 300
 
 
@@ -102,14 +105,12 @@ async def registrar_correos(
 ) -> int:
     """Aplica los correos a sus compras. Devuelve cuántas compras se actualizaron.
 
-    Un correo sin asunto no se anota (no diría nada). Lo que no coincide con ninguna compra de
-    la empresa simplemente no actualiza nada.
+    Un correo sin asunto se anota como «(sin asunto)»: la compra sí llegó por el buzón. Lo que no
+    coincide con ninguna compra de la empresa simplemente no actualiza nada.
     """
     actualizadas = 0
     for correo in correos:
-        asunto = _limpio(correo.asunto, MAX_ASUNTO)
-        if not asunto:
-            continue
+        asunto = _limpio(correo.asunto, MAX_ASUNTO) or SIN_ASUNTO
         actualizadas += await uow.comprobantes.registrar_correo(
             access.company_id,
             ruc_emisor=correo.ruc_emisor,

@@ -106,9 +106,8 @@ def leer_correos_de_pdf_sueltos(
 
 async def ejecutar(args: argparse.Namespace) -> int:
     correos = await asyncio.to_thread(leer_registro_correos, Path(args.destino))
-    con_asunto = [c for c in correos.values() if c.asunto.strip()]
     sueltos = await asyncio.to_thread(leer_correos_de_pdf_sueltos, Path(args.destino))
-    print(f"Correos con compra identificada: {len(correos)} ({len(con_asunto)} con asunto)")
+    print(f"Correos con compra identificada: {len(correos)}")
     print(f"PDF sin XML con correo (se identifican por su texto): {len(sueltos)}")
     if not args.aplicar:
         print("Simulación: no se escribió nada. Use --aplicar.")
@@ -126,7 +125,9 @@ async def ejecutar(args: argparse.Namespace) -> int:
             acceso = await resolve_company_access(uow, usuario, args.ruc)
             actualizadas = 0
             if not args.solo_evidencia:
-                actualizadas = await registrar_correos(uow=uow, access=acceso, correos=con_asunto)
+                actualizadas = await registrar_correos(
+                    uow=uow, access=acceso, correos=list(correos.values())
+                )
         informe: dict[str, Any] = {"errores": []}
         from scripts.automatizar import anotar_correos_de_pdf_sueltos
 
