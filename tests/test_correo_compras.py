@@ -493,3 +493,66 @@ def test_al_importar_los_pdf_sueltos_pendientes_se_anota_su_correo(
 
     assert informe["errores"] == [] and informe["correos_registrados"] == 1
     assert uow.comprobantes.comprobantes[compra.id].correo_asunto == "Factura F010-456"
+
+
+# --------------------------------------------------------------------------- #
+# PDF sueltos que esperan a su compra (SIRE la trajo después que el correo)
+# --------------------------------------------------------------------------- #
+def test_el_importe_se_reconoce_en_los_formatos_del_pdf() -> None:
+    assert au.monto_en_texto("7080.00", "TOTAL S/ 7,080.00 soles")
+    assert au.monto_en_texto("7080", "Total: 7080.00")
+    assert au.monto_en_texto("7080.00", "Total 7.080,00")
+    assert not au.monto_en_texto("118.00", "Total 1118.00")  # no es parte de otro número
+    assert not au.monto_en_texto("118.00", "Total 118.005")
+
+
+def _marcar_intentado(entorno, nombre: str) -> None:
+    datos = (entorno["destino"] / SUELTO / nombre).read_bytes()
+    au._escribir_json(entorno["rutas"].sueltos_intentados, [au._huella(datos)])
+
+
+def _sin_archivos(uow, empresa, monkeypatch, **campos):
+    """Compra de SIRE sin archivos y un registro de las uniones que se intenten."""
+    from datetime import date
+    from types import SimpleNamespace
+
+    compra = _compra(uow, empresa, fecha_emision=date.today(), **campos)
+    unidos: list[str] = []
+
+    async def une(_f, _s, _u, _a, archivos):
+        unidos.append(archivos[0][0])
+        return SimpleNamespace(items=[SimpleNamespace(ok=True, situacion="unido")])
+
+    monkeypatch.setattr(au, "_importar_grupo", une)
+    return compra, unidos
+
+
+def test_un_pdf_intentado_se_une_cuando_su_compra_aparece_sin_archivos(
+    entorno, uow: FakeUnitOfWork, empresa_principal: Company, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caso real: SIRE trajo la compra DESPUÉS de intentar el PDF; ya no espera al reintento."""
+    _compra, unidos = _sin_archivos(uow, empresa_principal, monkeypatch)
+    _escribir_pdf_suelto(
+        entorno["destino"], "f.pdf", "RUC 20999999999 FACTURA F010-00000456 TOTAL 118.00"
+    )
+    _marcar_intentado(entorno, "f.pdf")
+
+    informe = _importar(entorno)
+
+    assert unidos == ["f.pdf"] and informe["pdf_sueltos_unidos"] == 1
+    assert informe["errores"] == []
+
+
+def test_un_pdf_que_no_trae_el_importe_de_la_compra_no_se_une(
+    entorno, uow: FakeUnitOfWork, empresa_principal: Company, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un PDF que solo cita la serie de otra factura (un stand-by) no debe pegarse a ella."""
+    _compra, unidos = _sin_archivos(uow, empresa_principal, monkeypatch)
+    _escribir_pdf_suelto(
+        entorno["destino"], "g.pdf", "RUC 20999999999 FACTURA F010-00000456 TOTAL 999.00"
+    )
+    _marcar_intentado(entorno, "g.pdf")
+
+    informe = _importar(entorno)
+
+    assert unidos == [] and informe["pdf_sueltos_unidos"] == 0

@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -41,6 +42,7 @@ import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -54,17 +56,21 @@ from scripts.cargar_correos import (
 )
 
 from app.core.config import Settings, get_settings
+from app.core.enums import OrigenComprobante, RespaldoFiltro
 from app.core.errors import AppError
 from app.core.redaction import redact
 from app.core.security import AuthenticatedUser
 from app.db.models import AutomatizacionLogRegistro, CompanyMember
 from app.db.pool import Database
+from app.db.repositories.base import FiltrosListado
 from app.db.uow import build_uow_factory
 from app.main import crear_cliente_sire
 from app.secrets.factory import build_secrets_provider
 from app.services.companies import resolve_company_access
+from app.services.comprobantes import MAX_COMPROBANTES_PAGINA
 from app.services.correo_compras import CorreoDeCompra, clave_de_carpeta, registrar_correos
 from app.services.evidencia_correos import completar_evidencia_de_correos
+from app.services.pdf_identificar import candidatos_de_pdf, texto_del_pdf
 from app.services.proveedores_paquete import (
     identificar_compra_de_pdf,
     importar_archivos_proveedores,
@@ -89,6 +95,8 @@ ESPERA_TICKET_SEGUNDOS = 20
 MAX_REINTENTOS_TICKET = 12
 BLOQUEO_CADUCA_HORAS = 3
 REINTENTO_SUELTOS_DIAS = 7
+# Solo se buscan PDF para compras emitidas en este plazo (las anteriores no llegan por el correo).
+VENTANA_SUELTOS_DIAS = 120
 # Lectura del correo y publicación en la red: lo normal mira solo lo reciente (segundos en vez de
 # minutos) y cada `PASADA_COMPLETA_DIAS` días se revisa todo, por si algo se quedó atrás.
 PASADA_COMPLETA_DIAS = 7
@@ -124,6 +132,10 @@ class Rutas:
     @property
     def sueltos_intentados(self) -> Path:
         return self.base / "pdfs_sueltos_intentados.json"
+
+    @property
+    def sueltos_candidatos(self) -> Path:
+        return self.base / "pdfs_sueltos_candidatos.json"
 
     def bitacora(self, ahora: datetime) -> Path:
         return self.base / f"bitacora-{ahora:%Y-%m}.jsonl"
@@ -338,6 +350,119 @@ def _huella(datos: bytes) -> str:
     import hashlib
 
     return hashlib.sha256(datos).hexdigest()[:20]
+
+
+def monto_en_texto(monto: Decimal | float | str, texto: str) -> bool:
+    """¿El importe figura en el texto del PDF? Acepta `7,080.00`, `7080.00` y `7.080,00`."""
+    m = Decimal(str(monto)).quantize(Decimal("0.01"))
+    con_miles = f"{m:,.2f}"  # 7,080.00
+    formas = {
+        con_miles,
+        f"{m:.2f}",
+        con_miles.translate(str.maketrans(",.", ".,")),  # 7.080,00
+        f"{m:.2f}".replace(".", ","),
+    }
+    plano = " ".join(texto.split())
+    return any(re.search(rf"(?<![\d.,]){re.escape(f)}(?!\d)", plano) for f in formas)
+
+
+def _claves_de_sueltos(base: Path, cache_ruta: Path) -> list[tuple[Path, bytes, list[list[Any]]]]:
+    """Cada PDF suelto con los `[RUC, serie, correlativo]` que cita su texto.
+
+    Leer el texto de cientos de PDF tarda minutos, así que el resultado se guarda por huella del
+    archivo: solo se lee lo nuevo.
+    """
+    cache: dict[str, list[list[Any]]] = _leer_json(cache_ruta, {})
+    resultado: list[tuple[Path, bytes, list[list[Any]]]] = []
+    cambio = False
+    for pdf in sorted(base.rglob("*.pdf")):
+        try:
+            datos = pdf.read_bytes()
+        except OSError:
+            continue
+        huella = _huella(datos)
+        if huella not in cache:
+            rucs, series = candidatos_de_pdf(datos)
+            cache[huella] = [[r, s, n] for r in sorted(rucs) for s, n in sorted(series)]
+            cambio = True
+        if cache[huella]:
+            resultado.append((pdf, datos, cache[huella]))
+    if cambio:
+        _escribir_json(cache_ruta, cache)
+    return resultado
+
+
+async def _compras_sin_archivos(
+    uow_factory: Any, usuario: AuthenticatedUser, acceso: CompanyMember
+) -> dict[tuple[str, str, int], Any]:
+    """Compras recientes sin ningún archivo (p. ej. las que SIRE trajo antes que su XML o PDF)."""
+    filtros = FiltrosListado(
+        origen=OrigenComprobante.recibido,
+        respaldo=RespaldoFiltro.ninguno,
+        fecha_desde=date.today() - timedelta(days=VENTANA_SUELTOS_DIAS),
+    )
+    compras: dict[tuple[str, str, int], Any] = {}
+    offset = 0
+    while True:
+        async with uow_factory(usuario.claims_para_rls) as uow:
+            pagina = await uow.comprobantes.list_for_company(
+                acceso.company_id, filtros, limit=MAX_COMPROBANTES_PAGINA, offset=offset
+            )
+        for c in pagina.items:
+            compras[(c.ruc_emisor, c.serie, c.correlativo)] = c.monto_total
+        if len(pagina.items) < MAX_COMPROBANTES_PAGINA:
+            return compras
+        offset += MAX_COMPROBANTES_PAGINA
+
+
+async def reintentar_sueltos_de_compras_sin_archivos(
+    uow_factory: Any,
+    settings: Settings,
+    usuario: AuthenticatedUser,
+    acceso: CompanyMember,
+    destino: Path,
+    rutas: Rutas,
+    informe: dict[str, Any],
+    espera: float = ESPERA_REINTENTO_SEGUNDOS,
+) -> int:
+    """Une los PDF sueltos a las compras que siguen sin archivos, sin esperar al reintento semanal.
+
+    Un PDF sin XML se intenta una sola vez; si SIRE trae la compra después, el PDF quedaba
+    «intentado» y la compra sin archivos hasta el reintento general. Aquí se cruzan ambos lados
+    en cada corrida: solo se une un PDF cuyo texto da el RUC y la serie-número de una compra sin
+    archivos Y trae su importe (así un PDF que apenas cita otra factura no se une por error).
+    """
+    base = destino / "_sin_clasificar"
+    if not base.is_dir():
+        return 0
+    try:
+        compras = await _compras_sin_archivos(uow_factory, usuario, acceso)
+        if not compras:
+            return 0
+        sueltos = await asyncio.to_thread(_claves_de_sueltos, base, rutas.sueltos_candidatos)
+    except Exception as exc:
+        informe["errores"].append(f"PDF sueltos: {describir_error(exc)}")
+        return 0
+    unidos = 0
+    for pdf, datos, claves in sueltos:
+        montos = [compras[(r, s, n)] for r, s, n in claves if (r, s, n) in compras]
+        if not montos:
+            continue
+        texto = await asyncio.to_thread(texto_del_pdf, datos)
+        if not any(monto_en_texto(m, texto) for m in montos):
+            continue
+        try:
+            r = await con_reintentos(
+                partial(
+                    _importar_grupo, uow_factory, settings, usuario, acceso, [(pdf.name, datos)]
+                ),
+                espera=espera,
+            )
+        except Exception as exc:
+            informe["errores"].append(f"{pdf.name}: {describir_error(exc)}")
+            continue
+        unidos += sum(1 for i in r.items if i.ok and i.situacion == "unido")
+    return unidos
 
 
 async def _importar_grupo(
@@ -565,6 +690,10 @@ async def importar_pendientes(
                 1 for i in r.items if i.ok and i.situacion == "unido"
             )
     _escribir_json(rutas.sueltos_intentados, sorted(intentados))
+    if not reintentar_sueltos:  # con el reintento general ya se probaron todos
+        informe["pdf_sueltos_unidos"] += await reintentar_sueltos_de_compras_sin_archivos(
+            uow_factory, settings, usuario, acceso, destino, rutas, informe, espera
+        )
     # El correo de un PDF sin XML no se vincula por carpeta: se anota por la compra que su texto da.
     if sueltas:
         sueltos_con_correo = await asyncio.to_thread(
